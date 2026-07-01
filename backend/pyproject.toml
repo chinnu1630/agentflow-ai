@@ -1,40 +1,459 @@
+# =============================================================================
+# pyproject.toml — AgentFlow AI Backend
+# =============================================================================
+# This is the single source of truth for the entire project configuration.
+# It replaces: setup.py, setup.cfg, requirements.txt, .flake8, mypy.ini, tox.ini
+# Every tool the project uses reads its configuration from this one file.
+# PEP 518 (2016) introduced this standard. PEP 621 (2021) finalised [project].
+# =============================================================================
+
+
+# =============================================================================
+# BUILD SYSTEM
+# =============================================================================
+# Before Python can install your project, it needs to know WHICH tool to use
+# to build it. This section answers that question.
+#
+# Without this section, pip falls back to legacy behaviour and may fail on
+# modern projects. Always include it.
+# =============================================================================
+
 [build-system]
+
+# The build tool that will package this project.
+# setuptools is the industry standard. Version 68+ natively supports pyproject.toml
+# without needing a separate setup.py or setup.cfg file.
 requires = ["setuptools>=68.0.0"]
+
+# The Python dotted path to the build backend function setuptools exposes.
+# This is boilerplate — copy it to every project unchanged.
 build-backend = "setuptools.build_meta"
 
+
+# =============================================================================
+# PROJECT METADATA
+# =============================================================================
+# This section defines the identity of your package — what it is called,
+# what version it is, and what it needs to run.
+#
+# When someone runs: pip install agentflow-ai-backend
+# pip reads this section to know what to install and what constraints to apply.
+# =============================================================================
+
 [project]
+
+# The package name as it appears on PyPI (if ever published) and in pip.
+# Convention: lowercase, hyphens not underscores.
+# This is the name used in: pip install <name>
 name = "agentflow-ai-backend"
+
+# Semantic versioning: MAJOR.MINOR.PATCH
+# 0.x.x = pre-release / internal project (not yet production-stable)
+# Increment PATCH for bug fixes, MINOR for new features, MAJOR for breaking changes.
+# For a portfolio project, stay at 0.1.0 until you deploy to production.
 version = "0.1.0"
+
+# Human-readable description. Appears in pip show and PyPI listings.
+# Write it as a one-line summary that explains the business purpose,
+# not just the technical stack. This matters for portfolio visibility.
 description = "FastAPI backend for AgentFlow AI release-risk automation platform"
+
+# Minimum Python version required to run this project.
+# This prevents silent failures when someone installs on Python 3.9
+# and your 3.11-only syntax (match statements, tomllib, etc.) breaks at runtime.
+# ">=" means 3.11, 3.12, 3.13 all work. Use "~=3.11" to pin to 3.11.x only.
 requires-python = ">=3.11"
+
+
+# =============================================================================
+# PRODUCTION DEPENDENCIES
+# =============================================================================
+# These are libraries your application needs to RUN in production.
+# They are installed when someone does: pip install .
+#
+# Pinning strategy for enterprise projects:
+#   ">=X.Y.Z"  — minimum version, allows upgrades (used here)
+#   "==X.Y.Z"  — exact pin, maximum reproducibility (use in Docker)
+#   "~=X.Y"    — compatible release, allows patch updates only
+#
+# Rule: if a library is imported by app/ code, it belongs here.
+# If it is only used in tests or local dev tools, it goes in [optional-dependencies].
+# =============================================================================
+
 dependencies = [
+
+    # -------------------------------------------------------------------------
+    # WEB FRAMEWORK
+    # -------------------------------------------------------------------------
+
+    # FastAPI: the async web framework that serves all AgentFlow API endpoints.
+    # Chosen over Flask/Django because: native async support, automatic OpenAPI
+    # docs, Pydantic v2 integration, and dependency injection built in.
+    # 0.115+ includes Pydantic v2 as the default validator.
     "fastapi>=0.115.0",
+
+    # Uvicorn: the ASGI server that actually runs FastAPI in production.
+    # ASGI = Asynchronous Server Gateway Interface (the async equivalent of WSGI).
+    # [standard] extras install: uvloop (faster event loop), httptools (faster
+    # HTTP parsing), websockets support. Always use [standard] in production.
+    # In development: uvicorn --reload   In production: uvicorn --workers 4
     "uvicorn[standard]>=0.30.0",
+
+
+    # -------------------------------------------------------------------------
+    # VALIDATION AND CONFIGURATION
+    # -------------------------------------------------------------------------
+
+    # Pydantic v2: data validation library used for ALL input/output models.
+    # Every API request body, response schema, and agent data structure is a
+    # Pydantic model. v2 rewrote the core in Rust — 5-50x faster than v1.
+    # Enterprise requirement: Pydantic v2 on every function signature.
     "pydantic>=2.8.0",
-    "pydantic-settings>=2.4.0"
+
+    # pydantic-settings: extends Pydantic to read config from environment
+    # variables and .env files. Used in app/core/config.py for Settings class.
+    # Example: ANTHROPIC_API_KEY in .env → settings.anthropic_api_key in code.
+    # This is how we keep secrets out of source code (enterprise requirement).
+    "pydantic-settings>=2.4.0",
+
+
+    # -------------------------------------------------------------------------
+    # DATABASE LAYER
+    # -------------------------------------------------------------------------
+
+    # SQLAlchemy 2.0: the async ORM (Object Relational Mapper) for PostgreSQL.
+    # ORM = maps Python classes to database tables so you write Python, not SQL.
+    # Version 2.0 introduced native async support via asyncio.
+    # Used in: app/db/models.py (table definitions) and app/db/session.py
+    # Chosen over raw asyncpg because: migrations, query composition, relationships.
+    "sqlalchemy>=2.0.0",
+
+    # asyncpg: the async PostgreSQL driver that SQLAlchemy uses under the hood.
+    # SQLAlchemy talks to Python. asyncpg talks to the actual PostgreSQL database.
+    # You never import asyncpg directly — SQLAlchemy uses it automatically when
+    # your connection string starts with: postgresql+asyncpg://
+    "asyncpg>=0.29.0",
+
+    # Alembic: database migration tool for SQLAlchemy.
+    # Migrations = version control for your database schema.
+    # When you add a column, rename a table, or add an index, you write an
+    # Alembic migration. The CI pipeline runs migrations before deploying.
+    # Without this, you would manually ALTER TABLE in production — dangerous.
+    "alembic>=1.13.0",
+
+
+    # -------------------------------------------------------------------------
+    # CACHING
+    # -------------------------------------------------------------------------
+
+    # redis: async Redis client for caching and session state.
+    # AgentFlow uses Redis for:
+    #   1. Caching GitHub API responses (avoid rate limits)
+    #   2. Caching Jira ticket data (expensive API calls)
+    #   3. Storing LangGraph workflow state between steps
+    #   4. Rate limiting incoming API requests
+    # Version 5.0+ includes native asyncio support.
+    "redis>=5.0.0",
+
+
+    # -------------------------------------------------------------------------
+    # HTTP CLIENT
+    # -------------------------------------------------------------------------
+
+    # httpx: async HTTP client for calling external APIs.
+    # Used by: GitHub agent (fetch PRs), Jira agent (fetch tickets),
+    #          Slack agent (send alerts).
+    # Chosen over requests because: native async/await support.
+    # Chosen over aiohttp because: requests-compatible API, better timeout handling.
+    # NOTE: httpx is a PRODUCTION dependency — it calls real APIs at runtime.
+    # Common mistake: putting httpx in dev dependencies (it belongs here).
+    "httpx>=0.27.0",
+
+
+    # -------------------------------------------------------------------------
+    # OBSERVABILITY — STRUCTURED LOGGING
+    # -------------------------------------------------------------------------
+
+    # structlog: structured logging library that outputs JSON logs.
+    # Standard logging outputs: "2024-01-01 ERROR Something failed"
+    # structlog outputs: {"timestamp": "...", "level": "error", "run_id": "abc",
+    #                     "agent": "github", "event": "Something failed"}
+    # JSON logs are machine-parseable by CloudWatch, Datadog, Grafana, etc.
+    # Enterprise requirement: every log line must carry run_id for tracing.
+    # Rule: never use print() in production. Always use structlog.
+    "structlog>=24.0.0",
+
+
+    # -------------------------------------------------------------------------
+    # SECURITY
+    # -------------------------------------------------------------------------
+
+    # python-jose: JSON Web Token (JWT) library for authentication.
+    # JWTs are the tokens sent in the Authorization header on every API request.
+    # [cryptography] extra enables RS256 signing (more secure than HS256).
+    # Used in: app/core/security.py to create and verify access tokens.
+    "python-jose[cryptography]>=3.3.0",
+
+    # passlib: password hashing library.
+    # [bcrypt] extra enables the bcrypt algorithm — the industry standard for
+    # storing passwords. bcrypt is intentionally slow to prevent brute-force attacks.
+    # Never store plain-text passwords. Never use MD5 or SHA1 for passwords.
+    # Used in: app/core/security.py → hash_password() and verify_password()
+    "passlib[bcrypt]>=1.7.4",
 ]
+
+
+# =============================================================================
+# DEVELOPMENT DEPENDENCIES
+# =============================================================================
+# These are tools used ONLY during local development and CI/CD pipelines.
+# They are NOT installed in the production Docker container.
+#
+# Install with: pip install ".[dev]"
+# The dot (.) means "current directory" = install this project.
+# The [dev] means "also install the dev extras".
+#
+# In Dockerfile.prod: RUN pip install .          ← no dev tools
+# In Dockerfile.dev:  RUN pip install ".[dev]"   ← includes dev tools
+# =============================================================================
 
 [project.optional-dependencies]
 dev = [
+
+    # -------------------------------------------------------------------------
+    # TESTING
+    # -------------------------------------------------------------------------
+
+    # pytest: the standard Python test runner.
+    # Discovers test files (test_*.py), runs test functions (def test_*),
+    # and reports pass/fail with helpful diffs.
     "pytest>=8.2.0",
-    "httpx>=0.27.0",
+
+    # pytest-asyncio: enables testing async functions with pytest.
+    # CRITICAL: without this, async def test_... functions silently skip
+    # without running any code. Your tests appear green but test nothing.
+    # With @pytest.mark.anyio in [tool.pytest.ini_options], every async
+    # test function automatically becomes a real async test.
+    "pytest-asyncio>=0.23.0",
+
+    # pytest-cov: measures which lines of your code are covered by tests.
+    # Integrates with the --cov-fail-under threshold set in pytest config.
+    # Produces a terminal report showing exactly which lines are untested.
+    # CI fails if coverage drops below the threshold (80% set below).
+    "pytest-cov>=5.0.0",
+
+    # respx: mock library for httpx.
+    # When testing the GitHub agent or Jira agent, you do NOT want to make
+    # real API calls in CI. respx intercepts httpx requests and returns
+    # fake responses you define. Tests stay fast, deterministic, and offline.
+    # Example: respx.get("https://api.github.com/repos/...").mock(return_value=...)
+    "respx>=0.21.0",
+
+
+    # -------------------------------------------------------------------------
+    # CODE QUALITY
+    # -------------------------------------------------------------------------
+
+    # ruff: extremely fast Python linter and formatter (written in Rust).
+    # Replaces: flake8, isort, pyupgrade, bandit, and many flake8 plugins.
+    # Runs in milliseconds vs seconds for the tools it replaces.
+    # Rules configured in [tool.ruff.lint] section below.
     "ruff>=0.6.0",
-    "mypy>=1.11.0"
+
+    # mypy: static type checker.
+    # Reads your type hints and proves at analysis time (before runtime)
+    # that you are passing the right types everywhere.
+    # strict = true means every function must be fully typed or mypy fails.
+    # Runs in CI: if a PR introduces an untyped function, the build fails.
+    "mypy>=1.11.0",
+
+
+    # -------------------------------------------------------------------------
+    # TYPE STUBS
+    # -------------------------------------------------------------------------
+    # Third-party libraries written before type hints existed have no inline
+    # type information. Stub packages (types-*) provide that information so
+    # mypy can type-check code that calls those libraries.
+    # Without stubs, mypy reports: "Cannot find implementation or library stub"
+
+    # Type stubs for the redis library (redis-py does not bundle full stubs).
+    "types-redis>=4.6.0",
+
+    # Type stubs for the passlib library (no inline type annotations).
+    "types-passlib>=1.7.0",
 ]
 
+
+# =============================================================================
+# PACKAGE DISCOVERY
+# =============================================================================
+# Tells setuptools WHERE to look for Python packages and WHICH ones to include.
+# A "package" is any directory containing an __init__.py file.
+# =============================================================================
+
 [tool.setuptools.packages.find]
+
+# Start searching from the project root directory.
+# "." means: look in the same directory as pyproject.toml.
 where = ["."]
+
+# Only include packages whose name starts with "app".
+# This means: app/, app/agents/, app/api/, app/db/, app/core/ are all included.
+# Directories like tests/, scripts/, docs/ are excluded from the built package.
+# If you rename your main package from "app" to something else, update this.
 include = ["app*"]
 
+
+# =============================================================================
+# PYTEST CONFIGURATION
+# =============================================================================
+# Controls how pytest discovers and runs tests.
+# Replaces: pytest.ini or conftest.py-level configuration.
+# =============================================================================
+
 [tool.pytest.ini_options]
+
+# Only search for tests inside the tests/ directory.
+# Without this, pytest searches everywhere and may pick up test-like files
+# in unexpected places (vendor code, generated files, etc.).
 testpaths = ["tests"]
+
+# Add the project root to Python's sys.path before running tests.
+# This allows test files to do: from app.main import app
+# Without this, Python cannot find the app package and imports fail.
 pythonpath = ["."]
 
+# Automatically treat every async def test_... function as an async test.
+# Without this: you must decorate EVERY async test with @pytest.mark.anyio
+# Developers always forget this decorator, causing silent test skips.
+# "auto" mode means zero boilerplate for async tests.
+@pytest.mark.anyio
+
+# Default flags passed to every pytest run:
+#   --cov=app              measure coverage for the app/ package
+#   --cov-report=term-missing  show which specific lines are not covered
+#   --cov-fail-under=80    fail the build if coverage drops below 80%
+# The 80% threshold is a standard enterprise baseline.
+# This means a PR cannot merge if it introduces untested code that drops
+# overall coverage below 80%.
+addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80"
+
+
+# =============================================================================
+# RUFF — LINTER AND FORMATTER
+# =============================================================================
+# Ruff replaces: flake8 + isort + pyupgrade + pep8-naming + bandit (partially).
+# It runs in CI on every pull request. A linting failure blocks the merge.
+# =============================================================================
+
 [tool.ruff]
+
+# Maximum characters per line before ruff flags it as too long.
+# 100 is slightly more generous than the PEP 8 default of 79.
+# Chosen because modern monitors are wide and 79 forces awkward line breaks
+# in async Python with long function signatures and type hints.
 line-length = 100
+
+# Tell ruff which Python syntax rules apply.
+# "py311" enables checks that only make sense for Python 3.11+ code.
 target-version = "py311"
 
+
+[tool.ruff.lint]
+
+# Rule sets to enable. Each letter/code activates a category of checks.
+# ruff has 700+ rules. These are the ones that matter for enterprise Python.
+select = [
+    "E",    # pycodestyle: spacing, indentation, blank lines
+            # Example catch: E711 comparison to None should use 'is not None'
+
+    "F",    # pyflakes: real code errors
+            # Example catches: F401 unused import, F821 undefined variable
+
+    "I",    # isort: import ordering and grouping
+            # Enforces: stdlib → third-party → local imports, alphabetically
+            # Example catch: httpx imported before fastapi (wrong order)
+
+    "UP",   # pyupgrade: modernise old Python syntax automatically
+            # Example catches: Optional[str] → str | None, List[str] → list[str]
+
+    "B",    # flake8-bugbear: catches common bugs and poor design patterns
+            # Example catches: mutable default arguments (def f(x=[])),
+            #                  assert in production code, useless expressions
+
+    "S",    # flake8-bandit: security vulnerability detection
+            # Example catches: hardcoded passwords, use of assert for auth,
+            #                  subprocess with shell=True, MD5/SHA1 usage
+            # Critical for AgentFlow — handles real API tokens and secrets.
+
+    "ANN",  # flake8-annotations: enforces type hints on all functions
+            # Example catch: def fetch_prs(repo) with no type annotations
+            # Works alongside mypy — ruff catches missing hints, mypy verifies them
+]
+
+ignore = [
+    # ANN101: requires type annotation on 'self' parameter in class methods.
+    # This is universally considered unnecessary — 'self' is always the class.
+    # Every Python style guide ignores self annotations.
+    "ANN101",
+
+    # S101: flags use of assert statements as a security risk.
+    # assert is fine in test files — it IS the test assertion mechanism.
+    # We re-allow it per-file for tests/ below.
+    "S101",
+]
+
+
+[tool.ruff.lint.per-file-ignores]
+# For test files only: disable security (S101 = assert is fine in tests)
+# and annotation checks (ANN = test helpers don't need full type annotation strictness).
+# Production code in app/ still gets the full rule set.
+"tests/*" = ["S101", "ANN"]
+
+
+# =============================================================================
+# MYPY — STATIC TYPE CHECKER
+# =============================================================================
+# mypy analyses your type hints WITHOUT running the code.
+# It catches bugs like passing a string where an integer is expected,
+# returning None from a function declared to return a dict, etc.
+# Runs in CI on every pull request. A type error blocks the merge.
+# =============================================================================
+
 [tool.mypy]
+
+# The Python version mypy uses to resolve syntax and built-in types.
+# Must match requires-python above.
 python_version = "3.11"
+
+# strict = true enables the full set of mypy checks, equivalent to:
+#   --disallow-untyped-defs        every function needs type hints
+#   --disallow-any-generics        List not allowed, must use List[str]
+#   --warn-return-any              flag functions that return Any
+#   --no-implicit-reexport         explicit __all__ required for re-exports
+#   --strict-equality              no loose == comparisons on typed values
+# This is the correct setting for an enterprise production codebase.
 strict = true
+
+# Do not error when a third-party library has no type stubs at all.
+# Some libraries (older ones) have zero type information.
+# Without this flag, mypy fails on every import of an untyped library.
+# We install specific stubs (types-redis, types-passlib) for the libraries
+# we care about. Everything else is silenced by this flag.
 ignore_missing_imports = true
+
+# Warn when a function is declared to return a specific type but the
+# actual return value is typed as Any (the mypy escape hatch).
+# This catches: return response.json() where json() returns Any.
+# Forces you to explicitly cast: return cast(dict[str, str], response.json())
+warn_return_any = true
+
+# Warn when a # type: ignore comment is no longer needed.
+# Developers add type: ignore to suppress mypy errors temporarily.
+# This flag surfaces stale suppressions so they get cleaned up.
+warn_unused_ignores = true
+
+# Every function and method must have complete type annotations.
+# No untyped def allowed anywhere in the app/ package.
+# This is redundant with strict = true but stated explicitly for clarity.
+disallow_untyped_defs = true
