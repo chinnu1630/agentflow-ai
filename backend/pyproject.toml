@@ -323,11 +323,7 @@ testpaths = ["tests"]
 # Without this, Python cannot find the app package and imports fail.
 pythonpath = ["."]
 
-# Automatically treat every async def test_... function as an async test.
-# Without this: you must decorate EVERY async test with @pytest.mark.anyio
-# Developers always forget this decorator, causing silent test skips.
-# "auto" mode means zero boilerplate for async tests.
-@pytest.mark.anyio
+
 
 # Default flags passed to every pytest run:
 #   --cov=app              measure coverage for the app/ package

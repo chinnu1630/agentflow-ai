@@ -1,0 +1,27 @@
+cat >> .gitignore <<'EOF'
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment files
+.env
+.env.*
+!.env.example
+!env.example
+
+# Build outputs
+dist/
+build/
+coverage/
+htmlcov/
+EOF.coverage
