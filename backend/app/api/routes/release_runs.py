@@ -12,9 +12,9 @@ from app.db.session import get_db_session
 from app.integrations.github_client import GitHubClient, GitHubClientConfig
 from app.repositories.release_run_repository import ReleaseRunRepository
 from app.schemas.github import GitHubRepositoryConfig
+from app.schemas.risk import ReleaseRunRiskResponse
 from app.services.release_run_service import (
     ReleaseRunResult,
-    ReleaseRunRiskResult,
     ReleaseRunService,
     ReleaseRunServiceError,
     StartReleaseRunCommand,
@@ -153,14 +153,14 @@ async def get_release_run(
 
 @router.post(
     "/{release_run_id}/github-risks",
-    response_model=ReleaseRunRiskResult,
+    response_model=ReleaseRunRiskResponse,
 )
 async def collect_github_risks(
     release_run_id: UUID,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
     risk_collector: RiskCollector = Depends(get_risk_collector),
-) -> ReleaseRunRiskResult:
+) -> ReleaseRunRiskResponse:
     """Collect GitHub pull request risks for an existing release run."""
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
 
@@ -185,7 +185,8 @@ async def collect_github_risks(
             )
 
         await session.commit()
-        return result
+
+        return ReleaseRunRiskResponse.model_validate(result)
 
     except HTTPException:
         raise
