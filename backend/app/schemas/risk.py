@@ -36,6 +36,12 @@ class RiskCategoryResponse(StrEnum):
     DRAFT_PULL_REQUEST = "draft_pull_request"
     MISSING_JIRA_LINK = "missing_jira_link"
     CRITICAL_FILE_CHANGE = "critical_file_change"
+    OPEN_CRITICAL_BUG = "open_critical_bug"
+    BLOCKED_JIRA_ISSUE = "blocked_jira_issue"
+    RELEASE_BLOCKER_ISSUE = "release_blocker_issue"
+    UNASSIGNED_HIGH_PRIORITY_ISSUE = "unassigned_high_priority_issue"
+    DUE_SOON_ISSUE = "due_soon_issue"
+    CRITICAL_SERVICE_ISSUE = "critical_service_issue"
 
 
 class RiskCollectionStatusResponse(StrEnum):
@@ -59,7 +65,7 @@ class RiskSignalResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    source_type: Literal["github_pull_request"]
+    source_type: Literal["github_pull_request", "jira_issue"]
     source_id: str = Field(min_length=1)
     source_url: str | None = None
     rule_id: str = Field(min_length=1)
@@ -109,7 +115,7 @@ class RiskSummaryItemResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    source_type: Literal["github_pull_request"]
+    source_type: Literal["github_pull_request", "jira_issue"]
     source_id: str = Field(min_length=1)
     source_url: str | None = None
     severity: RiskSeverityResponse

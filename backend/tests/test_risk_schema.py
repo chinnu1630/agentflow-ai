@@ -16,11 +16,12 @@ from app.schemas.risk import (
     RiskSeverityResponse,
     RiskSignalResponse,
     RiskSummaryActionResponse,
+    RiskSummaryItemResponse,
 )
 
 
 def test_risk_signal_response_accepts_valid_payload() -> None:
-    """RiskSignalResponse should validate a valid risk signal payload."""
+    """RiskSignalResponse should validate a valid GitHub risk signal payload."""
     signal = RiskSignalResponse(
         source_type="github_pull_request",
         source_id="PR-42",
@@ -34,10 +35,59 @@ def test_risk_signal_response_accepts_valid_payload() -> None:
         evidence={"ci_status": "failure"},
     )
 
+    assert signal.source_type == "github_pull_request"
     assert signal.source_id == "PR-42"
     assert signal.category == RiskCategoryResponse.CI_FAILURE
     assert signal.severity == RiskSeverityResponse.HIGH
     assert signal.score == 0.85
+
+
+def test_risk_signal_response_accepts_jira_issue_payload() -> None:
+    """RiskSignalResponse should validate a Jira issue risk signal payload."""
+    signal = RiskSignalResponse(
+        source_type="jira_issue",
+        source_id="PAY-102",
+        source_url="https://jira.example.com/browse/PAY-102",
+        rule_id="jira_open_critical_bug",
+        category=RiskCategoryResponse.OPEN_CRITICAL_BUG,
+        severity=RiskSeverityResponse.HIGH,
+        score=0.9,
+        title="Open high-priority Jira bug may block release",
+        description="A P1 Jira bug is still open during release validation.",
+        evidence={
+            "issue_key": "PAY-102",
+            "priority": "p1",
+            "status": "in_progress",
+        },
+    )
+
+    assert signal.source_type == "jira_issue"
+    assert signal.source_id == "PAY-102"
+    assert signal.category == RiskCategoryResponse.OPEN_CRITICAL_BUG
+    assert signal.severity == RiskSeverityResponse.HIGH
+    assert signal.score == 0.9
+
+
+def test_risk_summary_item_response_accepts_jira_issue_source() -> None:
+    """RiskSummaryItemResponse should validate Jira issue summary items."""
+    item = RiskSummaryItemResponse(
+        source_type="jira_issue",
+        source_id="PAY-103",
+        source_url="https://jira.example.com/browse/PAY-103",
+        severity=RiskSeverityResponse.CRITICAL,
+        score=0.95,
+        title="Release blocker Jira issue is unresolved",
+        reason="The issue is explicitly marked as release blocking.",
+        evidence={
+            "issue_key": "PAY-103",
+            "is_blocking_release": True,
+        },
+    )
+
+    assert item.source_type == "jira_issue"
+    assert item.source_id == "PAY-103"
+    assert item.severity == RiskSeverityResponse.CRITICAL
+    assert item.score == 0.95
 
 
 def test_pull_request_risk_response_accepts_nested_signals() -> None:
