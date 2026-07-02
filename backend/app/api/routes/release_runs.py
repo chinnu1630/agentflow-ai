@@ -1,19 +1,70 @@
+import os
+from collections.abc import AsyncIterator
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import SecretStr
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
+from app.integrations.github_client import GitHubClient, GitHubClientConfig
 from app.repositories.release_run_repository import ReleaseRunRepository
+from app.schemas.github import GitHubRepositoryConfig
 from app.services.release_run_service import (
     ReleaseRunResult,
+    ReleaseRunRiskResult,
     ReleaseRunService,
     ReleaseRunServiceError,
     StartReleaseRunCommand,
 )
+from app.services.risk_collector import RiskCollector
 
 router = APIRouter(prefix="/release-runs", tags=["release-runs"])
+
+
+async def get_risk_collector(request: Request) -> AsyncIterator[RiskCollector]:
+    """Create a GitHub risk collector for the current request.
+
+    The collector is built from environment configuration so secrets and
+    repository settings are not hardcoded in source code.
+    """
+    request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
+
+    repository_owner = os.getenv("GITHUB_REPOSITORY_OWNER")
+    repository_name = os.getenv("GITHUB_REPOSITORY_NAME")
+    repository_default_branch = os.getenv("GITHUB_DEFAULT_BRANCH", "main")
+    github_token = os.getenv("GITHUB_TOKEN")
+
+    if not repository_owner or not repository_name:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "GitHub risk collection is not configured. "
+                "Set GITHUB_REPOSITORY_OWNER and GITHUB_REPOSITORY_NAME."
+            ),
+        )
+
+    repository_config = GitHubRepositoryConfig(
+        owner=repository_owner,
+        repo=repository_name,
+        default_branch=repository_default_branch,
+    )
+
+    github_config = GitHubClientConfig(
+        repository=repository_config,
+        token=SecretStr(github_token) if github_token else None,
+    )
+
+    async with httpx.AsyncClient() as http_client:
+        github_client = GitHubClient(
+            http_client=http_client,
+            config=github_config,
+            request_id=request_id,
+        )
+
+        yield RiskCollector(github_client=github_client)
 
 
 @router.post(
@@ -97,4 +148,58 @@ async def get_release_run(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch release run.",
+        ) from exc
+
+
+@router.post(
+    "/{release_run_id}/github-risks",
+    response_model=ReleaseRunRiskResult,
+)
+async def collect_github_risks(
+    release_run_id: UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    risk_collector: RiskCollector = Depends(get_risk_collector),
+) -> ReleaseRunRiskResult:
+    """Collect GitHub pull request risks for an existing release run."""
+    request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
+
+    repository = ReleaseRunRepository(
+        session=session,
+        request_id=request_id,
+    )
+    service = ReleaseRunService(
+        repository=repository,
+        request_id=request_id,
+        risk_collector=risk_collector,
+    )
+
+    try:
+        result = await service.collect_github_risks(release_run_id)
+
+        if result is None:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Release run not found.",
+            )
+
+        await session.commit()
+        return result
+
+    except HTTPException:
+        raise
+
+    except ReleaseRunServiceError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to collect GitHub release risks.",
+        ) from exc
+
+    except SQLAlchemyError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error while collecting GitHub release risks.",
         ) from exc

@@ -1,3 +1,7 @@
+from datetime import UTC, datetime
+
+from app.api.routes.release_runs import get_risk_collector
+from app.services.risk_collector import GitHubRiskCollectionResult, RiskCollectionStatus
 from collections.abc import AsyncIterator
 from uuid import uuid4
 
@@ -10,6 +14,26 @@ from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
 from app.models.release_run import ReleaseRun
+
+class FakeRiskCollector:
+    """Fake risk collector used to avoid real GitHub calls in API tests."""
+
+    async def collect_github_risks(
+        self,
+        *,
+        run_id: str,
+    ) -> GitHubRiskCollectionResult:
+        """Return a deterministic fake GitHub risk collection result."""
+        return GitHubRiskCollectionResult(
+            status=RiskCollectionStatus.SUCCESS,
+            pull_request_count=2,
+            risk_result_count=2,
+            total_signal_count=3,
+            high_risk_count=1,
+            risk_results=[],
+            collected_at=datetime.now(UTC),
+            duration_ms=10.5,
+        )
 
 
 @pytest.fixture
@@ -142,3 +166,63 @@ async def test_start_release_run_api_rejects_invalid_payload(
     )
 
     assert response.status_code == 422
+
+@pytest.mark.anyio
+async def test_collect_github_risks_api_returns_github_risk_summary(
+    release_run_api_client: AsyncClient,
+) -> None:
+    """POST /release-runs/{id}/github-risks should collect GitHub risks."""
+    async def override_get_risk_collector() -> FakeRiskCollector:
+        """Override GitHub collector dependency for API tests."""
+        return FakeRiskCollector()
+
+    app.dependency_overrides[get_risk_collector] = override_get_risk_collector
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    release_run_id = create_response.json()["id"]
+
+    risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/github-risks",
+    )
+
+    assert risk_response.status_code == 200
+
+    response_data = risk_response.json()
+
+    assert response_data["release_run"]["id"] == release_run_id
+    assert response_data["release_run"]["status"] == "completed"
+    assert response_data["github"]["status"] == "success"
+    assert response_data["github"]["pull_request_count"] == 2
+    assert response_data["github"]["risk_result_count"] == 2
+    assert response_data["github"]["total_signal_count"] == 3
+    assert response_data["github"]["high_risk_count"] == 1
+
+@pytest.mark.anyio
+async def test_collect_github_risks_api_returns_404_when_release_run_missing(
+    release_run_api_client: AsyncClient,
+) -> None:
+    """POST /release-runs/{id}/github-risks should return 404 if missing."""
+    async def override_get_risk_collector() -> FakeRiskCollector:
+        """Override GitHub collector dependency for API tests."""
+        return FakeRiskCollector()
+
+    app.dependency_overrides[get_risk_collector] = override_get_risk_collector
+
+    response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{uuid4()}/github-risks",
+    )
+
+    assert response.status_code == 404
+
+    response_data = response.json()
+
+    assert response_data["error"]["message"] == "Release run not found."    
