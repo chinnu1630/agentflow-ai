@@ -10,6 +10,7 @@ from app.repositories.release_run_repository import (
     ReleaseRunRepository,
     ReleaseRunRepositoryError,
 )
+from app.services.risk_collector import GitHubRiskCollectionResult
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +42,19 @@ class ReleaseRunResult(BaseModel):
     completed_at: datetime | None = None
 
 
+class ReleaseRunRiskResult(BaseModel):
+    """Service response returned after collecting release-run risks."""
+
+    release_run: ReleaseRunResult
+    github: GitHubRiskCollectionResult
+
+
 class ReleaseRunServiceError(RuntimeError):
     """Raised when release-run service operations fail."""
 
 
 class ReleaseRunRepositoryProtocol(Protocol):
-    """Repository contract required by ReleaseRunService.
-
-    This protocol lets us unit test the service with a fake repository
-    instead of a real database.
-    """
+    """Repository contract required by ReleaseRunService."""
 
     async def create(self, release_run: ReleaseRun) -> ReleaseRun:
         """Create a release run."""
@@ -69,6 +73,18 @@ class ReleaseRunRepositoryProtocol(Protocol):
         ...
 
 
+class GitHubRiskCollectorProtocol(Protocol):
+    """Collector contract required for GitHub release-risk collection."""
+
+    async def collect_github_risks(
+        self,
+        *,
+        run_id: str,
+    ) -> GitHubRiskCollectionResult:
+        """Collect GitHub risk results for a workflow run."""
+        ...
+
+
 class ReleaseRunService:
     """Business service for managing release-risk workflow runs."""
 
@@ -76,15 +92,18 @@ class ReleaseRunService:
         self,
         repository: ReleaseRunRepository | ReleaseRunRepositoryProtocol,
         request_id: str,
+        risk_collector: GitHubRiskCollectorProtocol | None = None,
     ) -> None:
         """Initialize the service.
 
         Args:
             repository: Repository used for release-run persistence.
             request_id: Request-level ID for structured logs.
+            risk_collector: Optional collector used to collect GitHub risks.
         """
         self._repository = repository
         self._request_id = request_id
+        self._risk_collector = risk_collector
 
     async def start_release_run(
         self,
@@ -167,6 +186,104 @@ class ReleaseRunService:
             )
             raise ReleaseRunServiceError(
                 "Failed to fetch release run."
+            ) from exc
+
+    async def collect_github_risks(
+        self,
+        release_run_id: UUID,
+    ) -> ReleaseRunRiskResult | None:
+        """Collect GitHub risks for an existing release run.
+
+        Args:
+            release_run_id: Release run database UUID.
+
+        Returns:
+            ReleaseRunRiskResult if release run exists, otherwise None.
+
+        Raises:
+            ReleaseRunServiceError: If risk collection cannot be completed.
+        """
+        if self._risk_collector is None:
+            logger.error(
+                "release_run_service_risk_collector_missing",
+                extra={
+                    "request_id": self._request_id,
+                    "release_run_id": str(release_run_id),
+                },
+            )
+            raise ReleaseRunServiceError(
+                "Risk collector is not configured for this service."
+            )
+
+        try:
+            release_run = await self._repository.get_by_id(release_run_id)
+
+            if release_run is None:
+                return None
+
+            logger.info(
+                "release_run_service_github_risk_collection_started",
+                extra={
+                    "request_id": self._request_id,
+                    "release_run_id": str(release_run.id),
+                    "workflow_run_id": release_run.run_id,
+                },
+            )
+
+            await self._repository.update_status(
+                release_run_id=release_run_id,
+                status="running",
+            )
+
+            github_result = await self._risk_collector.collect_github_risks(
+                run_id=release_run.run_id,
+            )
+
+            completed_release_run = await self._repository.update_status(
+                release_run_id=release_run_id,
+                status="completed",
+            )
+
+            if completed_release_run is None:
+                logger.error(
+                    "release_run_service_completion_missing",
+                    extra={
+                        "request_id": self._request_id,
+                        "release_run_id": str(release_run_id),
+                    },
+                )
+                raise ReleaseRunServiceError(
+                    "Release run disappeared while completing risk collection."
+                )
+
+            logger.info(
+                "release_run_service_github_risk_collection_completed",
+                extra={
+                    "request_id": self._request_id,
+                    "release_run_id": str(completed_release_run.id),
+                    "workflow_run_id": completed_release_run.run_id,
+                    "github_status": github_result.status.value,
+                    "pull_request_count": github_result.pull_request_count,
+                    "total_signal_count": github_result.total_signal_count,
+                    "high_risk_count": github_result.high_risk_count,
+                },
+            )
+
+            return ReleaseRunRiskResult(
+                release_run=self._to_result(completed_release_run),
+                github=github_result,
+            )
+
+        except ReleaseRunRepositoryError as exc:
+            logger.exception(
+                "release_run_service_github_risk_collection_failed",
+                extra={
+                    "request_id": self._request_id,
+                    "release_run_id": str(release_run_id),
+                },
+            )
+            raise ReleaseRunServiceError(
+                "Failed to collect GitHub release risks."
             ) from exc
 
     async def mark_running(self, release_run_id: UUID) -> ReleaseRunResult | None:
