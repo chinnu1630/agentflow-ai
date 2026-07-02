@@ -109,6 +109,26 @@ class GitHubRiskCollectionResponse(BaseModel):
     collected_at: datetime
     duration_ms: float = Field(ge=0.0)
 
+class JiraIssueRiskResponse(BaseModel):
+    """API response model for one Jira issue risk evaluation."""
+
+    issue_key: str
+    title: str
+    issue_url: str | None = None
+    signals: list[RiskSignalResponse] = Field(default_factory=list)
+
+
+class JiraRiskCollectionResponse(BaseModel):
+    """API response model for Jira risk collection results."""
+
+    status: RiskCollectionStatusResponse
+    total_issues_analyzed: int = Field(ge=0)
+    total_signals: int = Field(ge=0)
+    issues: list[JiraIssueRiskResponse] = Field(default_factory=list)
+    signals: list[RiskSignalResponse] = Field(default_factory=list)
+    error_message: str | None = None
+    duration_ms: float = Field(ge=0)
+
 
 class RiskSummaryItemResponse(BaseModel):
     """API response schema for one prioritized risk summary item."""
@@ -165,3 +185,4 @@ class ReleaseRunRiskResponse(BaseModel):
     release_run: ReleaseRunSummaryResponse
     github: GitHubRiskCollectionResponse
     github_summary: GitHubRiskSummaryResponse
+    jira: JiraRiskCollectionResponse
