@@ -1,3 +1,7 @@
+"""Integration tests for release run API routes."""
+
+from __future__ import annotations
+
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -7,15 +11,19 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.api.routes.release_runs import get_risk_collector
+from app.api.routes.release_runs import get_jira_risk_collector, get_risk_collector
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
+from app.services.jira_risk_collector import (
+    JiraRiskCollectionResult,
+    JiraRiskCollectionStatus,
+)
 from app.services.risk_collector import GitHubRiskCollectionResult, RiskCollectionStatus
 
 
 class FakeRiskCollector:
-    """Fake risk collector used to avoid real GitHub calls in API tests."""
+    """Fake GitHub risk collector used to avoid real GitHub API calls."""
 
     async def collect_github_risks(
         self,
@@ -23,6 +31,7 @@ class FakeRiskCollector:
         run_id: str,
     ) -> GitHubRiskCollectionResult:
         """Return a deterministic fake GitHub risk collection result."""
+
         return GitHubRiskCollectionResult(
             status=RiskCollectionStatus.SUCCESS,
             pull_request_count=2,
@@ -35,9 +44,26 @@ class FakeRiskCollector:
         )
 
 
+class FakeJiraRiskCollector:
+    """Fake Jira risk collector used to avoid real Jira API calls."""
+
+    async def collect(self, *, run_id: str) -> JiraRiskCollectionResult:
+        """Return an empty successful Jira risk collection result."""
+
+        return JiraRiskCollectionResult(
+            status=JiraRiskCollectionStatus.SUCCESS,
+            issues=[],
+            issue_results=[],
+            signals=[],
+            error_message=None,
+            duration_ms=0.0,
+        )
+
+
 @pytest.fixture
 async def release_run_api_client() -> AsyncIterator[AsyncClient]:
-    """Create an API client with an isolated test database."""
+    """Create an API client with an isolated in-memory test database."""
+
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         echo=False,
@@ -56,6 +82,7 @@ async def release_run_api_client() -> AsyncIterator[AsyncClient]:
 
     async def override_get_db_session() -> AsyncIterator[AsyncSession]:
         """Override FastAPI database dependency for tests."""
+
         async with session_factory() as session:
             try:
                 yield session
@@ -83,6 +110,7 @@ async def test_start_release_run_api_creates_release_run(
     release_run_api_client: AsyncClient,
 ) -> None:
     """POST /release-runs should create a release run."""
+
     response = await release_run_api_client.post(
         "/api/v1/release-runs",
         json={
@@ -108,6 +136,7 @@ async def test_get_release_run_api_returns_created_release_run(
     release_run_api_client: AsyncClient,
 ) -> None:
     """GET /release-runs/{id} should return an existing release run."""
+
     create_response = await release_run_api_client.post(
         "/api/v1/release-runs",
         json={
@@ -140,6 +169,7 @@ async def test_get_release_run_api_returns_404_when_missing(
     release_run_api_client: AsyncClient,
 ) -> None:
     """GET /release-runs/{id} should return 404 for a missing release run."""
+
     response = await release_run_api_client.get(
         f"/api/v1/release-runs/{uuid4()}",
     )
@@ -156,6 +186,7 @@ async def test_start_release_run_api_rejects_invalid_payload(
     release_run_api_client: AsyncClient,
 ) -> None:
     """POST /release-runs should reject invalid request payload."""
+
     response = await release_run_api_client.post(
         "/api/v1/release-runs",
         json={
@@ -171,13 +202,20 @@ async def test_start_release_run_api_rejects_invalid_payload(
 async def test_collect_github_risks_api_returns_github_risk_summary(
     release_run_api_client: AsyncClient,
 ) -> None:
-    """POST /release-runs/{id}/github-risks should collect GitHub risks."""
+    """POST /release-runs/{id}/github-risks should collect GitHub and Jira risks."""
 
     async def override_get_risk_collector() -> FakeRiskCollector:
         """Override GitHub collector dependency for API tests."""
+
         return FakeRiskCollector()
 
+    async def override_get_jira_risk_collector() -> FakeJiraRiskCollector:
+        """Override Jira collector dependency for API tests."""
+
+        return FakeJiraRiskCollector()
+
     app.dependency_overrides[get_risk_collector] = override_get_risk_collector
+    app.dependency_overrides[get_jira_risk_collector] = override_get_jira_risk_collector
 
     create_response = await release_run_api_client.post(
         "/api/v1/release-runs",
@@ -201,6 +239,7 @@ async def test_collect_github_risks_api_returns_github_risk_summary(
 
     assert response_data["release_run"]["id"] == release_run_id
     assert response_data["release_run"]["status"] == "completed"
+
     assert response_data["github"]["source"] == "github"
     assert response_data["github"]["status"] == "success"
     assert response_data["github"]["pull_request_count"] == 2
@@ -226,6 +265,12 @@ async def test_collect_github_risks_api_returns_github_risk_summary(
     assert isinstance(response_data["github_summary"]["summary_text"], str)
     assert response_data["github_summary"]["summary_text"]
 
+    assert response_data["jira"]["status"] == "success"
+    assert response_data["jira"]["total_issues_analyzed"] == 0
+    assert response_data["jira"]["total_signals"] == 0
+    assert response_data["jira"]["issues"] == []
+    assert response_data["jira"]["signals"] == []
+
 
 @pytest.mark.anyio
 async def test_collect_github_risks_api_returns_404_when_release_run_missing(
@@ -235,9 +280,16 @@ async def test_collect_github_risks_api_returns_404_when_release_run_missing(
 
     async def override_get_risk_collector() -> FakeRiskCollector:
         """Override GitHub collector dependency for API tests."""
+
         return FakeRiskCollector()
 
+    async def override_get_jira_risk_collector() -> FakeJiraRiskCollector:
+        """Override Jira collector dependency for API tests."""
+
+        return FakeJiraRiskCollector()
+
     app.dependency_overrides[get_risk_collector] = override_get_risk_collector
+    app.dependency_overrides[get_jira_risk_collector] = override_get_jira_risk_collector
 
     response = await release_run_api_client.post(
         f"/api/v1/release-runs/{uuid4()}/github-risks",

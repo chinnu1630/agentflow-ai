@@ -8,6 +8,7 @@ from uuid import uuid4
 from app.schemas.risk import (
     GitHubRiskCollectionResponse,
     GitHubRiskSummaryResponse,
+    JiraRiskCollectionResponse,
     PullRequestRiskResponse,
     ReleaseRunRiskResponse,
     ReleaseRunSummaryResponse,
@@ -122,7 +123,7 @@ def test_pull_request_risk_response_accepts_nested_signals() -> None:
 
 
 def test_release_run_risk_response_accepts_nested_github_result() -> None:
-    """ReleaseRunRiskResponse should validate release run, GitHub risk data, and summary."""
+    """ReleaseRunRiskResponse should validate release run, GitHub, Jira, and summary."""
     release_run = ReleaseRunSummaryResponse(
         id=uuid4(),
         run_id="release-run-test123",
@@ -159,10 +160,21 @@ def test_release_run_risk_response_accepts_nested_github_result() -> None:
         generated_at=datetime.now(UTC),
     )
 
+    jira = JiraRiskCollectionResponse(
+        status=RiskCollectionStatusResponse.SUCCESS,
+        total_issues_analyzed=0,
+        total_signals=0,
+        issues=[],
+        signals=[],
+        error_message=None,
+        duration_ms=0.0,
+    )
+
     response = ReleaseRunRiskResponse(
         release_run=release_run,
         github=github,
         github_summary=github_summary,
+        jira=jira,
     )
 
     assert response.release_run.status == "completed"
@@ -175,4 +187,7 @@ def test_release_run_risk_response_accepts_nested_github_result() -> None:
         response.github_summary.recommended_action
         == RiskSummaryActionResponse.REVIEW_REQUIRED
     )
-    assert response.github_summary.summary_text
+    assert response.github_summary.summary_text == "GitHub analysis found 3 risk signals."
+    assert response.jira.status == RiskCollectionStatusResponse.SUCCESS
+    assert response.jira.total_issues_analyzed == 0
+    assert response.jira.total_signals == 0
