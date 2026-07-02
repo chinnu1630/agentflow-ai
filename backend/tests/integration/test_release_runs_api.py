@@ -1,8 +1,5 @@
-from datetime import UTC, datetime
-
-from app.api.routes.release_runs import get_risk_collector
-from app.services.risk_collector import GitHubRiskCollectionResult, RiskCollectionStatus
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -10,10 +7,12 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.api.routes.release_runs import get_risk_collector
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
-from app.models.release_run import ReleaseRun
+from app.services.risk_collector import GitHubRiskCollectionResult, RiskCollectionStatus
+
 
 class FakeRiskCollector:
     """Fake risk collector used to avoid real GitHub calls in API tests."""
@@ -167,11 +166,13 @@ async def test_start_release_run_api_rejects_invalid_payload(
 
     assert response.status_code == 422
 
+
 @pytest.mark.anyio
 async def test_collect_github_risks_api_returns_github_risk_summary(
     release_run_api_client: AsyncClient,
 ) -> None:
     """POST /release-runs/{id}/github-risks should collect GitHub risks."""
+
     async def override_get_risk_collector() -> FakeRiskCollector:
         """Override GitHub collector dependency for API tests."""
         return FakeRiskCollector()
@@ -200,17 +201,20 @@ async def test_collect_github_risks_api_returns_github_risk_summary(
 
     assert response_data["release_run"]["id"] == release_run_id
     assert response_data["release_run"]["status"] == "completed"
+    assert response_data["github"]["source"] == "github"
     assert response_data["github"]["status"] == "success"
     assert response_data["github"]["pull_request_count"] == 2
     assert response_data["github"]["risk_result_count"] == 2
     assert response_data["github"]["total_signal_count"] == 3
     assert response_data["github"]["high_risk_count"] == 1
 
+
 @pytest.mark.anyio
 async def test_collect_github_risks_api_returns_404_when_release_run_missing(
     release_run_api_client: AsyncClient,
 ) -> None:
     """POST /release-runs/{id}/github-risks should return 404 if missing."""
+
     async def override_get_risk_collector() -> FakeRiskCollector:
         """Override GitHub collector dependency for API tests."""
         return FakeRiskCollector()
@@ -225,4 +229,4 @@ async def test_collect_github_risks_api_returns_404_when_release_run_missing(
 
     response_data = response.json()
 
-    assert response_data["error"]["message"] == "Release run not found."    
+    assert response_data["error"]["message"] == "Release run not found."
