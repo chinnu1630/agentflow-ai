@@ -208,6 +208,24 @@ async def test_collect_github_risks_api_returns_github_risk_summary(
     assert response_data["github"]["total_signal_count"] == 3
     assert response_data["github"]["high_risk_count"] == 1
 
+    assert response_data["github_summary"]["source"] == "github"
+    assert response_data["github_summary"]["collection_status"] == "success"
+    assert response_data["github_summary"]["overall_severity"] in {
+        "low",
+        "medium",
+        "high",
+        "critical",
+    }
+    assert response_data["github_summary"]["recommended_action"] in {
+        "proceed",
+        "review_required",
+        "block_release",
+        "partial_data_review",
+    }
+    assert isinstance(response_data["github_summary"]["top_risks"], list)
+    assert isinstance(response_data["github_summary"]["summary_text"], str)
+    assert response_data["github_summary"]["summary_text"]
+
 
 @pytest.mark.anyio
 async def test_collect_github_risks_api_returns_404_when_release_run_missing(
