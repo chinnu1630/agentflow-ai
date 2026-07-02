@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from app.schemas.risk import (
     GitHubRiskCollectionResponse,
+    GitHubRiskSummaryResponse,
     PullRequestRiskResponse,
     ReleaseRunRiskResponse,
     ReleaseRunSummaryResponse,
@@ -14,6 +15,7 @@ from app.schemas.risk import (
     RiskCollectionStatusResponse,
     RiskSeverityResponse,
     RiskSignalResponse,
+    RiskSummaryActionResponse,
 )
 
 
@@ -70,7 +72,7 @@ def test_pull_request_risk_response_accepts_nested_signals() -> None:
 
 
 def test_release_run_risk_response_accepts_nested_github_result() -> None:
-    """ReleaseRunRiskResponse should validate release run and GitHub risk data."""
+    """ReleaseRunRiskResponse should validate release run, GitHub risk data, and summary."""
     release_run = ReleaseRunSummaryResponse(
         id=uuid4(),
         run_id="release-run-test123",
@@ -93,11 +95,34 @@ def test_release_run_risk_response_accepts_nested_github_result() -> None:
         duration_ms=12.5,
     )
 
+    github_summary = GitHubRiskSummaryResponse(
+        source="github",
+        collection_status=RiskCollectionStatusResponse.SUCCESS,
+        overall_severity=RiskSeverityResponse.HIGH,
+        recommended_action=RiskSummaryActionResponse.REVIEW_REQUIRED,
+        pull_request_count=2,
+        risky_pull_request_count=1,
+        total_signal_count=3,
+        high_risk_count=1,
+        top_risks=[],
+        summary_text="GitHub analysis found 3 risk signals.",
+        generated_at=datetime.now(UTC),
+    )
+
     response = ReleaseRunRiskResponse(
         release_run=release_run,
         github=github,
+        github_summary=github_summary,
     )
 
     assert response.release_run.status == "completed"
     assert response.github.status == RiskCollectionStatusResponse.SUCCESS
     assert response.github.high_risk_count == 1
+    assert response.github_summary.source == "github"
+    assert response.github_summary.collection_status == RiskCollectionStatusResponse.SUCCESS
+    assert response.github_summary.overall_severity == RiskSeverityResponse.HIGH
+    assert (
+        response.github_summary.recommended_action
+        == RiskSummaryActionResponse.REVIEW_REQUIRED
+    )
+    assert response.github_summary.summary_text

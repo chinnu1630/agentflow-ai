@@ -45,6 +45,15 @@ class RiskCollectionStatusResponse(StrEnum):
     DEGRADED = "degraded"
 
 
+class RiskSummaryActionResponse(StrEnum):
+    """API recommended action from deterministic risk summary."""
+
+    PROCEED = "proceed"
+    REVIEW_REQUIRED = "review_required"
+    BLOCK_RELEASE = "block_release"
+    PARTIAL_DATA_REVIEW = "partial_data_review"
+
+
 class RiskSignalResponse(BaseModel):
     """API response schema for one explainable risk signal."""
 
@@ -95,6 +104,39 @@ class GitHubRiskCollectionResponse(BaseModel):
     duration_ms: float = Field(ge=0.0)
 
 
+class RiskSummaryItemResponse(BaseModel):
+    """API response schema for one prioritized risk summary item."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    source_type: Literal["github_pull_request"]
+    source_id: str = Field(min_length=1)
+    source_url: str | None = None
+    severity: RiskSeverityResponse
+    score: float = Field(ge=0.0, le=1.0)
+    title: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    evidence: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+class GitHubRiskSummaryResponse(BaseModel):
+    """API response schema for deterministic GitHub risk summary."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    source: Literal["github"]
+    collection_status: RiskCollectionStatusResponse
+    overall_severity: RiskSeverityResponse
+    recommended_action: RiskSummaryActionResponse
+    pull_request_count: int = Field(ge=0)
+    risky_pull_request_count: int = Field(ge=0)
+    total_signal_count: int = Field(ge=0)
+    high_risk_count: int = Field(ge=0)
+    top_risks: list[RiskSummaryItemResponse] = Field(default_factory=list)
+    summary_text: str = Field(min_length=1)
+    generated_at: datetime
+
+
 class ReleaseRunSummaryResponse(BaseModel):
     """API response schema for release-run metadata inside risk responses."""
 
@@ -116,3 +158,4 @@ class ReleaseRunRiskResponse(BaseModel):
 
     release_run: ReleaseRunSummaryResponse
     github: GitHubRiskCollectionResponse
+    github_summary: GitHubRiskSummaryResponse

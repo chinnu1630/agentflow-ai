@@ -11,6 +11,7 @@ from app.repositories.release_run_repository import (
     ReleaseRunRepositoryError,
 )
 from app.services.risk_collector import GitHubRiskCollectionResult
+from app.services.risk_summary import GitHubRiskSummary, RiskSummaryGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class ReleaseRunRiskResult(BaseModel):
 
     release_run: ReleaseRunResult
     github: GitHubRiskCollectionResult
+    github_summary: GitHubRiskSummary
 
 
 class ReleaseRunServiceError(RuntimeError):
@@ -93,6 +95,7 @@ class ReleaseRunService:
         repository: ReleaseRunRepository | ReleaseRunRepositoryProtocol,
         request_id: str,
         risk_collector: GitHubRiskCollectorProtocol | None = None,
+        risk_summary_generator: RiskSummaryGenerator | None = None,
     ) -> None:
         """Initialize the service.
 
@@ -100,10 +103,12 @@ class ReleaseRunService:
             repository: Repository used for release-run persistence.
             request_id: Request-level ID for structured logs.
             risk_collector: Optional collector used to collect GitHub risks.
+            risk_summary_generator: Optional generator used to summarize risks.
         """
         self._repository = repository
         self._request_id = request_id
         self._risk_collector = risk_collector
+        self._risk_summary_generator = risk_summary_generator or RiskSummaryGenerator()
 
     async def start_release_run(
         self,
@@ -192,7 +197,7 @@ class ReleaseRunService:
         self,
         release_run_id: UUID,
     ) -> ReleaseRunRiskResult | None:
-        """Collect GitHub risks for an existing release run.
+        """Collect and summarize GitHub risks for an existing release run.
 
         Args:
             release_run_id: Release run database UUID.
@@ -239,6 +244,11 @@ class ReleaseRunService:
                 run_id=release_run.run_id,
             )
 
+            github_summary = self._risk_summary_generator.summarize_github_risks(
+                github_result,
+                run_id=release_run.run_id,
+            )
+
             completed_release_run = await self._repository.update_status(
                 release_run_id=release_run_id,
                 status="completed",
@@ -266,12 +276,15 @@ class ReleaseRunService:
                     "pull_request_count": github_result.pull_request_count,
                     "total_signal_count": github_result.total_signal_count,
                     "high_risk_count": github_result.high_risk_count,
+                    "overall_severity": github_summary.overall_severity.value,
+                    "recommended_action": github_summary.recommended_action.value,
                 },
             )
 
             return ReleaseRunRiskResult(
                 release_run=self._to_result(completed_release_run),
                 github=github_result,
+                github_summary=github_summary,
             )
 
         except ReleaseRunRepositoryError as exc:
