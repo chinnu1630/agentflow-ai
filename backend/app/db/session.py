@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from functools import lru_cache
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
@@ -11,7 +12,6 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 
@@ -50,6 +50,13 @@ def get_database_engine(settings: Settings | None = None) -> AsyncEngine:
     return create_database_engine(resolved_settings.database_url)
 
 
+@lru_cache(maxsize=1)
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Create and cache the application database session factory."""
+    engine = get_database_engine()
+    return create_session_factory(engine)
+
+
 @asynccontextmanager
 async def database_session_scope(
     session_factory: async_sessionmaker[AsyncSession],
@@ -61,6 +68,25 @@ async def database_session_scope(
         except SQLAlchemyError:
             await session.rollback()
             logger.exception("database_session_rollback")
+            raise
+        finally:
+            await session.close()
+
+
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """FastAPI dependency that provides an async database session.
+
+    The route or service layer should decide when to commit because
+    AgentFlow workflows may contain multiple database operations.
+    """
+    session_factory = get_session_factory()
+
+    async with session_factory() as session:
+        try:
+            yield session
+        except SQLAlchemyError:
+            await session.rollback()
+            logger.exception("database_session_dependency_rollback")
             raise
         finally:
             await session.close()

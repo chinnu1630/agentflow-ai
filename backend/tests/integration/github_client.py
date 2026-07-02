@@ -45,7 +45,13 @@ class GitHubClient:
         config: GitHubClientConfig,
         request_id: str,
     ) -> None:
-        """Initialize the GitHub client."""
+        """Initialize the GitHub client.
+
+        Args:
+            http_client: Async HTTP client used to call GitHub.
+            config: GitHub client configuration.
+            request_id: Request-level ID used for structured logs.
+        """
         self._http_client = http_client
         self._config = config
         self._request_id = request_id
