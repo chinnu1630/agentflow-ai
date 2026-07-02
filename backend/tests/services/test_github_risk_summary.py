@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.services.risk_collector import (
+from app.services.github_risk_collector import (
     GitHubRiskCollectionResult,
     RiskCollectionStatus,
 )
-from app.services.risk_rules import (
+from app.services.github_risk_rules import (
     PullRequestRiskResult,
     RiskCategory,
     RiskSeverity,
     RiskSignal,
 )
-from app.services.risk_summary import (
+from app.services.github_risk_summary import (
     RiskSummaryAction,
     RiskSummaryGenerator,
 )

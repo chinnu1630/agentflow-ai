@@ -21,7 +21,7 @@ from app.core.logging import get_logger
 from app.integrations.jira_client import JiraClient, JiraClientError
 from app.schemas.jira import JiraIssue
 from app.services.jira_risk_rules import JiraIssueRiskResult, JiraRiskRuleEngine
-from app.services.risk_rules import RiskSignal
+from app.services.github_risk_rules import RiskSignal
 
 logger = get_logger(__name__)
 

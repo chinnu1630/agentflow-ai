@@ -14,11 +14,11 @@ from typing import Literal, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.services.risk_collector import (
+from app.services.github_risk_collector import (
     GitHubRiskCollectionResult,
     RiskCollectionStatus,
 )
-from app.services.risk_rules import RiskSeverity, RiskSignal
+from app.services.github_risk_rules import RiskSeverity, RiskSignal
 
 logger = logging.getLogger(__name__)
 

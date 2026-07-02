@@ -12,7 +12,7 @@ from app.schemas.github import (
     GitHubPullRequestState,
     GitHubReviewState,
 )
-from app.services.risk_rules import RiskCategory, RiskRuleEngine, RiskSeverity
+from app.services.github_risk_rules import RiskCategory, RiskRuleEngine, RiskSeverity
 
 
 def _enum_member(enum_type: type[Enum], *candidates: str) -> Enum:

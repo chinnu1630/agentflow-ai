@@ -31,7 +31,7 @@ from app.services.release_run_service import (
     ReleaseRunServiceError,
     StartReleaseRunCommand,
 )
-from app.services.risk_collector import RiskCollector
+from app.services.github_risk_collector import RiskCollector
 
 router = APIRouter(prefix="/release-runs", tags=["release-runs"])
 

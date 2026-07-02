@@ -19,7 +19,7 @@ from app.services.jira_risk_collector import (
     JiraRiskCollectionResult,
     JiraRiskCollectionStatus,
 )
-from app.services.risk_collector import GitHubRiskCollectionResult, RiskCollectionStatus
+from app.services.github_risk_collector import GitHubRiskCollectionResult, RiskCollectionStatus
 
 
 class FakeRiskCollector:

@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 from typing import Sequence
 
 from app.schemas.github import GitHubPullRequest
-from app.services.risk_collector import RiskCollectionStatus, RiskCollector
-from app.services.risk_rules import (
+from app.services.github_risk_collector import RiskCollectionStatus, RiskCollector
+from app.services.github_risk_rules import (
     PullRequestRiskResult,
     RiskCategory,
     RiskSeverity,

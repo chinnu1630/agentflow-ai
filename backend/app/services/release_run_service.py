@@ -29,8 +29,8 @@ from app.schemas.risk import (
     RiskSignalResponse,
 )
 from app.services.jira_risk_collector import JiraRiskCollectionResult
-from app.services.risk_collector import GitHubRiskCollectionResult
-from app.services.risk_summary import GitHubRiskSummary, RiskSummaryGenerator
+from app.services.github_risk_collector import GitHubRiskCollectionResult
+from app.services.github_risk_summary import GitHubRiskSummary, RiskSummaryGenerator
 
 logger = logging.getLogger(__name__)
 

@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.integrations.github_client import GitHubClientError
 from app.schemas.github import GitHubPullRequest
-from app.services.risk_rules import (
+from app.services.github_risk_rules import (
     PullRequestRiskResult,
     RiskRuleEngine,
     RiskSeverity,
