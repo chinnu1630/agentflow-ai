@@ -44,6 +44,13 @@ class RiskCategory(StrEnum):
     MISSING_JIRA_LINK = "missing_jira_link"
     CRITICAL_FILE_CHANGE = "critical_file_change"
 
+    OPEN_CRITICAL_BUG = "open_critical_bug"
+    BLOCKED_JIRA_ISSUE = "blocked_jira_issue"
+    RELEASE_BLOCKER_ISSUE = "release_blocker_issue"
+    UNASSIGNED_HIGH_PRIORITY_ISSUE = "unassigned_high_priority_issue"
+    DUE_SOON_ISSUE = "due_soon_issue"
+    CRITICAL_SERVICE_ISSUE = "critical_service_issue"
+
 
 class RiskRuleEngineConfig(BaseModel):
     """Configuration thresholds for GitHub pull request risk rules."""
@@ -66,11 +73,11 @@ class RiskRuleEngineConfig(BaseModel):
 
 
 class RiskSignal(BaseModel):
-    """Single explainable risk signal generated from a pull request."""
+    """Single explainable risk signal generated from a release-risk source."""
 
     model_config = ConfigDict(frozen=True)
 
-    source_type: Literal["github_pull_request"] = "github_pull_request"
+    source_type: Literal["github_pull_request", "jira_issue"] = "github_pull_request"
     source_id: str = Field(min_length=1)
     source_url: str | None = None
     rule_id: str = Field(min_length=1)
