@@ -28,9 +28,13 @@ from app.schemas.risk import (
     RiskCollectionStatusResponse,
     RiskSignalResponse,
 )
-from app.services.jira_risk_collector import JiraRiskCollectionResult
 from app.services.github_risk_collector import GitHubRiskCollectionResult
 from app.services.github_risk_summary import GitHubRiskSummary, RiskSummaryGenerator
+from app.services.jira_risk_collector import (
+    JiraRiskCollectionResult,
+    JiraRiskCollectionStatus,
+)
+from app.services.jira_risk_summary import JiraRiskSummary, JiraRiskSummaryGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,7 @@ class ReleaseRunRiskResult(BaseModel):
     github: GitHubRiskCollectionResult
     github_summary: GitHubRiskSummary
     jira: JiraRiskCollectionResponse
+    jira_summary: JiraRiskSummary
 
 
 class ReleaseRunServiceError(RuntimeError):
@@ -134,6 +139,7 @@ class ReleaseRunService:
         risk_collector: GitHubRiskCollectorProtocol | None = None,
         jira_risk_collector: JiraRiskCollectorProtocol | None = None,
         risk_summary_generator: RiskSummaryGenerator | None = None,
+        jira_risk_summary_generator: JiraRiskSummaryGenerator | None = None,
     ) -> None:
         """Initialize the service.
 
@@ -143,6 +149,7 @@ class ReleaseRunService:
             risk_collector: Optional collector used to collect GitHub risks.
             jira_risk_collector: Optional collector used to collect Jira risks.
             risk_summary_generator: Optional generator used to summarize GitHub risks.
+            jira_risk_summary_generator: Optional generator used to summarize Jira risks.
         """
 
         self._repository = repository
@@ -150,6 +157,9 @@ class ReleaseRunService:
         self._risk_collector = risk_collector
         self._jira_risk_collector = jira_risk_collector
         self._risk_summary_generator = risk_summary_generator or RiskSummaryGenerator()
+        self._jira_risk_summary_generator = (
+            jira_risk_summary_generator or JiraRiskSummaryGenerator()
+        )
 
     async def start_release_run(
         self,
@@ -293,7 +303,11 @@ class ReleaseRunService:
                 run_id=release_run.run_id,
             )
 
-            jira_response = await self._collect_jira_risks(
+            jira_result, jira_response = await self._collect_jira_risks(
+                run_id=release_run.run_id,
+            )
+            jira_summary = self._jira_risk_summary_generator.summarize_jira_risks(
+                jira_result,
                 run_id=release_run.run_id,
             )
 
@@ -329,6 +343,8 @@ class ReleaseRunService:
                     "jira_status": jira_response.status.value,
                     "jira_total_issues_analyzed": jira_response.total_issues_analyzed,
                     "jira_total_signals": jira_response.total_signals,
+                    "jira_overall_severity": jira_summary.overall_severity.value,
+                    "jira_recommended_action": jira_summary.recommended_action.value,
                 },
             )
 
@@ -337,6 +353,7 @@ class ReleaseRunService:
                 github=github_result,
                 github_summary=github_summary,
                 jira=jira_response,
+                jira_summary=jira_summary,
             )
 
         except ReleaseRunRepositoryError as exc:
@@ -419,14 +436,14 @@ class ReleaseRunService:
         self,
         *,
         run_id: str,
-    ) -> JiraRiskCollectionResponse:
+    ) -> tuple[JiraRiskCollectionResult, JiraRiskCollectionResponse]:
         """Collect Jira risks or return an empty response when Jira is not configured.
 
         Args:
             run_id: Workflow run ID used for audit logs and risk traceability.
 
         Returns:
-            API-safe Jira risk collection response.
+            Raw Jira risk collection result and API-safe Jira risk collection response.
         """
 
         if self._jira_risk_collector is None:
@@ -437,10 +454,11 @@ class ReleaseRunService:
                     "workflow_run_id": run_id,
                 },
             )
-            return self._build_empty_jira_response()
+            jira_result = self._build_empty_jira_result()
+            return jira_result, self._to_jira_response(jira_result)
 
         jira_result = await self._jira_risk_collector.collect(run_id=run_id)
-        return self._to_jira_response(jira_result)
+        return jira_result, self._to_jira_response(jira_result)
 
     @staticmethod
     def _to_jira_response(
@@ -485,18 +503,17 @@ class ReleaseRunService:
         )
 
     @staticmethod
-    def _build_empty_jira_response() -> JiraRiskCollectionResponse:
-        """Build an empty Jira risk response.
+    def _build_empty_jira_result() -> JiraRiskCollectionResult:
+        """Build an empty Jira risk result.
 
         This keeps the release-risk API contract stable when Jira collection is
         not configured in a test or local development path.
         """
 
-        return JiraRiskCollectionResponse(
-            status=RiskCollectionStatusResponse.SUCCESS,
-            total_issues_analyzed=0,
-            total_signals=0,
+        return JiraRiskCollectionResult(
+            status=JiraRiskCollectionStatus.SUCCESS,
             issues=[],
+            issue_results=[],
             signals=[],
             error_message=None,
             duration_ms=0.0,

@@ -9,6 +9,7 @@ from app.schemas.risk import (
     GitHubRiskCollectionResponse,
     GitHubRiskSummaryResponse,
     JiraRiskCollectionResponse,
+    JiraRiskSummaryResponse,
     PullRequestRiskResponse,
     ReleaseRunRiskResponse,
     ReleaseRunSummaryResponse,
@@ -122,8 +123,8 @@ def test_pull_request_risk_response_accepts_nested_signals() -> None:
     assert len(result.signals) == 1
 
 
-def test_release_run_risk_response_accepts_nested_github_result() -> None:
-    """ReleaseRunRiskResponse should validate release run, GitHub, Jira, and summary."""
+def test_release_run_risk_response_accepts_nested_github_and_jira_result() -> None:
+    """ReleaseRunRiskResponse should validate release run, GitHub, Jira, and summaries."""
     release_run = ReleaseRunSummaryResponse(
         id=uuid4(),
         run_id="release-run-test123",
@@ -170,16 +171,33 @@ def test_release_run_risk_response_accepts_nested_github_result() -> None:
         duration_ms=0.0,
     )
 
+    jira_summary = JiraRiskSummaryResponse(
+        source="jira",
+        collection_status=RiskCollectionStatusResponse.SUCCESS,
+        overall_severity=RiskSeverityResponse.LOW,
+        recommended_action=RiskSummaryActionResponse.PROCEED,
+        issue_count=0,
+        risky_issue_count=0,
+        total_signal_count=0,
+        high_risk_count=0,
+        top_risks=[],
+        summary_text="Jira analysis found no open issues to review.",
+        generated_at=datetime.now(UTC),
+    )
+
     response = ReleaseRunRiskResponse(
         release_run=release_run,
         github=github,
         github_summary=github_summary,
         jira=jira,
+        jira_summary=jira_summary,
     )
 
     assert response.release_run.status == "completed"
+
     assert response.github.status == RiskCollectionStatusResponse.SUCCESS
     assert response.github.high_risk_count == 1
+
     assert response.github_summary.source == "github"
     assert response.github_summary.collection_status == RiskCollectionStatusResponse.SUCCESS
     assert response.github_summary.overall_severity == RiskSeverityResponse.HIGH
@@ -188,6 +206,17 @@ def test_release_run_risk_response_accepts_nested_github_result() -> None:
         == RiskSummaryActionResponse.REVIEW_REQUIRED
     )
     assert response.github_summary.summary_text == "GitHub analysis found 3 risk signals."
+
     assert response.jira.status == RiskCollectionStatusResponse.SUCCESS
     assert response.jira.total_issues_analyzed == 0
     assert response.jira.total_signals == 0
+
+    assert response.jira_summary.source == "jira"
+    assert response.jira_summary.collection_status == RiskCollectionStatusResponse.SUCCESS
+    assert response.jira_summary.overall_severity == RiskSeverityResponse.LOW
+    assert response.jira_summary.recommended_action == RiskSummaryActionResponse.PROCEED
+    assert response.jira_summary.issue_count == 0
+    assert response.jira_summary.risky_issue_count == 0
+    assert response.jira_summary.total_signal_count == 0
+    assert response.jira_summary.high_risk_count == 0
+    assert response.jira_summary.summary_text

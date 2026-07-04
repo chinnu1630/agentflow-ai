@@ -15,11 +15,11 @@ from app.api.routes.release_runs import get_jira_risk_collector, get_risk_collec
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
+from app.services.github_risk_collector import GitHubRiskCollectionResult, RiskCollectionStatus
 from app.services.jira_risk_collector import (
     JiraRiskCollectionResult,
     JiraRiskCollectionStatus,
 )
-from app.services.github_risk_collector import GitHubRiskCollectionResult, RiskCollectionStatus
 
 
 class FakeRiskCollector:
@@ -270,6 +270,17 @@ async def test_collect_github_risks_api_returns_github_risk_summary(
     assert response_data["jira"]["total_signals"] == 0
     assert response_data["jira"]["issues"] == []
     assert response_data["jira"]["signals"] == []
+
+    assert response_data["jira_summary"]["source"] == "jira"
+    assert response_data["jira_summary"]["collection_status"] == "success"
+    assert response_data["jira_summary"]["overall_severity"] == "low"
+    assert response_data["jira_summary"]["recommended_action"] == "proceed"
+    assert response_data["jira_summary"]["issue_count"] == 0
+    assert response_data["jira_summary"]["risky_issue_count"] == 0
+    assert response_data["jira_summary"]["total_signal_count"] == 0
+    assert response_data["jira_summary"]["high_risk_count"] == 0
+    assert response_data["jira_summary"]["top_risks"] == []
+    assert response_data["jira_summary"]["summary_text"]
 
 
 @pytest.mark.anyio

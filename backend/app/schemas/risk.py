@@ -163,6 +163,24 @@ class GitHubRiskSummaryResponse(BaseModel):
     generated_at: datetime
 
 
+class JiraRiskSummaryResponse(BaseModel):
+    """API response model for Jira risk summary."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    source: Literal["jira"] = "jira"
+    collection_status: RiskCollectionStatusResponse
+    overall_severity: RiskSeverityResponse
+    recommended_action: RiskSummaryActionResponse
+    issue_count: int = Field(ge=0)
+    risky_issue_count: int = Field(ge=0)
+    total_signal_count: int = Field(ge=0)
+    high_risk_count: int = Field(ge=0)
+    top_risks: list[RiskSummaryItemResponse] = Field(default_factory=list)
+    summary_text: str
+    generated_at: datetime
+
+
 class ReleaseRunSummaryResponse(BaseModel):
     """API response schema for release-run metadata inside risk responses."""
 
@@ -178,7 +196,7 @@ class ReleaseRunSummaryResponse(BaseModel):
 
 
 class ReleaseRunRiskResponse(BaseModel):
-    """API response schema for release-run risk collection result."""
+    """API response model for release run risk analysis."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -186,3 +204,4 @@ class ReleaseRunRiskResponse(BaseModel):
     github: GitHubRiskCollectionResponse
     github_summary: GitHubRiskSummaryResponse
     jira: JiraRiskCollectionResponse
+    jira_summary: JiraRiskSummaryResponse
