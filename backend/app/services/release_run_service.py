@@ -257,11 +257,11 @@ class ReleaseRunService:
                 "Failed to fetch release run."
             ) from exc
 
-    async def collect_github_risks(
+    async def collect_release_risks(
         self,
         release_run_id: UUID,
     ) -> ReleaseRunRiskResult | None:
-        """Collect GitHub and Jira risks for an existing release run.
+        """Collect release risks across configured engineering sources.
 
         Args:
             release_run_id: Release run database UUID.
@@ -390,6 +390,20 @@ class ReleaseRunService:
             raise ReleaseRunServiceError(
                 "Failed to collect release risks."
             ) from exc
+
+    async def collect_github_risks(
+        self,
+        release_run_id: UUID,
+    ) -> ReleaseRunRiskResult | None:
+        """Backward-compatible wrapper for the previous GitHub-only method name.
+
+        The workflow originally collected GitHub risks only. It now collects
+        GitHub risks, Jira risks, source summaries, and the combined release
+        summary. This wrapper keeps older callers working while newer code uses
+        collect_release_risks().
+        """
+
+        return await self.collect_release_risks(release_run_id)
 
     async def mark_running(self, release_run_id: UUID) -> ReleaseRunResult | None:
         """Mark a release run as running."""

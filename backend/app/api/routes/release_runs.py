@@ -209,7 +209,7 @@ async def collect_github_risks(
     )
 
     try:
-        result = await service.collect_github_risks(release_run_id)
+        result = await service.collect_release_risks(release_run_id)
 
         if result is None:
             await session.rollback()
