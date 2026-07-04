@@ -11,6 +11,7 @@ from app.schemas.risk import (
     JiraRiskCollectionResponse,
     JiraRiskSummaryResponse,
     PullRequestRiskResponse,
+    ReleaseRiskSummaryResponse,
     ReleaseRunRiskResponse,
     ReleaseRunSummaryResponse,
     RiskCategoryResponse,
@@ -185,12 +186,26 @@ def test_release_run_risk_response_accepts_nested_github_and_jira_result() -> No
         generated_at=datetime.now(UTC),
     )
 
+    release_summary = ReleaseRiskSummaryResponse(
+        source="release",
+        overall_severity=RiskSeverityResponse.HIGH,
+        recommended_action=RiskSummaryActionResponse.REVIEW_REQUIRED,
+        total_signal_count=3,
+        high_risk_count=1,
+        source_summary_count=2,
+        top_risks=[],
+        source_summaries=[],
+        summary_text="Release requires manager review.",
+        generated_at=datetime.now(UTC),
+    )
+
     response = ReleaseRunRiskResponse(
         release_run=release_run,
         github=github,
         github_summary=github_summary,
         jira=jira,
         jira_summary=jira_summary,
+        release_summary=release_summary,
     )
 
     assert response.release_run.status == "completed"
@@ -220,3 +235,12 @@ def test_release_run_risk_response_accepts_nested_github_and_jira_result() -> No
     assert response.jira_summary.total_signal_count == 0
     assert response.jira_summary.high_risk_count == 0
     assert response.jira_summary.summary_text
+
+    assert response.release_summary.source == "release"
+    assert response.release_summary.overall_severity == RiskSeverityResponse.HIGH
+    assert (
+        response.release_summary.recommended_action
+        == RiskSummaryActionResponse.REVIEW_REQUIRED
+    )
+    assert response.release_summary.total_signal_count == 3
+    assert response.release_summary.high_risk_count == 1

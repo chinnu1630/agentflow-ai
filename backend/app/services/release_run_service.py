@@ -35,6 +35,10 @@ from app.services.jira_risk_collector import (
     JiraRiskCollectionStatus,
 )
 from app.services.jira_risk_summary import JiraRiskSummary, JiraRiskSummaryGenerator
+from app.services.release_risk_summary import (
+    ReleaseRiskSummary,
+    ReleaseRiskSummaryGenerator,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +78,7 @@ class ReleaseRunRiskResult(BaseModel):
     github_summary: GitHubRiskSummary
     jira: JiraRiskCollectionResponse
     jira_summary: JiraRiskSummary
+    release_summary: ReleaseRiskSummary
 
 
 class ReleaseRunServiceError(RuntimeError):
@@ -140,6 +145,7 @@ class ReleaseRunService:
         jira_risk_collector: JiraRiskCollectorProtocol | None = None,
         risk_summary_generator: RiskSummaryGenerator | None = None,
         jira_risk_summary_generator: JiraRiskSummaryGenerator | None = None,
+        release_risk_summary_generator: ReleaseRiskSummaryGenerator | None = None,
     ) -> None:
         """Initialize the service.
 
@@ -150,6 +156,8 @@ class ReleaseRunService:
             jira_risk_collector: Optional collector used to collect Jira risks.
             risk_summary_generator: Optional generator used to summarize GitHub risks.
             jira_risk_summary_generator: Optional generator used to summarize Jira risks.
+            release_risk_summary_generator: Optional generator used to summarize
+                combined release risks.
         """
 
         self._repository = repository
@@ -159,6 +167,9 @@ class ReleaseRunService:
         self._risk_summary_generator = risk_summary_generator or RiskSummaryGenerator()
         self._jira_risk_summary_generator = (
             jira_risk_summary_generator or JiraRiskSummaryGenerator()
+        )
+        self._release_risk_summary_generator = (
+            release_risk_summary_generator or ReleaseRiskSummaryGenerator()
         )
 
     async def start_release_run(
@@ -310,6 +321,13 @@ class ReleaseRunService:
                 jira_result,
                 run_id=release_run.run_id,
             )
+            release_summary = (
+                self._release_risk_summary_generator.summarize_release_risks(
+                    github_summary=github_summary,
+                    jira_summary=jira_summary,
+                    run_id=release_run.run_id,
+                )
+            )
 
             completed_release_run = await self._repository.update_status(
                 release_run_id=release_run_id,
@@ -345,6 +363,10 @@ class ReleaseRunService:
                     "jira_total_signals": jira_response.total_signals,
                     "jira_overall_severity": jira_summary.overall_severity.value,
                     "jira_recommended_action": jira_summary.recommended_action.value,
+                    "release_overall_severity": release_summary.overall_severity.value,
+                    "release_recommended_action": (
+                        release_summary.recommended_action.value
+                    ),
                 },
             )
 
@@ -354,6 +376,7 @@ class ReleaseRunService:
                 github_summary=github_summary,
                 jira=jira_response,
                 jira_summary=jira_summary,
+                release_summary=release_summary,
             )
 
         except ReleaseRunRepositoryError as exc:

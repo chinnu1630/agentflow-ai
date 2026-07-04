@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -180,6 +180,53 @@ class JiraRiskSummaryResponse(BaseModel):
     summary_text: str
     generated_at: datetime
 
+class ReleaseRiskSummaryItemResponse(BaseModel):
+    """API response model for one combined release-risk item."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    source: Literal["github", "jira"]
+    source_type: Literal["github_pull_request", "jira_issue"]
+    source_id: str = Field(min_length=1)
+    source_url: str | None = None
+    severity: RiskSeverityResponse
+    score: float = Field(ge=0.0, le=1.0)
+    title: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReleaseRiskSourceSummaryResponse(BaseModel):
+    """API response model for one source summary inside release summary."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    source: Literal["github", "jira"]
+    overall_severity: RiskSeverityResponse
+    recommended_action: str
+    total_signal_count: int = Field(ge=0)
+    high_risk_count: int = Field(ge=0)
+    summary_text: str = Field(min_length=1)
+
+
+class ReleaseRiskSummaryResponse(BaseModel):
+    """API response model for combined release risk summary."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    source: Literal["release"] = "release"
+    overall_severity: RiskSeverityResponse
+    recommended_action: RiskSummaryActionResponse
+    total_signal_count: int = Field(ge=0)
+    high_risk_count: int = Field(ge=0)
+    source_summary_count: int = Field(ge=0)
+    top_risks: list[ReleaseRiskSummaryItemResponse] = Field(default_factory=list)
+    source_summaries: list[ReleaseRiskSourceSummaryResponse] = Field(
+        default_factory=list
+    )
+    summary_text: str = Field(min_length=1)
+    generated_at: datetime
+
 
 class ReleaseRunSummaryResponse(BaseModel):
     """API response schema for release-run metadata inside risk responses."""
@@ -205,3 +252,4 @@ class ReleaseRunRiskResponse(BaseModel):
     github_summary: GitHubRiskSummaryResponse
     jira: JiraRiskCollectionResponse
     jira_summary: JiraRiskSummaryResponse
+    release_summary: ReleaseRiskSummaryResponse
