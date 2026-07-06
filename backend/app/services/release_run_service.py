@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -41,6 +41,9 @@ from app.services.release_risk_summary import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from app.workflows.release_risk_state import ReleaseRiskState
 
 
 class StartReleaseRunCommand(BaseModel):
@@ -404,6 +407,40 @@ class ReleaseRunService:
         """
 
         return await self.collect_release_risks(release_run_id)
+
+    async def run_release_risk_workflow(
+        self,
+        release_run_id: UUID,
+        *,
+        manager_query: str = "What are the biggest release risks this week?",
+        requested_by: str | None = None,
+    ) -> ReleaseRiskState:
+        """Run release-risk collection through the LangGraph workflow.
+
+        This method is intentionally separate from collect_release_risks().
+        The LangGraph service node calls collect_release_risks(), so putting
+        graph execution inside collect_release_risks() would create recursion.
+
+        Args:
+            release_run_id: Release run database UUID.
+            manager_query: Original manager question for workflow context.
+            requested_by: Optional user or system actor that requested the workflow.
+
+        Returns:
+            Final validated workflow state from the LangGraph service runner.
+        """
+        from app.workflows.release_risk_service_runner import (
+            ReleaseRiskServiceWorkflowRunner,
+        )
+
+        runner = ReleaseRiskServiceWorkflowRunner(self)
+
+        return await runner.run(
+            release_run_id=release_run_id,
+            run_id=self._request_id,
+            manager_query=manager_query,
+            requested_by=requested_by,
+        )
 
     async def mark_running(self, release_run_id: UUID) -> ReleaseRunResult | None:
         """Mark a release run as running."""
