@@ -5,7 +5,7 @@ This module builds the initial release-risk graph.
 Current scope:
 - Create a deterministic LangGraph workflow
 - Wire state transition nodes
-- Allow node-set injection for future real workflow nodes
+- Allow sync and async node-set injection
 
 Future scope:
 - Replace preparation nodes with real async GitHub/Jira collection nodes
@@ -18,7 +18,7 @@ Future scope:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,7 +36,8 @@ from app.workflows.release_risk_state import ReleaseRiskState
 
 WorkflowStateInput = ReleaseRiskState | dict[str, Any]
 WorkflowStateUpdate = dict[str, Any]
-WorkflowNode = Callable[[WorkflowStateInput], WorkflowStateUpdate]
+WorkflowNodeResult = WorkflowStateUpdate | Awaitable[WorkflowStateUpdate]
+WorkflowNode = Callable[[WorkflowStateInput], WorkflowNodeResult]
 
 
 def _validate_state_input(state: WorkflowStateInput) -> ReleaseRiskState:
@@ -97,8 +98,9 @@ class ReleaseRiskGraphNodeSet:
     """Node functions used by the release-risk graph.
 
     The default node set uses safe placeholder state-transition nodes.
-    Later, we will inject real nodes that call GitHub, Jira, RAG, ML, Claude,
-    HITL, and Slack while keeping the graph structure stable.
+
+    Later, we will inject real async nodes that call GitHub, Jira, RAG, ML,
+    Claude, HITL, and Slack while keeping the graph structure stable.
     """
 
     start: WorkflowNode = _start_node

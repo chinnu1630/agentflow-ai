@@ -21,6 +21,12 @@ from app.workflows.release_risk_state import (
 )
 
 
+@pytest.fixture
+def anyio_backend() -> str:
+    """Use asyncio backend for async graph tests."""
+    return "asyncio"
+
+
 def _validate_test_state(state: WorkflowStateInput) -> ReleaseRiskState:
     """Validate graph state for test helper nodes."""
     if isinstance(state, ReleaseRiskState):
@@ -30,12 +36,24 @@ def _validate_test_state(state: WorkflowStateInput) -> ReleaseRiskState:
 
 
 def _custom_start_node(state: WorkflowStateInput) -> WorkflowStateUpdate:
-    """Custom test node proving the graph supports node-set injection."""
+    """Custom sync test node proving the graph supports node-set injection."""
     validated_state = _validate_test_state(state)
 
     return validated_state.add_completed_node("custom_start_node").model_dump(
         mode="python"
     )
+
+
+async def _async_custom_prepare_github_node(
+    state: WorkflowStateInput,
+) -> WorkflowStateUpdate:
+    """Custom async test node proving the graph supports async nodes."""
+    validated_state = _validate_test_state(state)
+    updated_state = validated_state.mark_running(
+        ReleaseRiskWorkflowStage.COLLECTING_GITHUB_RISKS
+    ).add_completed_node("async_custom_prepare_github_node")
+
+    return updated_state.model_dump(mode="python")
 
 
 def test_release_risk_graph_runs_linear_workflow() -> None:
@@ -96,8 +114,8 @@ def test_release_risk_graph_rejects_invalid_initial_state() -> None:
         )
 
 
-def test_release_risk_graph_accepts_custom_node_set() -> None:
-    """Graph builder should support injected node functions for future real nodes."""
+def test_release_risk_graph_accepts_custom_sync_node_set() -> None:
+    """Graph builder should support injected sync node functions."""
     custom_nodes = ReleaseRiskGraphNodeSet(
         start=_custom_start_node,
     )
@@ -116,6 +134,33 @@ def test_release_risk_graph_accepts_custom_node_set() -> None:
     assert final_state.completed_nodes == [
         "custom_start_node",
         "prepare_github_risk_collection",
+        "prepare_jira_risk_collection",
+        "prepare_release_summary",
+        "complete_release_risk_workflow",
+    ]
+
+
+@pytest.mark.anyio
+async def test_release_risk_graph_accepts_custom_async_node_set() -> None:
+    """Graph builder should support injected async node functions."""
+    custom_nodes = ReleaseRiskGraphNodeSet(
+        prepare_github=_async_custom_prepare_github_node,
+    )
+    graph = build_release_risk_graph(custom_nodes)
+
+    initial_state = ReleaseRiskState(
+        release_run_id=uuid4(),
+        run_id="test-graph-run-004",
+    )
+
+    result: Any = await graph.ainvoke(initial_state.model_dump(mode="python"))
+    final_state = ReleaseRiskState.model_validate(result)
+
+    assert final_state.status == ReleaseRiskWorkflowStatus.SUCCEEDED
+    assert final_state.stage == ReleaseRiskWorkflowStage.COMPLETED
+    assert final_state.completed_nodes == [
+        "start_release_risk_workflow",
+        "async_custom_prepare_github_node",
         "prepare_jira_risk_collection",
         "prepare_release_summary",
         "complete_release_risk_workflow",
