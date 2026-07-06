@@ -169,6 +169,16 @@ dependencies = [
     # Common mistake: putting httpx in dev dependencies (it belongs here).
     "httpx>=0.27.0",
 
+    # -------------------------------------------------------------------------
+    # AI WORKFLOW ORCHESTRATION
+    # -------------------------------------------------------------------------
+
+    # LangGraph: workflow orchestration framework for agentic state machines.
+    # AgentFlow uses LangGraph to coordinate release-risk workflow steps:
+    # GitHub collection, Jira collection, RAG retrieval, ML scoring,
+    # Claude synthesis, HITL approval, and Slack delivery.
+    # This is a PRODUCTION dependency because app/workflows imports it at runtime.
+    "langgraph>=1.0.0,<2.0.0",
 
     # -------------------------------------------------------------------------
     # OBSERVABILITY — STRUCTURED LOGGING
