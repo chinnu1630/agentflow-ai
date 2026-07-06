@@ -4,8 +4,8 @@ This module builds the initial release-risk graph.
 
 Current scope:
 - Create a deterministic LangGraph workflow
-- Wire existing state transition nodes
-- Prove the graph can execute end-to-end in memory
+- Wire state transition nodes
+- Allow node-set injection for future real workflow nodes
 
 Future scope:
 - Replace preparation nodes with real async GitHub/Jira collection nodes
@@ -18,6 +18,8 @@ Future scope:
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -34,6 +36,7 @@ from app.workflows.release_risk_state import ReleaseRiskState
 
 WorkflowStateInput = ReleaseRiskState | dict[str, Any]
 WorkflowStateUpdate = dict[str, Any]
+WorkflowNode = Callable[[WorkflowStateInput], WorkflowStateUpdate]
 
 
 def _validate_state_input(state: WorkflowStateInput) -> ReleaseRiskState:
@@ -74,7 +77,7 @@ def _prepare_jira_node(state: WorkflowStateInput) -> WorkflowStateUpdate:
 
 
 def _prepare_summary_node(state: WorkflowStateInput) -> WorkflowStateUpdate:
-    """Run the release summary preparation node and return a state update."""
+    """Run the release summary preparation node and return a LangGraph state update."""
     validated_state = _validate_state_input(state)
     updated_state = prepare_release_summary(validated_state)
 
@@ -89,24 +92,44 @@ def _complete_node(state: WorkflowStateInput) -> WorkflowStateUpdate:
     return _dump_state_update(updated_state)
 
 
-def build_release_risk_graph() -> Any:
+@dataclass(frozen=True, slots=True)
+class ReleaseRiskGraphNodeSet:
+    """Node functions used by the release-risk graph.
+
+    The default node set uses safe placeholder state-transition nodes.
+    Later, we will inject real nodes that call GitHub, Jira, RAG, ML, Claude,
+    HITL, and Slack while keeping the graph structure stable.
+    """
+
+    start: WorkflowNode = _start_node
+    prepare_github: WorkflowNode = _prepare_github_node
+    prepare_jira: WorkflowNode = _prepare_jira_node
+    prepare_summary: WorkflowNode = _prepare_summary_node
+    complete: WorkflowNode = _complete_node
+
+
+def build_release_risk_graph(nodes: ReleaseRiskGraphNodeSet | None = None) -> Any:
     """Build and compile the initial release-risk LangGraph workflow.
 
-    Returns:
-        A compiled LangGraph workflow that can be invoked with ReleaseRiskState
-        compatible input.
+    Args:
+        nodes: Optional node set. Defaults to safe placeholder workflow nodes.
 
-    The return type is Any because LangGraph's compiled graph type can change
-    between versions, and we do not want our application code tightly coupled
-    to an internal third-party class name.
+    Returns:
+        A compiled LangGraph workflow that can be invoked with a
+        ReleaseRiskState-compatible dictionary.
+
+    The return type is intentionally Any because LangGraph's compiled graph
+    class is a third-party implementation detail. Application code should rely
+    on graph behavior, not a private concrete class name.
     """
+    graph_nodes = nodes or ReleaseRiskGraphNodeSet()
     graph = StateGraph(ReleaseRiskState)
 
-    graph.add_node("start", _start_node)
-    graph.add_node("prepare_github", _prepare_github_node)
-    graph.add_node("prepare_jira", _prepare_jira_node)
-    graph.add_node("prepare_summary", _prepare_summary_node)
-    graph.add_node("complete", _complete_node)
+    graph.add_node("start", graph_nodes.start)
+    graph.add_node("prepare_github", graph_nodes.prepare_github)
+    graph.add_node("prepare_jira", graph_nodes.prepare_jira)
+    graph.add_node("prepare_summary", graph_nodes.prepare_summary)
+    graph.add_node("complete", graph_nodes.complete)
 
     graph.add_edge(START, "start")
     graph.add_edge("start", "prepare_github")
