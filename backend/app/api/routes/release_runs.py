@@ -38,7 +38,11 @@ router = APIRouter(prefix="/release-runs", tags=["release-runs"])
 
 
 async def get_risk_collector(request: Request) -> AsyncIterator[RiskCollector]:
-    """Create a GitHub risk collector for the current request."""
+    """Create a GitHub risk collector for the current request.
+
+    The collector is built from environment configuration so secrets and
+    repository settings are not hardcoded in source code.
+    """
 
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
 
@@ -78,7 +82,12 @@ async def get_risk_collector(request: Request) -> AsyncIterator[RiskCollector]:
 
 
 def get_jira_risk_collector() -> JiraRiskCollector:
-    """Create a Jira risk collector dependency."""
+    """Create a Jira risk collector dependency.
+
+    The collector internally uses JiraClient and JiraRiskRuleEngine. Keeping
+    this as a FastAPI dependency allows tests to override it with a fake
+    collector and prevents API tests from making real Jira network calls.
+    """
 
     return JiraRiskCollector()
 
@@ -180,7 +189,16 @@ async def collect_release_risks(
     risk_collector: RiskCollector = Depends(get_risk_collector),
     jira_risk_collector: JiraRiskCollector = Depends(get_jira_risk_collector),
 ) -> ReleaseRunRiskResponse:
-    """Run the LangGraph release-risk workflow for an existing release run."""
+    """Run the LangGraph release-risk workflow for an existing release run.
+
+    This is the preferred endpoint because it enters the production workflow
+    path:
+
+    FastAPI -> ReleaseRunService -> LangGraph -> GitHub/Jira collectors
+
+    The public API response shape stays unchanged:
+    release_run, github, github_summary, jira, jira_summary, release_summary.
+    """
 
     return await _collect_release_risk_workflow_response(
         release_run_id=release_run_id,
@@ -202,7 +220,12 @@ async def collect_github_risks(
     risk_collector: RiskCollector = Depends(get_risk_collector),
     jira_risk_collector: JiraRiskCollector = Depends(get_jira_risk_collector),
 ) -> ReleaseRunRiskResponse:
-    """Collect release risks for an existing release run using the legacy path."""
+    """Collect release risks for an existing release run using the legacy path.
+
+    This endpoint is kept for backward compatibility. It started as a
+    GitHub-only route, but the response now includes Jira risks and the combined
+    release summary. New clients should use /release-runs/{id}/risks.
+    """
 
     return await _collect_release_risks_response(
         release_run_id=release_run_id,
@@ -221,7 +244,12 @@ async def _collect_release_risk_workflow_response(
     risk_collector: RiskCollector,
     jira_risk_collector: JiraRiskCollector,
 ) -> ReleaseRunRiskResponse:
-    """Run the LangGraph workflow and convert its final state into an API response."""
+    """Run the LangGraph workflow and convert its final state into an API response.
+
+    LangGraph returns internal workflow state. The API must still return the
+    stable ReleaseRunRiskResponse contract expected by frontend clients and
+    integration tests.
+    """
 
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
 
@@ -284,7 +312,11 @@ async def _collect_release_risks_response(
     risk_collector: RiskCollector,
     jira_risk_collector: JiraRiskCollector,
 ) -> ReleaseRunRiskResponse:
-    """Collect release risks using the legacy direct service path."""
+    """Collect release risks using the legacy direct service path.
+
+    This helper is used by the backward-compatible /github-risks endpoint.
+    Do not route the preferred /risks endpoint here anymore.
+    """
 
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
 
@@ -341,17 +373,59 @@ async def _collect_release_risks_response(
 def _extract_risk_result_from_workflow_state(
     workflow_state: Mapping[str, Any] | Any,
 ) -> Any | None:
-    """Extract the release-risk result from the LangGraph workflow state."""
+    """Extract the release-risk result from the LangGraph workflow state.
+
+    LangGraph state can evolve over time. We first check known result keys.
+    If the workflow already returned the public API response shape directly,
+    we return the full state.
+    """
+
+    result_keys = (
+        "risk_result",
+        "release_risk_result",
+        "release_run_risk_result",
+        "release_risk_response",
+        "final_result",
+        "result",
+        "response",
+    )
+
+    response_shape_keys = {
+        "release_run",
+        "github",
+        "github_summary",
+        "jira",
+        "jira_summary",
+        "release_summary",
+    }
 
     if isinstance(workflow_state, Mapping):
-        return workflow_state.get("risk_result")
+        for key in result_keys:
+            result = workflow_state.get(key)
+            if result is not None:
+                return result
 
-    if hasattr(workflow_state, "risk_result"):
-        return getattr(workflow_state, "risk_result")
+        if response_shape_keys.issubset(workflow_state.keys()):
+            return workflow_state
+
+        return None
+
+    for key in result_keys:
+        if hasattr(workflow_state, key):
+            result = getattr(workflow_state, key)
+            if result is not None:
+                return result
 
     if hasattr(workflow_state, "model_dump"):
         dumped_state = workflow_state.model_dump()
-        return dumped_state.get("risk_result")
+
+        for key in result_keys:
+            result = dumped_state.get(key)
+            if result is not None:
+                return result
+
+        if response_shape_keys.issubset(dumped_state.keys()):
+            return dumped_state
 
     return None
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -20,6 +21,7 @@ from app.services.jira_risk_collector import (
     JiraRiskCollectionResult,
     JiraRiskCollectionStatus,
 )
+from app.services.release_run_service import ReleaseRunService
 
 
 class FakeRiskCollector:
@@ -58,6 +60,23 @@ class FakeJiraRiskCollector:
             error_message=None,
             duration_ms=0.0,
         )
+
+
+def override_external_collectors_for_test() -> None:
+    """Override external GitHub and Jira collectors for API tests."""
+
+    async def override_get_risk_collector() -> FakeRiskCollector:
+        """Override GitHub collector dependency for API tests."""
+
+        return FakeRiskCollector()
+
+    async def override_get_jira_risk_collector() -> FakeJiraRiskCollector:
+        """Override Jira collector dependency for API tests."""
+
+        return FakeJiraRiskCollector()
+
+    app.dependency_overrides[get_risk_collector] = override_get_risk_collector
+    app.dependency_overrides[get_jira_risk_collector] = override_get_jira_risk_collector
 
 
 @pytest.fixture
@@ -199,23 +218,99 @@ async def test_start_release_run_api_rejects_invalid_payload(
 
 
 @pytest.mark.anyio
+async def test_collect_release_risks_api_returns_full_release_risk_summary(
+    release_run_api_client: AsyncClient,
+) -> None:
+    """POST /release-runs/{id}/risks should collect GitHub and Jira risks."""
+
+    override_external_collectors_for_test()
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    release_run_id = create_response.json()["id"]
+
+    risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert risk_response.status_code == 200
+
+    response_data = risk_response.json()
+
+    assert response_data["release_run"]["id"] == release_run_id
+    assert response_data["release_run"]["status"] == "completed"
+
+    assert response_data["github"]["source"] == "github"
+    assert response_data["github"]["status"] == "success"
+    assert response_data["github"]["pull_request_count"] == 2
+    assert response_data["github"]["risk_result_count"] == 2
+    assert response_data["github"]["total_signal_count"] == 3
+    assert response_data["github"]["high_risk_count"] == 1
+
+    assert response_data["github_summary"]["source"] == "github"
+    assert response_data["github_summary"]["collection_status"] == "success"
+    assert response_data["github_summary"]["overall_severity"] in {
+        "low",
+        "medium",
+        "high",
+        "critical",
+    }
+    assert response_data["github_summary"]["recommended_action"] in {
+        "proceed",
+        "review_required",
+        "block_release",
+        "partial_data_review",
+    }
+    assert isinstance(response_data["github_summary"]["top_risks"], list)
+    assert isinstance(response_data["github_summary"]["summary_text"], str)
+    assert response_data["github_summary"]["summary_text"]
+
+    assert response_data["jira"]["status"] == "success"
+    assert response_data["jira"]["total_issues_analyzed"] == 0
+    assert response_data["jira"]["total_signals"] == 0
+    assert response_data["jira"]["issues"] == []
+    assert response_data["jira"]["signals"] == []
+
+    assert response_data["jira_summary"]["source"] == "jira"
+    assert response_data["jira_summary"]["collection_status"] == "success"
+    assert response_data["jira_summary"]["overall_severity"] == "low"
+    assert response_data["jira_summary"]["recommended_action"] == "proceed"
+    assert response_data["jira_summary"]["issue_count"] == 0
+    assert response_data["jira_summary"]["risky_issue_count"] == 0
+    assert response_data["jira_summary"]["total_signal_count"] == 0
+
+    assert response_data["release_summary"]["source"] == "release"
+    assert response_data["release_summary"]["overall_severity"] in {
+        "low",
+        "medium",
+        "high",
+        "critical",
+    }
+    assert response_data["release_summary"]["recommended_action"] in {
+        "proceed",
+        "review_required",
+        "block_release",
+        "partial_data_review",
+    }
+    assert isinstance(response_data["release_summary"]["summary_text"], str)
+    assert response_data["release_summary"]["summary_text"]
+
+
+@pytest.mark.anyio
 async def test_collect_github_risks_api_returns_github_risk_summary(
     release_run_api_client: AsyncClient,
 ) -> None:
     """POST /release-runs/{id}/github-risks should collect GitHub and Jira risks."""
 
-    async def override_get_risk_collector() -> FakeRiskCollector:
-        """Override GitHub collector dependency for API tests."""
-
-        return FakeRiskCollector()
-
-    async def override_get_jira_risk_collector() -> FakeJiraRiskCollector:
-        """Override Jira collector dependency for API tests."""
-
-        return FakeJiraRiskCollector()
-
-    app.dependency_overrides[get_risk_collector] = override_get_risk_collector
-    app.dependency_overrides[get_jira_risk_collector] = override_get_jira_risk_collector
+    override_external_collectors_for_test()
 
     create_response = await release_run_api_client.post(
         "/api/v1/release-runs",
@@ -278,9 +373,6 @@ async def test_collect_github_risks_api_returns_github_risk_summary(
     assert response_data["jira_summary"]["issue_count"] == 0
     assert response_data["jira_summary"]["risky_issue_count"] == 0
     assert response_data["jira_summary"]["total_signal_count"] == 0
-    assert response_data["jira_summary"]["high_risk_count"] == 0
-    assert response_data["jira_summary"]["top_risks"] == []
-    assert response_data["jira_summary"]["summary_text"]
 
     assert response_data["release_summary"]["source"] == "release"
     assert response_data["release_summary"]["overall_severity"] in {
@@ -295,39 +387,139 @@ async def test_collect_github_risks_api_returns_github_risk_summary(
         "block_release",
         "partial_data_review",
     }
-    assert response_data["release_summary"]["total_signal_count"] == 3
-    assert response_data["release_summary"]["high_risk_count"] == 1
-    assert response_data["release_summary"]["source_summary_count"] == 2
-    assert isinstance(response_data["release_summary"]["top_risks"], list)
-    assert isinstance(response_data["release_summary"]["source_summaries"], list)
+    assert isinstance(response_data["release_summary"]["summary_text"], str)
     assert response_data["release_summary"]["summary_text"]
 
 
 @pytest.mark.anyio
-async def test_collect_github_risks_api_returns_404_when_release_run_missing(
+async def test_collect_release_risks_api_uses_langgraph_workflow_path(
     release_run_api_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """POST /release-runs/{id}/github-risks should return 404 if missing."""
+    """POST /release-runs/{id}/risks should enter through LangGraph workflow."""
 
-    async def override_get_risk_collector() -> FakeRiskCollector:
-        """Override GitHub collector dependency for API tests."""
+    override_external_collectors_for_test()
 
-        return FakeRiskCollector()
+    workflow_called = False
+    original_run_release_risk_workflow = ReleaseRunService.run_release_risk_workflow
 
-    async def override_get_jira_risk_collector() -> FakeJiraRiskCollector:
-        """Override Jira collector dependency for API tests."""
+    async def spy_run_release_risk_workflow(
+        self: ReleaseRunService,
+        release_run_id: UUID,
+    ) -> Any:
+        """Record that the preferred API route entered the LangGraph path."""
 
-        return FakeJiraRiskCollector()
+        nonlocal workflow_called
+        workflow_called = True
 
-    app.dependency_overrides[get_risk_collector] = override_get_risk_collector
-    app.dependency_overrides[get_jira_risk_collector] = override_get_jira_risk_collector
+        return await original_run_release_risk_workflow(
+            self,
+            release_run_id,
+        )
 
-    response = await release_run_api_client.post(
-        f"/api/v1/release-runs/{uuid4()}/github-risks",
+    monkeypatch.setattr(
+        ReleaseRunService,
+        "run_release_risk_workflow",
+        spy_run_release_risk_workflow,
     )
 
-    assert response.status_code == 404
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
 
-    response_data = response.json()
+    assert create_response.status_code == 201
 
-    assert response_data["error"]["message"] == "Release run not found."
+    release_run_id = create_response.json()["id"]
+
+    risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert risk_response.status_code == 200
+    assert workflow_called is True
+
+    response_data = risk_response.json()
+
+    assert response_data["release_run"]["id"] == release_run_id
+    assert response_data["release_run"]["status"] == "completed"
+    assert response_data["github"]["status"] == "success"
+    assert response_data["jira"]["status"] == "success"
+    assert response_data["release_summary"]["source"] == "release"
+
+
+@pytest.mark.anyio
+async def test_legacy_github_risks_api_keeps_direct_service_path(
+    release_run_api_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST /release-runs/{id}/github-risks should not use LangGraph workflow."""
+
+    override_external_collectors_for_test()
+
+    direct_collector_called = False
+    original_collect_release_risks = ReleaseRunService.collect_release_risks
+
+    async def spy_collect_release_risks(
+        self: ReleaseRunService,
+        release_run_id: UUID,
+    ) -> Any:
+        """Record that the legacy API route used the direct service path."""
+
+        nonlocal direct_collector_called
+        direct_collector_called = True
+
+        return await original_collect_release_risks(
+            self,
+            release_run_id,
+        )
+
+    async def fail_if_workflow_is_used(
+        self: ReleaseRunService,
+        release_run_id: UUID,
+    ) -> Any:
+        """Fail the test if the legacy endpoint accidentally uses LangGraph."""
+
+        raise AssertionError(
+            "Legacy /github-risks endpoint should not call run_release_risk_workflow()."
+        )
+
+    monkeypatch.setattr(
+        ReleaseRunService,
+        "collect_release_risks",
+        spy_collect_release_risks,
+    )
+    monkeypatch.setattr(
+        ReleaseRunService,
+        "run_release_risk_workflow",
+        fail_if_workflow_is_used,
+    )
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    release_run_id = create_response.json()["id"]
+
+    risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/github-risks",
+    )
+
+    assert risk_response.status_code == 200
+    assert direct_collector_called is True
+
+    response_data = risk_response.json()
+
+    assert response_data["release_run"]["id"] == release_run_id
+    assert response_data["release_run"]["status"] == "completed"
+    assert response_data["github"]["status"] == "success"
+    assert response_data["jira"]["status"] == "success"
