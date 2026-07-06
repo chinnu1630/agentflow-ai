@@ -23,6 +23,7 @@ def test_release_risk_state_defaults_to_initialized() -> None:
 
     assert state.status == ReleaseRiskWorkflowStatus.NOT_STARTED
     assert state.stage == ReleaseRiskWorkflowStage.INITIALIZED
+    assert state.release_run is None
     assert state.github is None
     assert state.github_summary is None
     assert state.jira is None
@@ -40,6 +41,7 @@ def test_release_risk_state_accepts_existing_service_outputs() -> None:
     state = ReleaseRiskState(
         release_run_id=uuid4(),
         run_id="test-run-002",
+        release_run={"id": "release-run-001", "status": "created"},
         github={"status": "completed", "risk_count": 2},
         github_summary={"total_risks": 2, "highest_severity": "high"},
         jira={"status": "completed", "risk_count": 1},
@@ -51,6 +53,8 @@ def test_release_risk_state_accepts_existing_service_outputs() -> None:
         },
     )
 
+    assert state.release_run is not None
+    assert state.release_run["status"] == "created"
     assert state.github is not None
     assert state.github["risk_count"] == 2
     assert state.jira is not None

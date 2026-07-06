@@ -122,7 +122,11 @@ class ReleaseRiskState(BaseModel):
         default=ReleaseRiskWorkflowStage.INITIALIZED,
         description="Current workflow execution stage.",
     )
-
+    
+    release_run: dict[str, Any] | None = Field(
+        default=None,
+        description="Release run metadata from the existing service response.",
+    )
     github: dict[str, Any] | None = Field(
         default=None,
         description="GitHub risk collection output.",
