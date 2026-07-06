@@ -4,18 +4,19 @@ This module exposes endpoints for starting release-risk workflow runs,
 fetching release runs, and collecting release risks from engineering sources.
 
 Architecture position:
-FastAPI route -> ReleaseRunService -> Repository + GitHub Collector + Jira Collector
+FastAPI route -> ReleaseRunService -> LangGraph workflow -> GitHub/Jira collectors
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
+from typing import Any
 from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,7 @@ from app.integrations.github_client import GitHubClient, GitHubClientConfig
 from app.repositories.release_run_repository import ReleaseRunRepository
 from app.schemas.github import GitHubRepositoryConfig
 from app.schemas.risk import ReleaseRunRiskResponse
+from app.services.github_risk_collector import RiskCollector
 from app.services.jira_risk_collector import JiraRiskCollector
 from app.services.release_run_service import (
     ReleaseRunResult,
@@ -31,17 +33,12 @@ from app.services.release_run_service import (
     ReleaseRunServiceError,
     StartReleaseRunCommand,
 )
-from app.services.github_risk_collector import RiskCollector
 
 router = APIRouter(prefix="/release-runs", tags=["release-runs"])
 
 
 async def get_risk_collector(request: Request) -> AsyncIterator[RiskCollector]:
-    """Create a GitHub risk collector for the current request.
-
-    The collector is built from environment configuration so secrets and
-    repository settings are not hardcoded in source code.
-    """
+    """Create a GitHub risk collector for the current request."""
 
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
 
@@ -81,12 +78,7 @@ async def get_risk_collector(request: Request) -> AsyncIterator[RiskCollector]:
 
 
 def get_jira_risk_collector() -> JiraRiskCollector:
-    """Create a Jira risk collector dependency.
-
-    The collector internally uses JiraClient and JiraRiskRuleEngine. Keeping
-    this as a FastAPI dependency allows tests to override it with a fake
-    collector and prevents API tests from making real Jira network calls.
-    """
+    """Create a Jira risk collector dependency."""
 
     return JiraRiskCollector()
 
@@ -178,6 +170,28 @@ async def get_release_run(
 
 
 @router.post(
+    "/{release_run_id}/risks",
+    response_model=ReleaseRunRiskResponse,
+)
+async def collect_release_risks(
+    release_run_id: UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    risk_collector: RiskCollector = Depends(get_risk_collector),
+    jira_risk_collector: JiraRiskCollector = Depends(get_jira_risk_collector),
+) -> ReleaseRunRiskResponse:
+    """Run the LangGraph release-risk workflow for an existing release run."""
+
+    return await _collect_release_risk_workflow_response(
+        release_run_id=release_run_id,
+        request=request,
+        session=session,
+        risk_collector=risk_collector,
+        jira_risk_collector=jira_risk_collector,
+    )
+
+
+@router.post(
     "/{release_run_id}/github-risks",
     response_model=ReleaseRunRiskResponse,
 )
@@ -188,12 +202,89 @@ async def collect_github_risks(
     risk_collector: RiskCollector = Depends(get_risk_collector),
     jira_risk_collector: JiraRiskCollector = Depends(get_jira_risk_collector),
 ) -> ReleaseRunRiskResponse:
-    """Collect release risks from GitHub and Jira for an existing release run.
+    """Collect release risks for an existing release run using the legacy path."""
 
-    The route name and path still mention GitHub because this endpoint started
-    as GitHub-only. The response now includes Jira risks too. Later, we can
-    rename this endpoint to `/risks` after the workflow is fully stable.
-    """
+    return await _collect_release_risks_response(
+        release_run_id=release_run_id,
+        request=request,
+        session=session,
+        risk_collector=risk_collector,
+        jira_risk_collector=jira_risk_collector,
+    )
+
+
+async def _collect_release_risk_workflow_response(
+    *,
+    release_run_id: UUID,
+    request: Request,
+    session: AsyncSession,
+    risk_collector: RiskCollector,
+    jira_risk_collector: JiraRiskCollector,
+) -> ReleaseRunRiskResponse:
+    """Run the LangGraph workflow and convert its final state into an API response."""
+
+    request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
+
+    repository = ReleaseRunRepository(
+        session=session,
+        request_id=request_id,
+    )
+    service = ReleaseRunService(
+        repository=repository,
+        request_id=request_id,
+        risk_collector=risk_collector,
+        jira_risk_collector=jira_risk_collector,
+    )
+
+    try:
+        workflow_state = await service.run_release_risk_workflow(release_run_id)
+        result = _extract_risk_result_from_workflow_state(workflow_state)
+
+        if result is None:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Release run not found.",
+            )
+
+        await session.commit()
+
+        return _to_release_run_risk_response(result)
+
+    except HTTPException:
+        raise
+
+    except ValidationError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Workflow returned an invalid release-risk response.",
+        ) from exc
+
+    except ReleaseRunServiceError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to run release-risk workflow.",
+        ) from exc
+
+    except SQLAlchemyError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error while running release-risk workflow.",
+        ) from exc
+
+
+async def _collect_release_risks_response(
+    *,
+    release_run_id: UUID,
+    request: Request,
+    session: AsyncSession,
+    risk_collector: RiskCollector,
+    jira_risk_collector: JiraRiskCollector,
+) -> ReleaseRunRiskResponse:
+    """Collect release risks using the legacy direct service path."""
 
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
 
@@ -220,10 +311,17 @@ async def collect_github_risks(
 
         await session.commit()
 
-        return ReleaseRunRiskResponse.model_validate(result)
+        return _to_release_run_risk_response(result)
 
     except HTTPException:
         raise
+
+    except ValidationError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Release-risk response validation failed.",
+        ) from exc
 
     except ReleaseRunServiceError as exc:
         await session.rollback()
@@ -238,3 +336,30 @@ async def collect_github_risks(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database error while collecting release risks.",
         ) from exc
+
+
+def _extract_risk_result_from_workflow_state(
+    workflow_state: Mapping[str, Any] | Any,
+) -> Any | None:
+    """Extract the release-risk result from the LangGraph workflow state."""
+
+    if isinstance(workflow_state, Mapping):
+        return workflow_state.get("risk_result")
+
+    if hasattr(workflow_state, "risk_result"):
+        return getattr(workflow_state, "risk_result")
+
+    if hasattr(workflow_state, "model_dump"):
+        dumped_state = workflow_state.model_dump()
+        return dumped_state.get("risk_result")
+
+    return None
+
+
+def _to_release_run_risk_response(result: Any) -> ReleaseRunRiskResponse:
+    """Convert a service or workflow result into the public API response model."""
+
+    if hasattr(result, "model_dump"):
+        return ReleaseRunRiskResponse.model_validate(result.model_dump())
+
+    return ReleaseRunRiskResponse.model_validate(result)
