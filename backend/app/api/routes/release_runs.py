@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
 from app.integrations.github_client import GitHubClient, GitHubClientConfig
+from app.repositories.release_run_event_repository import ReleaseRunEventRepository
 from app.repositories.release_run_repository import ReleaseRunRepository
 from app.schemas.github import GitHubRepositoryConfig
 from app.schemas.risk import ReleaseRunRiskResponse
@@ -110,9 +111,14 @@ async def start_release_run(
         session=session,
         request_id=request_id,
     )
+    event_repository = ReleaseRunEventRepository(
+        session=session,
+        request_id=request_id,
+    )
     service = ReleaseRunService(
         repository=repository,
         request_id=request_id,
+        event_repository=event_repository,
     )
 
     try:
@@ -152,9 +158,14 @@ async def get_release_run(
         session=session,
         request_id=request_id,
     )
+    event_repository = ReleaseRunEventRepository(
+        session=session,
+        request_id=request_id,
+    )
     service = ReleaseRunService(
         repository=repository,
         request_id=request_id,
+        event_repository=event_repository,
     )
 
     try:
@@ -257,11 +268,16 @@ async def _collect_release_risk_workflow_response(
         session=session,
         request_id=request_id,
     )
+    event_repository = ReleaseRunEventRepository(
+        session=session,
+        request_id=request_id,
+    )
     service = ReleaseRunService(
         repository=repository,
         request_id=request_id,
         risk_collector=risk_collector,
         jira_risk_collector=jira_risk_collector,
+        event_repository=event_repository,
     )
 
     try:
@@ -324,11 +340,16 @@ async def _collect_release_risks_response(
         session=session,
         request_id=request_id,
     )
+    event_repository = ReleaseRunEventRepository(
+        session=session,
+        request_id=request_id,
+    )
     service = ReleaseRunService(
         repository=repository,
         request_id=request_id,
         risk_collector=risk_collector,
         jira_risk_collector=jira_risk_collector,
+        event_repository=event_repository,
     )
 
     try:
