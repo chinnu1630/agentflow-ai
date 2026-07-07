@@ -25,6 +25,10 @@ from app.integrations.github_client import GitHubClient, GitHubClientConfig
 from app.repositories.release_run_event_repository import ReleaseRunEventRepository
 from app.repositories.release_run_repository import ReleaseRunRepository
 from app.schemas.github import GitHubRepositoryConfig
+from app.schemas.release_run_event import (
+    ReleaseRunEventListResponse,
+    ReleaseRunEventResponse,
+)
 from app.schemas.risk import ReleaseRunRiskResponse
 from app.services.github_risk_collector import RiskCollector
 from app.services.jira_risk_collector import JiraRiskCollector
@@ -186,6 +190,62 @@ async def get_release_run(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch release run.",
+        ) from exc
+
+
+@router.get(
+    "/{release_run_id}/events",
+    response_model=ReleaseRunEventListResponse,
+)
+async def list_release_run_events(
+    release_run_id: UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> ReleaseRunEventListResponse:
+    """List audit events for a release-risk workflow run.
+
+    This endpoint returns the append-only audit timeline for one release run.
+    It supports enterprise traceability by showing what the workflow did and
+    when each step happened.
+    """
+
+    request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
+
+    release_run_repository = ReleaseRunRepository(
+        session=session,
+        request_id=request_id,
+    )
+    event_repository = ReleaseRunEventRepository(
+        session=session,
+        request_id=request_id,
+    )
+
+    try:
+        release_run = await release_run_repository.get_by_id(release_run_id)
+
+        if release_run is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Release run not found.",
+            )
+
+        events = await event_repository.list_by_release_run_id(release_run_id)
+
+        return ReleaseRunEventListResponse(
+            release_run_id=release_run_id,
+            events=[
+                ReleaseRunEventResponse.model_validate(event)
+                for event in events
+            ],
+        )
+
+    except HTTPException:
+        raise
+
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error while fetching release-run events.",
         ) from exc
 
 
