@@ -1,0 +1,340 @@
+"""Tests for the engineering document repository."""
+
+from __future__ import annotations
+
+import hashlib
+from collections.abc import AsyncGenerator
+from uuid import uuid4
+
+import pytest
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+
+import app.models  # noqa: F401 - ensures all SQLAlchemy models are registered
+from app.db.base import Base
+from app.models.engineering_document import EngineeringDocumentSourceType
+from app.repositories.engineering_document_repository import (
+    EngineeringDocumentRepository,
+    EngineeringDocumentRepositoryError,
+)
+from app.schemas.engineering_document import (
+    EngineeringDocumentChunkCreate,
+    EngineeringDocumentCreate,
+)
+
+
+def _sha256(content: str) -> str:
+    """Return a deterministic SHA-256 hash for test document content."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _document_create(
+    *,
+    title: str = "Payment Service Runbook",
+    raw_content: str = "Payment service depends on Postgres, Redis, and Stripe.",
+    source_uri: str = "docs/payment-service-runbook.md",
+) -> EngineeringDocumentCreate:
+    """Build a valid EngineeringDocumentCreate payload for tests."""
+    return EngineeringDocumentCreate(
+        title=title,
+        source_type=EngineeringDocumentSourceType.RUNBOOK,
+        source_uri=source_uri,
+        content_hash=_sha256(raw_content),
+        raw_content=raw_content,
+        metadata_json={
+            "team": "payments",
+            "service": "payment-api",
+        },
+    )
+
+
+@pytest_asyncio.fixture
+async def async_session() -> AsyncGenerator[AsyncSession, None]:
+    """Create an isolated in-memory SQLite async session for repository tests."""
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(
+        bind=engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+    async with session_factory() as session:
+        yield session
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_document_persists_engineering_document(
+    async_session: AsyncSession,
+) -> None:
+    """create_document should persist a validated engineering document."""
+    repository = EngineeringDocumentRepository(async_session)
+    document_create = _document_create()
+
+    document = await repository.create_document(
+        document_create,
+        run_id="test-run-id",
+    )
+
+    assert document.id is not None
+    assert document.title == "Payment Service Runbook"
+    assert document.source_type == EngineeringDocumentSourceType.RUNBOOK
+    assert document.source_uri == "docs/payment-service-runbook.md"
+    assert document.content_hash == document_create.content_hash
+    assert document.raw_content == document_create.raw_content
+    assert document.metadata_json["team"] == "payments"
+    assert document.created_at is not None
+    assert document.updated_at is not None
+
+
+@pytest.mark.asyncio
+async def test_get_document_by_id_returns_document_when_found(
+    async_session: AsyncSession,
+) -> None:
+    """get_document_by_id should return a document when the ID exists."""
+    repository = EngineeringDocumentRepository(async_session)
+    created_document = await repository.create_document(_document_create())
+
+    found_document = await repository.get_document_by_id(created_document.id)
+
+    assert found_document is not None
+    assert found_document.id == created_document.id
+    assert found_document.title == created_document.title
+
+
+@pytest.mark.asyncio
+async def test_get_document_by_id_returns_none_when_missing(
+    async_session: AsyncSession,
+) -> None:
+    """get_document_by_id should return None when no document exists."""
+    repository = EngineeringDocumentRepository(async_session)
+
+    found_document = await repository.get_document_by_id(uuid4())
+
+    assert found_document is None
+
+
+@pytest.mark.asyncio
+async def test_get_document_by_content_hash_returns_document_when_found(
+    async_session: AsyncSession,
+) -> None:
+    """get_document_by_content_hash should return a matching document."""
+    repository = EngineeringDocumentRepository(async_session)
+    document_create = _document_create()
+    created_document = await repository.create_document(document_create)
+
+    found_document = await repository.get_document_by_content_hash(
+        document_create.content_hash.upper()
+    )
+
+    assert found_document is not None
+    assert found_document.id == created_document.id
+    assert found_document.content_hash == document_create.content_hash
+
+
+@pytest.mark.asyncio
+async def test_create_document_rejects_duplicate_content_hash(
+    async_session: AsyncSession,
+) -> None:
+    """create_document should raise a repository error for duplicate content."""
+    repository = EngineeringDocumentRepository(async_session)
+    document_create = _document_create()
+
+    await repository.create_document(document_create)
+
+    duplicate_document_create = _document_create(
+        title="Duplicate Payment Runbook",
+        raw_content=document_create.raw_content,
+        source_uri="docs/duplicate-payment-service-runbook.md",
+    )
+
+    with pytest.raises(EngineeringDocumentRepositoryError):
+        await repository.create_document(duplicate_document_create)
+
+
+@pytest.mark.asyncio
+async def test_list_documents_returns_documents(
+    async_session: AsyncSession,
+) -> None:
+    """list_documents should return persisted documents."""
+    repository = EngineeringDocumentRepository(async_session)
+
+    first_document = await repository.create_document(
+        _document_create(
+            title="Payment Service Runbook",
+            raw_content="Payment runbook content.",
+            source_uri="docs/payment-runbook.md",
+        )
+    )
+    second_document = await repository.create_document(
+        _document_create(
+            title="Release Readiness Checklist",
+            raw_content="Release checklist content.",
+            source_uri="docs/release-checklist.md",
+        )
+    )
+
+    documents = await repository.list_documents(limit=10, offset=0)
+
+    document_ids = {document.id for document in documents}
+    assert first_document.id in document_ids
+    assert second_document.id in document_ids
+
+
+@pytest.mark.asyncio
+async def test_list_documents_rejects_invalid_limit(
+    async_session: AsyncSession,
+) -> None:
+    """list_documents should reject an invalid limit."""
+    repository = EngineeringDocumentRepository(async_session)
+
+    with pytest.raises(ValueError, match="limit must be between 1 and 100"):
+        await repository.list_documents(limit=0)
+
+
+@pytest.mark.asyncio
+async def test_list_documents_rejects_invalid_offset(
+    async_session: AsyncSession,
+) -> None:
+    """list_documents should reject a negative offset."""
+    repository = EngineeringDocumentRepository(async_session)
+
+    with pytest.raises(ValueError, match="offset must be greater than or equal to 0"):
+        await repository.list_documents(offset=-1)
+
+
+@pytest.mark.asyncio
+async def test_create_chunk_persists_engineering_document_chunk(
+    async_session: AsyncSession,
+) -> None:
+    """create_chunk should persist a chunk for an engineering document."""
+    repository = EngineeringDocumentRepository(async_session)
+    document = await repository.create_document(_document_create())
+
+    chunk = await repository.create_chunk(
+        EngineeringDocumentChunkCreate(
+            document_id=document.id,
+            chunk_index=0,
+            content="Payment service depends on Redis.",
+            token_count=6,
+            metadata_json={"section": "dependencies"},
+        )
+    )
+
+    assert chunk.id is not None
+    assert chunk.document_id == document.id
+    assert chunk.chunk_index == 0
+    assert chunk.content == "Payment service depends on Redis."
+    assert chunk.token_count == 6
+    assert chunk.metadata_json["section"] == "dependencies"
+
+
+@pytest.mark.asyncio
+async def test_create_chunks_persists_multiple_chunks(
+    async_session: AsyncSession,
+) -> None:
+    """create_chunks should persist multiple chunks in one repository call."""
+    repository = EngineeringDocumentRepository(async_session)
+    document = await repository.create_document(_document_create())
+
+    chunks = await repository.create_chunks(
+        [
+            EngineeringDocumentChunkCreate(
+                document_id=document.id,
+                chunk_index=0,
+                content="Payment service overview.",
+                token_count=3,
+                metadata_json={"section": "overview"},
+            ),
+            EngineeringDocumentChunkCreate(
+                document_id=document.id,
+                chunk_index=1,
+                content="Payment service rollback procedure.",
+                token_count=4,
+                metadata_json={"section": "rollback"},
+            ),
+        ]
+    )
+
+    assert len(chunks) == 2
+    assert chunks[0].document_id == document.id
+    assert chunks[1].document_id == document.id
+
+
+@pytest.mark.asyncio
+async def test_list_chunks_by_document_id_returns_chunks_in_index_order(
+    async_session: AsyncSession,
+) -> None:
+    """list_chunks_by_document_id should return chunks ordered by chunk_index."""
+    repository = EngineeringDocumentRepository(async_session)
+    document = await repository.create_document(_document_create())
+
+    await repository.create_chunks(
+        [
+            EngineeringDocumentChunkCreate(
+                document_id=document.id,
+                chunk_index=2,
+                content="Rollback procedure.",
+                token_count=2,
+            ),
+            EngineeringDocumentChunkCreate(
+                document_id=document.id,
+                chunk_index=0,
+                content="Overview.",
+                token_count=1,
+            ),
+            EngineeringDocumentChunkCreate(
+                document_id=document.id,
+                chunk_index=1,
+                content="Dependencies.",
+                token_count=1,
+            ),
+        ]
+    )
+
+    chunks = await repository.list_chunks_by_document_id(document.id)
+
+    assert [chunk.chunk_index for chunk in chunks] == [0, 1, 2]
+    assert [chunk.content for chunk in chunks] == [
+        "Overview.",
+        "Dependencies.",
+        "Rollback procedure.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_chunk_rejects_duplicate_document_chunk_index(
+    async_session: AsyncSession,
+) -> None:
+    """create_chunk should reject duplicate chunk indexes for one document."""
+    repository = EngineeringDocumentRepository(async_session)
+    document = await repository.create_document(_document_create())
+
+    chunk_create = EngineeringDocumentChunkCreate(
+        document_id=document.id,
+        chunk_index=0,
+        content="Original chunk.",
+        token_count=2,
+    )
+
+    await repository.create_chunk(chunk_create)
+
+    duplicate_chunk_create = EngineeringDocumentChunkCreate(
+        document_id=document.id,
+        chunk_index=0,
+        content="Duplicate chunk.",
+        token_count=2,
+    )
+
+    with pytest.raises(EngineeringDocumentRepositoryError):
+        await repository.create_chunk(duplicate_chunk_create)
