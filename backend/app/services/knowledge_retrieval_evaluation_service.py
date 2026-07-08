@@ -13,6 +13,14 @@ from collections.abc import Sequence
 from typing import Literal, Protocol
 from uuid import UUID
 
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.models.engineering_document import EngineeringDocumentSourceType
+from app.services.engineering_document_retrieval_service import (
+    EngineeringDocumentRetrievalRequest,
+    EngineeringDocumentRetrievalService,
+)
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.logging import get_logger
@@ -304,3 +312,76 @@ class KnowledgeRetrievalEvaluationService:
             return 0.0
 
         return numerator / denominator
+
+class EngineeringDocumentRetrievalEvaluationAdapter:
+    """Adapter that lets the real engineering document retriever run eval cases.
+
+    The evaluator expects safe document-level metadata. The real retrieval
+    service returns chunk-level results that include raw content. This adapter
+    intentionally drops raw content and exposes only document ID, title, and
+    source type.
+    """
+
+    def __init__(
+        self,
+        retrieval_service: EngineeringDocumentRetrievalService,
+        *,
+        document_limit: int = 100,
+    ) -> None:
+        """Initialize the adapter with the real retrieval service."""
+        self._retrieval_service = retrieval_service
+        self._document_limit = document_limit
+
+    async def retrieve_for_evaluation(
+        self,
+        case: KnowledgeRetrievalEvalCase,
+        *,
+        run_id: UUID | None,
+    ) -> Sequence[KnowledgeRetrievalEvalCandidate]:
+        """Run real retrieval and return safe eval candidates."""
+        source_type = self._parse_source_type(case)
+
+        try:
+            response = await self._retrieval_service.retrieve_relevant_chunks(
+                EngineeringDocumentRetrievalRequest(
+                    query=case.query,
+                    top_k=case.top_k,
+                    document_limit=self._document_limit,
+                    source_type=source_type,
+                ),
+                run_id=str(run_id) if run_id is not None else None,
+            )
+        except (TypeError, ValueError, SQLAlchemyError) as exc:
+            raise KnowledgeRetrievalEvaluationError(
+                "engineering document retrieval failed during evaluation"
+            ) from exc
+
+        return [
+            KnowledgeRetrievalEvalCandidate(
+                document_id=str(result.document_id),
+                document_title=result.title,
+                source_type=result.source_type.value,
+            )
+            for result in response.results
+        ]
+
+    @staticmethod
+    def _parse_source_type(
+        case: KnowledgeRetrievalEvalCase,
+    ) -> EngineeringDocumentSourceType | None:
+        """Convert optional eval source type strings into the retrieval enum."""
+        if not case.source_types:
+            return None
+
+        if len(case.source_types) != 1:
+            raise KnowledgeRetrievalEvaluationError(
+                "engineering document retrieval evaluation supports one source_type"
+            )
+
+        try:
+            return EngineeringDocumentSourceType(case.source_types[0])
+        except ValueError as exc:
+            raise KnowledgeRetrievalEvaluationError(
+                "invalid engineering document source_type"
+            ) from exc
+

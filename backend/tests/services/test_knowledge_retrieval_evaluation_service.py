@@ -255,3 +255,227 @@ async def test_retrieval_error_fails_safely_without_raw_query() -> None:
 
     failure_json = failure.model_dump_json()
     assert "Redis checkout failure" not in failure_json
+
+from collections.abc import AsyncGenerator as _AsyncGenerator
+
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+
+import app.models  # noqa: F401 - ensures SQLAlchemy models are registered
+from app.db.base import Base
+from app.models.engineering_document import EngineeringDocumentSourceType
+from app.repositories.engineering_document_repository import EngineeringDocumentRepository
+from app.services.document_chunker import DocumentChunkingConfig
+from app.services.engineering_document_ingestion_service import (
+    EngineeringDocumentIngestionRequest,
+    EngineeringDocumentIngestionService,
+)
+from app.services.engineering_document_retrieval_service import (
+    EngineeringDocumentRetrievalService,
+)
+from app.services.knowledge_retrieval_evaluation_service import (
+    EngineeringDocumentRetrievalEvaluationAdapter,
+)
+
+
+@pytest_asyncio.fixture
+async def evaluation_async_session() -> _AsyncGenerator[AsyncSession, None]:
+    """Create an isolated SQLite session for real retrieval adapter tests."""
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(
+        bind=engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+    async with session_factory() as session:
+        yield session
+
+    await engine.dispose()
+
+
+def _evaluation_ingestion_request(
+    *,
+    title: str,
+    source_type: EngineeringDocumentSourceType,
+    source_uri: str,
+    raw_content: str,
+) -> EngineeringDocumentIngestionRequest:
+    """Build an engineering document ingestion request for eval tests."""
+    return EngineeringDocumentIngestionRequest(
+        title=title,
+        source_type=source_type,
+        source_uri=source_uri,
+        raw_content=raw_content,
+        metadata_json={"team": "platform"},
+        chunking_config=DocumentChunkingConfig(
+            max_tokens_per_chunk=40,
+            overlap_tokens=5,
+        ),
+    )
+
+
+async def _seed_retrieval_eval_documents(
+    ingestion_service: EngineeringDocumentIngestionService,
+) -> None:
+    """Seed deterministic AgentFlow Knowledge retrieval eval documents."""
+    documents = [
+        _evaluation_ingestion_request(
+            title="Payment Redis Incident Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/payment-redis-incident-runbook.md",
+            raw_content=(
+                "Redis checkout failure caused payment release risk. "
+                "Redis latency increased during checkout. "
+                "Use the payment rollback procedure when checkout failures spike."
+            ),
+        ),
+        _evaluation_ingestion_request(
+            title="Release Readiness Checklist",
+            source_type=EngineeringDocumentSourceType.RELEASE_CHECKLIST,
+            source_uri="docs/release-readiness-checklist.md",
+            raw_content=(
+                "Release approval checklist requires Jira P1 review, "
+                "GitHub pull request approval, CI validation, rollback readiness, "
+                "and engineering manager sign off."
+            ),
+        ),
+        _evaluation_ingestion_request(
+            title="Payment Rollback Procedure",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/payment-rollback-procedure.md",
+            raw_content=(
+                "Payment outage rollback procedure explains how to revert "
+                "payment service deployments after checkout errors, failed releases, "
+                "or customer-impacting payment incidents."
+            ),
+        ),
+    ]
+
+    for document in documents:
+        await ingestion_service.ingest_document(document)
+
+
+@pytest.mark.asyncio
+async def test_real_engineering_document_retrieval_adapter_passes_eval_cases(
+    evaluation_async_session: AsyncSession,
+) -> None:
+    """Real BM25 retrieval should pass deterministic Knowledge eval cases."""
+    repository = EngineeringDocumentRepository(evaluation_async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+    retrieval_service = EngineeringDocumentRetrievalService(repository)
+    adapter = EngineeringDocumentRetrievalEvaluationAdapter(retrieval_service)
+    evaluation_service = KnowledgeRetrievalEvaluationService(adapter)
+
+    await _seed_retrieval_eval_documents(ingestion_service)
+
+    cases = [
+        KnowledgeRetrievalEvalCase(
+            name="redis_checkout_failure",
+            query="Redis checkout failure",
+            expected_document_title="Payment Redis Incident Runbook",
+            top_k=3,
+        ),
+        KnowledgeRetrievalEvalCase(
+            name="release_approval_checklist",
+            query="release approval checklist",
+            expected_document_title="Release Readiness Checklist",
+            top_k=3,
+        ),
+        KnowledgeRetrievalEvalCase(
+            name="rollback_after_payment_outage",
+            query="rollback after payment outage",
+            expected_document_title="Payment Rollback Procedure",
+            top_k=3,
+        ),
+    ]
+
+    report = await evaluation_service.evaluate(cases, run_id=uuid4())
+
+    assert report.total_cases == 3
+    assert report.passed_cases == 3
+    assert report.failed_cases == 0
+    assert report.top_1_accuracy == 1.0
+    assert report.top_k_accuracy == 1.0
+    assert report.failed_case_details == []
+
+
+@pytest.mark.asyncio
+async def test_real_engineering_document_retrieval_adapter_returns_safe_metadata(
+    evaluation_async_session: AsyncSession,
+) -> None:
+    """Adapter should expose safe metadata and drop raw retrieved content."""
+    repository = EngineeringDocumentRepository(evaluation_async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+    retrieval_service = EngineeringDocumentRetrievalService(repository)
+    adapter = EngineeringDocumentRetrievalEvaluationAdapter(retrieval_service)
+
+    await ingestion_service.ingest_document(
+        _evaluation_ingestion_request(
+            title="Payment Redis Incident Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/payment-redis-incident-runbook.md",
+            raw_content="Redis checkout failure caused payment release risk.",
+        )
+    )
+
+    candidates = await adapter.retrieve_for_evaluation(
+        KnowledgeRetrievalEvalCase(
+            name="safe_metadata_case",
+            query="Redis checkout failure",
+            expected_document_title="Payment Redis Incident Runbook",
+            top_k=1,
+        ),
+        run_id=uuid4(),
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].document_id is not None
+    assert candidates[0].document_title == "Payment Redis Incident Runbook"
+    assert candidates[0].source_type == "runbook"
+    assert not hasattr(candidates[0], "content")
+
+
+@pytest.mark.asyncio
+async def test_real_engineering_document_retrieval_adapter_invalid_source_type_fails_safely(
+    evaluation_async_session: AsyncSession,
+) -> None:
+    """Invalid source type should become a safe evaluation failure."""
+    repository = EngineeringDocumentRepository(evaluation_async_session)
+    retrieval_service = EngineeringDocumentRetrievalService(repository)
+    adapter = EngineeringDocumentRetrievalEvaluationAdapter(retrieval_service)
+    evaluation_service = KnowledgeRetrievalEvaluationService(adapter)
+
+    report = await evaluation_service.evaluate(
+        [
+            KnowledgeRetrievalEvalCase(
+                name="invalid_source_type_case",
+                query="Redis checkout failure",
+                expected_document_title="Payment Redis Incident Runbook",
+                top_k=3,
+                source_types=["not_a_valid_source_type"],
+            )
+        ],
+        run_id=uuid4(),
+    )
+
+    assert report.total_cases == 1
+    assert report.passed_cases == 0
+    assert report.failed_cases == 1
+    assert report.top_1_accuracy == 0.0
+    assert report.top_k_accuracy == 0.0
+
+    failure = report.failed_case_details[0]
+    assert failure.reason == "retrieval_error"
+    assert failure.error_type == "KnowledgeRetrievalEvaluationError"
+    assert failure.retrieved_documents == []
+
