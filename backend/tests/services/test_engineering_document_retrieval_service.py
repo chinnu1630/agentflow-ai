@@ -366,3 +366,78 @@ async def test_retrieve_relevant_chunks_respects_top_k_limit(
     )
 
     assert len(response.results) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected_top_title"),
+    [
+        (
+            "Redis checkout failure",
+            "Payment Redis Incident Runbook",
+        ),
+        (
+            "release approval checklist",
+            "Release Readiness Checklist",
+        ),
+        (
+            "rollback after payment outage",
+            "Payment Rollback Procedure",
+        ),
+    ],
+)
+async def test_retrieval_quality_eval_cases_return_expected_top_document(
+    async_session: AsyncSession,
+    query: str,
+    expected_top_title: str,
+) -> None:
+    """BM25 retrieval should pass deterministic AgentFlow quality eval cases."""
+    repository = EngineeringDocumentRepository(async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+    retrieval_service = EngineeringDocumentRetrievalService(repository)
+
+    documents = [
+        _ingestion_request(
+            title="Payment Redis Incident Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/payment-redis-incident-runbook.md",
+            raw_content=(
+                "Redis checkout failure caused payment release risk. "
+                "Redis latency increased during checkout. "
+                "Use the payment rollback procedure when checkout failures spike."
+            ),
+        ),
+        _ingestion_request(
+            title="Release Readiness Checklist",
+            source_type=EngineeringDocumentSourceType.RELEASE_CHECKLIST,
+            source_uri="docs/release-readiness-checklist.md",
+            raw_content=(
+                "Release approval checklist requires Jira P1 review, "
+                "GitHub pull request approval, CI validation, rollback readiness, "
+                "and engineering manager sign off."
+            ),
+        ),
+        _ingestion_request(
+            title="Payment Rollback Procedure",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/payment-rollback-procedure.md",
+            raw_content=(
+                "Payment outage rollback procedure explains how to revert "
+                "payment service deployments after checkout errors, failed releases, "
+                "or customer-impacting payment incidents."
+            ),
+        ),
+    ]
+
+    for document in documents:
+        await ingestion_service.ingest_document(document)
+
+    response = await retrieval_service.retrieve_relevant_chunks(
+        EngineeringDocumentRetrievalRequest(
+            query=query,
+            top_k=3,
+        )
+    )
+
+    assert response.results
+    assert response.results[0].title == expected_top_title
