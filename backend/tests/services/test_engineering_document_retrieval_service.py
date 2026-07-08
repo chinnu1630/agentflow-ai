@@ -284,3 +284,85 @@ async def test_retrieval_service_uses_batch_chunk_loading(
     assert len(response.results) == 1
     assert batch_loader_calls == 1
     assert single_loader_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_bm25_ranks_full_context_above_repeated_single_keyword(
+    async_session: AsyncSession,
+) -> None:
+    """BM25 retrieval should prefer full risk context over repeated single terms."""
+    repository = EngineeringDocumentRepository(async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+    retrieval_service = EngineeringDocumentRetrievalService(repository)
+
+    await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Payment Redis Incident Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/payment-redis-incident-runbook.md",
+            raw_content=(
+                "Redis checkout failure caused payment release risk. "
+                "Rollback checkout service if Redis latency increases."
+            ),
+        )
+    )
+
+    await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Generic Redis Notes",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/generic-redis-notes.md",
+            raw_content=(
+                "Redis Redis Redis Redis Redis Redis Redis. "
+                "General cache notes for engineering teams."
+            ),
+        )
+    )
+
+    response = await retrieval_service.retrieve_relevant_chunks(
+        EngineeringDocumentRetrievalRequest(
+            query="Redis checkout failure",
+            top_k=2,
+        )
+    )
+
+    assert len(response.results) == 2
+    assert response.results[0].title == "Payment Redis Incident Runbook"
+    assert response.results[0].score > response.results[1].score
+
+
+@pytest.mark.asyncio
+async def test_retrieve_relevant_chunks_respects_top_k_limit(
+    async_session: AsyncSession,
+) -> None:
+    """retrieve_relevant_chunks should not return more than the requested top_k."""
+    repository = EngineeringDocumentRepository(async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+    retrieval_service = EngineeringDocumentRetrievalService(repository)
+
+    await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Payment Redis Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/payment-redis-top-k.md",
+            raw_content="Redis checkout failure rollback guidance.",
+        )
+    )
+
+    await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Checkout Failure Notes",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/checkout-failure-top-k.md",
+            raw_content="Checkout failure release risk and rollback notes.",
+        )
+    )
+
+    response = await retrieval_service.retrieve_relevant_chunks(
+        EngineeringDocumentRetrievalRequest(
+            query="Redis checkout failure",
+            top_k=1,
+        )
+    )
+
+    assert len(response.results) == 1
