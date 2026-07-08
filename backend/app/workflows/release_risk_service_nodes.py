@@ -288,11 +288,17 @@ def create_retrieve_knowledge_context_node(
             if not isinstance(results, list):
                 raise TypeError("knowledge retrieval results must be a list")
 
+            knowledge_status = (
+                KnowledgeRetrievalStatus.COMPLETED
+                if results
+                else KnowledgeRetrievalStatus.NO_RESULTS
+            )
+
             updated_state = running_state.model_copy(
                 update={
                     "knowledge_query": knowledge_query,
                     "knowledge_results": results,
-                    "knowledge_status": KnowledgeRetrievalStatus.COMPLETED,
+                    "knowledge_status": knowledge_status,
                     "knowledge_error": None,
                 }
             ).add_completed_node("retrieve_knowledge_context")

@@ -56,6 +56,24 @@ class FakeKnowledgeRetrievalService:
         }
 
 
+
+class EmptyKnowledgeRetrievalService:
+    """Fake Knowledge retrieval service that returns no matching chunks."""
+
+    async def retrieve_relevant_chunks(
+        self,
+        retrieval_request: object,
+        *,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Return an empty but successful Knowledge retrieval response."""
+        return {
+            "query": getattr(retrieval_request, "query"),
+            "total_candidates": 0,
+            "results": [],
+        }
+
+
 class FailingKnowledgeRetrievalService:
     """Fake Knowledge retrieval service that raises a recoverable error."""
 
@@ -166,6 +184,25 @@ async def test_retrieve_knowledge_context_node_adds_results_to_state() -> None:
     assert "Redis checkout failure" in knowledge_service.received_query
 
 
+
+@pytest.mark.asyncio
+async def test_retrieve_knowledge_context_node_sets_no_results_when_empty() -> None:
+    """Knowledge node should distinguish empty retrieval from retrieval failure."""
+    node = create_retrieve_knowledge_context_node(
+        EmptyKnowledgeRetrievalService()
+    )
+
+    result = await node(_workflow_state().model_dump(mode="python"))
+
+    final_state = ReleaseRiskState.model_validate(result)
+
+    assert final_state.knowledge_status == KnowledgeRetrievalStatus.NO_RESULTS
+    assert final_state.knowledge_error is None
+    assert final_state.knowledge_results == []
+    assert final_state.has_errors is False
+    assert "retrieve_knowledge_context" in final_state.completed_nodes
+
+
 @pytest.mark.asyncio
 async def test_retrieve_knowledge_context_node_degrades_gracefully_on_failure() -> None:
     """Knowledge node failure should be recoverable and keep workflow usable."""
@@ -211,6 +248,33 @@ async def test_service_graph_runs_optional_knowledge_node_when_configured() -> N
     assert release_service.received_release_run_id == initial_state.release_run_id
     assert knowledge_service.received_query is not None
     assert "Redis checkout failure" in knowledge_service.received_query
+
+
+
+@pytest.mark.asyncio
+async def test_service_graph_completes_when_knowledge_returns_no_results() -> None:
+    """Service graph should complete when Knowledge retrieval returns no results."""
+    graph = build_release_risk_service_graph(
+        FakeReleaseRiskCollectionService(),
+        knowledge_service=EmptyKnowledgeRetrievalService(),
+    )
+
+    initial_state = ReleaseRiskState(
+        release_run_id=uuid4(),
+        run_id="test-run-id",
+        manager_query="What are the biggest release risks this week?",
+    )
+
+    raw_result = await graph.ainvoke(initial_state.model_dump(mode="python"))
+    final_state = ReleaseRiskState.model_validate(raw_result)
+
+    assert final_state.status == ReleaseRiskWorkflowStatus.SUCCEEDED
+    assert final_state.knowledge_status == KnowledgeRetrievalStatus.NO_RESULTS
+    assert final_state.knowledge_error is None
+    assert final_state.knowledge_results == []
+    assert final_state.has_errors is False
+    assert "collect_release_risks" in final_state.completed_nodes
+    assert "retrieve_knowledge_context" in final_state.completed_nodes
 
 
 @pytest.mark.asyncio

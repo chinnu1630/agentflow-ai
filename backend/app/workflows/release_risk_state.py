@@ -47,6 +47,7 @@ class KnowledgeRetrievalStatus(StrEnum):
 
     NOT_STARTED = "not_started"
     COMPLETED = "completed"
+    NO_RESULTS = "no_results"
     FAILED = "failed"
 
 
