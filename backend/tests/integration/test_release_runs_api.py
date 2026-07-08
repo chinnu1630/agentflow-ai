@@ -632,6 +632,97 @@ async def test_collect_release_risks_api_returns_knowledge_context_when_docs_mat
     assert knowledge_event["metadata_json"]["query_length"] > 0
 
 
+
+@pytest.mark.anyio
+async def test_collect_release_risks_api_audits_knowledge_retrieval_no_results(
+    release_run_api_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preferred /risks endpoint should audit successful empty Knowledge retrieval."""
+
+    override_external_collectors_for_test()
+
+    async def retrieve_no_relevant_chunks(
+        self: EngineeringDocumentRetrievalService,
+        retrieval_request: Any,
+        *,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Simulate successful Knowledge retrieval with no matching chunks."""
+
+        return {
+            "query": getattr(retrieval_request, "query"),
+            "total_candidates": 0,
+            "results": [],
+        }
+
+    monkeypatch.setattr(
+        EngineeringDocumentRetrievalService,
+        "retrieve_relevant_chunks",
+        retrieve_no_relevant_chunks,
+    )
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    release_run_id = create_response.json()["id"]
+
+    risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert risk_response.status_code == 200, risk_response.text
+
+    response_data = risk_response.json()
+
+    assert response_data["release_run"]["id"] == release_run_id
+    assert response_data["release_run"]["status"] == "completed"
+    assert response_data["github"]["status"] == "success"
+    assert response_data["jira"]["status"] == "success"
+    assert response_data["release_summary"]["source"] == "release"
+
+    assert response_data["knowledge_status"] == "no_results"
+    assert response_data["knowledge_results"] == []
+    assert response_data["knowledge_error"] is None
+    assert response_data["knowledge_query"]
+
+    events_response = await release_run_api_client.get(
+        f"/api/v1/release-runs/{release_run_id}/events",
+    )
+
+    assert events_response.status_code == 200, events_response.text
+
+    events_data = events_response.json()
+    event_types = [
+        event["event_type"]
+        for event in events_data["events"]
+    ]
+
+    assert "knowledge_retrieval_completed" in event_types
+    assert "knowledge_retrieval_failed" not in event_types
+    assert "workflow_completed" in event_types
+    assert "workflow_failed" not in event_types
+
+    knowledge_event = next(
+        event
+        for event in events_data["events"]
+        if event["event_type"] == "knowledge_retrieval_completed"
+    )
+
+    assert knowledge_event["event_status"] == "success"
+    assert knowledge_event["metadata_json"]["result_count"] == 0
+    assert knowledge_event["metadata_json"]["query_length"] > 0
+    assert knowledge_event["metadata_json"]["knowledge_status"] == "no_results"
+    assert knowledge_event["metadata_json"]["error_present"] is False
+
+
 @pytest.mark.anyio
 async def test_collect_release_risks_api_audits_knowledge_retrieval_failure(
     release_run_api_client: AsyncClient,

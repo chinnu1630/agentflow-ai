@@ -680,7 +680,7 @@ class ReleaseRunService:
         )
         query_length = len(knowledge_query) if isinstance(knowledge_query, str) else 0
 
-        if status_value == "completed":
+        if status_value in {"completed", "no_results"}:
             await self._record_event(
                 release_run_id=release_run_id,
                 event_type="knowledge_retrieval_completed",
@@ -689,6 +689,8 @@ class ReleaseRunService:
                 metadata_json={
                     "result_count": result_count,
                     "query_length": query_length,
+                    "knowledge_status": status_value,
+                    "error_present": False,
                 },
             )
             return
@@ -706,6 +708,7 @@ class ReleaseRunService:
                 metadata_json={
                     "result_count": result_count,
                     "query_length": query_length,
+                    "knowledge_status": status_value,
                     "error_present": bool(knowledge_error),
                 },
             )
