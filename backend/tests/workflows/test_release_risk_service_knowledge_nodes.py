@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from app.workflows import release_risk_service_nodes
 from app.workflows.release_risk_service_graph import build_release_risk_service_graph
 from app.workflows.release_risk_service_nodes import (
     create_retrieve_knowledge_context_node,
@@ -16,6 +17,24 @@ from app.workflows.release_risk_state import (
     ReleaseRiskState,
     ReleaseRiskWorkflowStatus,
 )
+
+
+
+class CapturingLogger:
+    """Capture structured log calls for workflow node tests."""
+
+    def __init__(self) -> None:
+        """Initialize captured log event storage."""
+        self.info_events: list[tuple[str, dict[str, Any]]] = []
+        self.warning_events: list[tuple[str, dict[str, Any]]] = []
+
+    def info(self, event: str, **fields: Any) -> None:
+        """Capture an info-level structured log event."""
+        self.info_events.append((event, fields))
+
+    def warning(self, event: str, **fields: Any) -> None:
+        """Capture a warning-level structured log event."""
+        self.warning_events.append((event, fields))
 
 
 class FakeKnowledgeRetrievalService:
@@ -203,6 +222,44 @@ async def test_retrieve_knowledge_context_node_sets_no_results_when_empty() -> N
     assert "retrieve_knowledge_context" in final_state.completed_nodes
 
 
+
+@pytest.mark.asyncio
+async def test_retrieve_knowledge_context_node_logs_safe_success_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Knowledge node should log safe metadata when retrieval succeeds."""
+    capturing_logger = CapturingLogger()
+    monkeypatch.setattr(
+        release_risk_service_nodes,
+        "logger",
+        capturing_logger,
+    )
+
+    node = create_retrieve_knowledge_context_node(FakeKnowledgeRetrievalService())
+
+    result = await node(_workflow_state().model_dump(mode="python"))
+    final_state = ReleaseRiskState.model_validate(result)
+
+    assert final_state.knowledge_status == KnowledgeRetrievalStatus.COMPLETED
+
+    assert len(capturing_logger.info_events) == 1
+    event_name, fields = capturing_logger.info_events[0]
+
+    assert event_name == "knowledge_retrieval_node_completed"
+    assert fields["run_id"] == "test-run-id"
+    assert fields["release_run_id"] == str(final_state.release_run_id)
+    assert fields["knowledge_status"] == "completed"
+    assert fields["result_count"] == 1
+    assert fields["query_length"] > 0
+
+    serialized_fields = str(fields)
+
+    assert "Redis checkout failure" not in serialized_fields
+    assert "Redis latency can increase checkout failure risk" not in serialized_fields
+    assert "query" not in fields
+    assert "content" not in fields
+
+
 @pytest.mark.asyncio
 async def test_retrieve_knowledge_context_node_degrades_gracefully_on_failure() -> None:
     """Knowledge node failure should be recoverable and keep workflow usable."""
@@ -219,6 +276,44 @@ async def test_retrieve_knowledge_context_node_degrades_gracefully_on_failure() 
     assert final_state.has_errors is True
     assert final_state.errors[0].source == "knowledge_retrieval"
     assert final_state.errors[0].recoverable is True
+
+
+
+@pytest.mark.asyncio
+async def test_retrieve_knowledge_context_node_logs_safe_failure_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Knowledge node should log safe metadata when retrieval fails."""
+    capturing_logger = CapturingLogger()
+    monkeypatch.setattr(
+        release_risk_service_nodes,
+        "logger",
+        capturing_logger,
+    )
+
+    node = create_retrieve_knowledge_context_node(FailingKnowledgeRetrievalService())
+
+    result = await node(_workflow_state().model_dump(mode="python"))
+    final_state = ReleaseRiskState.model_validate(result)
+
+    assert final_state.knowledge_status == KnowledgeRetrievalStatus.FAILED
+
+    assert len(capturing_logger.warning_events) == 1
+    event_name, fields = capturing_logger.warning_events[0]
+
+    assert event_name == "knowledge_retrieval_node_failed"
+    assert fields["run_id"] == "test-run-id"
+    assert fields["release_run_id"] == str(final_state.release_run_id)
+    assert fields["error_type"] == "ValueError"
+    assert fields["query_length"] > 0
+
+    serialized_fields = str(fields)
+
+    assert "simulated retrieval failure" not in serialized_fields
+    assert "Redis checkout failure" not in serialized_fields
+    assert "query" not in fields
+    assert "content" not in fields
+    assert "error_message" not in fields
 
 
 @pytest.mark.asyncio

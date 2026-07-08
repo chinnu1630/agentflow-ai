@@ -21,6 +21,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 from uuid import UUID
 
+import structlog
 from pydantic import BaseModel
 
 from app.services.engineering_document_retrieval_service import (
@@ -35,6 +36,9 @@ from app.workflows.release_risk_state import (
     ReleaseRiskState,
     ReleaseRiskWorkflowStage,
 )
+
+
+logger = structlog.get_logger(__name__)
 
 
 class ReleaseRiskCollectionService(Protocol):
@@ -294,6 +298,15 @@ def create_retrieve_knowledge_context_node(
                 else KnowledgeRetrievalStatus.NO_RESULTS
             )
 
+            logger.info(
+                "knowledge_retrieval_node_completed",
+                run_id=running_state.run_id,
+                release_run_id=str(running_state.release_run_id),
+                knowledge_status=knowledge_status.value,
+                result_count=len(results),
+                query_length=len(knowledge_query),
+            )
+
             updated_state = running_state.model_copy(
                 update={
                     "knowledge_query": knowledge_query,
@@ -306,6 +319,14 @@ def create_retrieve_knowledge_context_node(
             return updated_state.model_dump(mode="python")
 
         except (TypeError, ValueError) as exc:
+            logger.warning(
+                "knowledge_retrieval_node_failed",
+                run_id=running_state.run_id,
+                release_run_id=str(running_state.release_run_id),
+                error_type=exc.__class__.__name__,
+                query_length=len(knowledge_query),
+            )
+
             failed_state = running_state.model_copy(
                 update={
                     "knowledge_query": knowledge_query,
