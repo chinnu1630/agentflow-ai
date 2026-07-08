@@ -224,3 +224,61 @@ def test_retrieval_request_rejects_invalid_top_k() -> None:
     """EngineeringDocumentRetrievalRequest should reject invalid top_k values."""
     with pytest.raises(ValidationError):
         EngineeringDocumentRetrievalRequest(query="redis failure", top_k=0)
+
+
+@pytest.mark.anyio
+async def test_retrieval_service_uses_batch_chunk_loading(
+    db_session: AsyncSession,
+) -> None:
+    """Retrieval should batch-load chunks to avoid an N+1 query pattern."""
+    repository = EngineeringDocumentRepository(db_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository=repository)
+    retrieval_service = EngineeringDocumentRetrievalService(repository=repository)
+
+    await ingestion_service.ingest_document(
+        EngineeringDocumentIngestionRequest(
+            title="Payment Redis Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="internal://runbooks/payment-redis-batch-loading",
+            raw_content="Redis checkout failure rollback guidance.",
+            metadata_json={"team": "payments"},
+        )
+    )
+
+    original_batch_loader = repository.list_chunks_by_document_ids
+    original_single_loader = repository.list_chunks_by_document_id
+
+    batch_loader_calls = 0
+    single_loader_calls = 0
+
+    async def counting_batch_loader(
+        document_ids: list[UUID],
+        *,
+        run_id: str | None = None,
+    ) -> list[EngineeringDocumentChunk]:
+        nonlocal batch_loader_calls
+        batch_loader_calls += 1
+        return await original_batch_loader(document_ids, run_id=run_id)
+
+    async def counting_single_loader(
+        document_id: UUID,
+        *,
+        run_id: str | None = None,
+    ) -> list[EngineeringDocumentChunk]:
+        nonlocal single_loader_calls
+        single_loader_calls += 1
+        return await original_single_loader(document_id, run_id=run_id)
+
+    repository.list_chunks_by_document_ids = counting_batch_loader  # type: ignore[method-assign]
+    repository.list_chunks_by_document_id = counting_single_loader  # type: ignore[method-assign]
+
+    response = await retrieval_service.retrieve_relevant_chunks(
+        EngineeringDocumentRetrievalRequest(
+            query="Redis checkout failure",
+            top_k=1,
+        )
+    )
+
+    assert len(response.results) == 1
+    assert batch_loader_calls == 1
+    assert single_loader_calls == 0

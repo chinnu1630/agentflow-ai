@@ -306,3 +306,54 @@ class EngineeringDocumentRepository:
         )
 
         return chunks
+
+    async def list_chunks_by_document_ids(
+        self,
+        document_ids: list[UUID],
+        *,
+        run_id: str | None = None,
+    ) -> list[EngineeringDocumentChunk]:
+        """List chunks for multiple documents in one database query.
+
+        Args:
+            document_ids: Engineering document IDs whose chunks should be loaded.
+            run_id: Optional workflow/request identifier for structured logs.
+
+        Returns:
+            Engineering document chunks ordered by document ID and chunk index.
+
+        Raises:
+            ValueError: If too many document IDs are requested at once.
+        """
+        if not document_ids:
+            logger.info(
+                "engineering_document_chunks_batch_listed",
+                run_id=run_id,
+                document_count=0,
+                count=0,
+            )
+            return []
+
+        unique_document_ids = list(dict.fromkeys(document_ids))
+
+        if len(unique_document_ids) > 100:
+            raise ValueError("document_ids must contain at most 100 IDs")
+
+        result = await self._session.execute(
+            select(EngineeringDocumentChunk)
+            .where(EngineeringDocumentChunk.document_id.in_(unique_document_ids))
+            .order_by(
+                EngineeringDocumentChunk.document_id.asc(),
+                EngineeringDocumentChunk.chunk_index.asc(),
+            )
+        )
+        chunks = list(result.scalars().all())
+
+        logger.info(
+            "engineering_document_chunks_batch_listed",
+            run_id=run_id,
+            document_count=len(unique_document_ids),
+            count=len(chunks),
+        )
+
+        return chunks

@@ -338,3 +338,75 @@ async def test_create_chunk_rejects_duplicate_document_chunk_index(
 
     with pytest.raises(EngineeringDocumentRepositoryError):
         await repository.create_chunk(duplicate_chunk_create)
+
+
+@pytest.mark.anyio
+async def test_list_chunks_by_document_ids_returns_chunks_for_multiple_documents(
+    async_session: AsyncSession,
+) -> None:
+    """Repository should batch-load chunks for multiple engineering documents."""
+    repository = EngineeringDocumentRepository(async_session)
+
+    first_document = await repository.create_document(
+        EngineeringDocumentCreate(
+            title="Payment Redis Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="internal://runbooks/payment-redis",
+            content_hash="a" * 64,
+            raw_content="Redis checkout failure rollback guidance.",
+            metadata_json={"team": "payments"},
+        )
+    )
+
+    second_document = await repository.create_document(
+        EngineeringDocumentCreate(
+            title="Checkout Release Checklist",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="internal://checklists/checkout-release",
+            content_hash="b" * 64,
+            raw_content="Checkout release readiness checklist.",
+            metadata_json={"team": "checkout"},
+        )
+    )
+
+    await repository.create_chunks(
+        [
+            EngineeringDocumentChunkCreate(
+                document_id=first_document.id,
+                chunk_index=0,
+                content="Redis checkout failure.",
+                token_count=3,
+                metadata_json={"chunk": 0},
+            ),
+            EngineeringDocumentChunkCreate(
+                document_id=second_document.id,
+                chunk_index=0,
+                content="Checkout release readiness.",
+                token_count=3,
+                metadata_json={"chunk": 0},
+            ),
+        ]
+    )
+
+    chunks = await repository.list_chunks_by_document_ids(
+        [first_document.id, second_document.id]
+    )
+
+    assert len(chunks) == 2
+    assert {chunk.document_id for chunk in chunks} == {
+        first_document.id,
+        second_document.id,
+    }
+
+
+@pytest.mark.anyio
+async def test_list_chunks_by_document_ids_returns_empty_list_for_empty_input(
+    async_session: AsyncSession,
+) -> None:
+    """Repository should safely return no chunks when no document IDs are provided."""
+    repository = EngineeringDocumentRepository(async_session)
+
+    chunks = await repository.list_chunks_by_document_ids([])
+
+    assert chunks == []
+

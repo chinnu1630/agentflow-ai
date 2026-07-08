@@ -202,31 +202,47 @@ class EngineeringDocumentRetrievalService:
         source_type: EngineeringDocumentSourceType | None,
         run_id: str | None,
     ) -> list[_CandidateChunk]:
-        """Load document chunks that are eligible for retrieval ranking."""
+        """Load document chunks that are eligible for retrieval ranking.
+
+        This method batch-loads chunks for all eligible documents to avoid the
+        N+1 query pattern during Knowledge Agent retrieval.
+        """
+        eligible_documents = [
+            document
+            for document in documents
+            if source_type is None or document.source_type == source_type
+        ]
+
+        if not eligible_documents:
+            return []
+
+        documents_by_id = {document.id: document for document in eligible_documents}
+
+        chunks = await self._repository.list_chunks_by_document_ids(
+            list(documents_by_id.keys()),
+            run_id=run_id,
+        )
+
         candidate_chunks: list[_CandidateChunk] = []
 
-        for document in documents:
-            if source_type is not None and document.source_type != source_type:
+        for chunk in chunks:
+            document = documents_by_id.get(chunk.document_id)
+
+            if document is None:
                 continue
 
-            chunks = await self._repository.list_chunks_by_document_id(
-                document.id,
-                run_id=run_id,
-            )
+            chunk_terms = self._tokenize(chunk.content)
 
-            for chunk in chunks:
-                chunk_terms = self._tokenize(chunk.content)
+            if not chunk_terms:
+                continue
 
-                if not chunk_terms:
-                    continue
-
-                candidate_chunks.append(
-                    _CandidateChunk(
-                        document=document,
-                        chunk=chunk,
-                        terms=chunk_terms,
-                    )
+            candidate_chunks.append(
+                _CandidateChunk(
+                    document=document,
+                    chunk=chunk,
+                    terms=chunk_terms,
                 )
+            )
 
         return candidate_chunks
 
