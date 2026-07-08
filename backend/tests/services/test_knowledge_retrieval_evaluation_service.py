@@ -479,3 +479,33 @@ async def test_real_engineering_document_retrieval_adapter_invalid_source_type_f
     assert failure.error_type == "KnowledgeRetrievalEvaluationError"
     assert failure.retrieved_documents == []
 
+
+@pytest.mark.anyio
+async def test_evaluation_report_includes_duration_ms() -> None:
+    """Evaluation report should include safe duration metadata."""
+    case = KnowledgeRetrievalEvalCase(
+        name="redis_checkout_failure",
+        query="Redis checkout failure",
+        expected_document_title="Payment Redis Incident Runbook",
+        top_k=3,
+    )
+
+    retriever = FakeKnowledgeRetrievalEvalRetriever(
+        responses_by_case_name={
+            "redis_checkout_failure": [
+                KnowledgeRetrievalEvalCandidate(
+                    document_id="doc-redis",
+                    document_title="Payment Redis Incident Runbook",
+                    source_type="incident_postmortem",
+                )
+            ]
+        }
+    )
+
+    service = KnowledgeRetrievalEvaluationService(retriever=retriever)
+
+    report = await service.evaluate([case], run_id=uuid4())
+
+    assert report.duration_ms >= 0.0
+    assert report.total_cases == 1
+    assert report.passed_cases == 1

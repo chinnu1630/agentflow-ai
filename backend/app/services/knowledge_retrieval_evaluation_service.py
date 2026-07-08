@@ -9,6 +9,7 @@ raw document content so evaluation remains deterministic, cheap, and safe.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from typing import Literal, Protocol
 from uuid import UUID
@@ -101,6 +102,7 @@ class KnowledgeRetrievalEvaluationReport(BaseModel):
     failed_cases: int = Field(..., ge=0)
     top_1_accuracy: float = Field(..., ge=0.0, le=1.0)
     top_k_accuracy: float = Field(..., ge=0.0, le=1.0)
+    duration_ms: float = Field(..., ge=0.0)
     failed_case_details: list[KnowledgeRetrievalEvalFailureDetail] = Field(
         default_factory=list
     )
@@ -142,6 +144,7 @@ class KnowledgeRetrievalEvaluationService:
         run_id: UUID | None = None,
     ) -> KnowledgeRetrievalEvaluationReport:
         """Evaluate multiple retrieval cases and return aggregate metrics."""
+        evaluation_started_at = time.perf_counter()
         outcomes: list[_CaseEvaluationOutcome] = []
 
         for case in cases:
@@ -156,6 +159,7 @@ class KnowledgeRetrievalEvaluationService:
             for outcome in outcomes
             if outcome.failure_detail is not None
         ]
+        duration_ms = round((time.perf_counter() - evaluation_started_at) * 1000, 3)
 
         report = KnowledgeRetrievalEvaluationReport(
             total_cases=total_cases,
@@ -163,6 +167,7 @@ class KnowledgeRetrievalEvaluationService:
             failed_cases=total_cases - top_k_hits,
             top_1_accuracy=self._safe_ratio(top_1_hits, total_cases),
             top_k_accuracy=self._safe_ratio(top_k_hits, total_cases),
+            duration_ms=duration_ms,
             failed_case_details=failed_details,
         )
 
@@ -175,6 +180,7 @@ class KnowledgeRetrievalEvaluationService:
                 "failed_cases": report.failed_cases,
                 "top_1_accuracy": report.top_1_accuracy,
                 "top_k_accuracy": report.top_k_accuracy,
+                "duration_ms": report.duration_ms,
             },
         )
 
