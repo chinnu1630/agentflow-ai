@@ -20,6 +20,8 @@ from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalService,
 )
 from app.services.knowledge_retrieval_evaluation_service import (
+    KnowledgeRetrievalEvalFailureDetail,
+    KnowledgeRetrievalEvalRetrievedDocument,
     EngineeringDocumentRetrievalEvaluationAdapter,
     KnowledgeRetrievalEvaluationReport,
     KnowledgeRetrievalEvaluationService,
@@ -87,3 +89,48 @@ async def test_knowledge_retrieval_quality_gate_passes_for_bm25_baseline(
     assert report.top_1_accuracy >= MIN_TOP_1_ACCURACY, failure_summary
     assert report.top_k_accuracy >= MIN_TOP_K_ACCURACY, failure_summary
     assert report.failed_cases == 0, failure_summary
+
+
+def test_quality_gate_failure_summary_excludes_raw_document_content() -> None:
+    """Quality gate failure summary should be safe for CI logs."""
+    raw_internal_runbook_content = (
+        "SECRET_INTERNAL_RUNBOOK_CONTENT: Redis password rotation steps and "
+        "private operational details should never appear in CI failure output."
+    )
+
+    report = KnowledgeRetrievalEvaluationReport(
+        total_cases=1,
+        passed_cases=0,
+        failed_cases=1,
+        top_1_accuracy=0.0,
+        top_k_accuracy=0.0,
+        duration_ms=1.25,
+        failed_case_details=[
+            KnowledgeRetrievalEvalFailureDetail(
+                case_name="redis_checkout_failure",
+                expected_document_title="Payment Redis Incident Runbook",
+                query_length=len("Redis checkout failure"),
+                top_k=3,
+                reason="expected_not_in_top_k",
+                retrieved_documents=[
+                    KnowledgeRetrievalEvalRetrievedDocument(
+                        rank=1,
+                        document_id="doc-release",
+                        document_title="Release Readiness Checklist",
+                        source_type="release_checklist",
+                    )
+                ],
+            )
+        ],
+    )
+
+    failure_summary = _format_safe_failure_summary(report)
+
+    assert "redis_checkout_failure" in failure_summary
+    assert "Payment Redis Incident Runbook" in failure_summary
+    assert "Release Readiness Checklist" in failure_summary
+    assert "expected_not_in_top_k" in failure_summary
+
+    assert raw_internal_runbook_content not in failure_summary
+    assert "SECRET_INTERNAL_RUNBOOK_CONTENT" not in failure_summary
+    assert "Redis checkout failure" not in failure_summary
