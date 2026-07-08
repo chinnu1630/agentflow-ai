@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
@@ -110,6 +111,7 @@ class EngineeringDocumentRetrievalService:
         Returns:
             Ranked retrieval response containing matching chunks.
         """
+        retrieval_started_at = time.perf_counter()
         query_terms = self._tokenize(retrieval_request.query)
         query_phrase = retrieval_request.query.strip().lower()
 
@@ -187,6 +189,7 @@ class EngineeringDocumentRetrievalService:
             total_candidates=len(candidates),
             returned_results=len(ranked_results),
             top_k=retrieval_request.top_k,
+            duration_ms=round((time.perf_counter() - retrieval_started_at) * 1000, 2),
         )
 
         return EngineeringDocumentRetrievalResponse(
