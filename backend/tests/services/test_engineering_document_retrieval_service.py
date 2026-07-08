@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from uuid import UUID
 
 import pytest
 import pytest_asyncio
@@ -13,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 import app.models  # noqa: F401 - ensures all SQLAlchemy models are registered
 from app.db.base import Base
 from app.models.engineering_document import EngineeringDocumentSourceType
+from app.models.engineering_document_chunk import EngineeringDocumentChunk
 from app.repositories.engineering_document_repository import EngineeringDocumentRepository
 from app.services.document_chunker import DocumentChunkingConfig
 from app.services.engineering_document_ingestion_service import (
@@ -228,10 +230,10 @@ def test_retrieval_request_rejects_invalid_top_k() -> None:
 
 @pytest.mark.anyio
 async def test_retrieval_service_uses_batch_chunk_loading(
-    db_session: AsyncSession,
+    async_session: AsyncSession,
 ) -> None:
     """Retrieval should batch-load chunks to avoid an N+1 query pattern."""
-    repository = EngineeringDocumentRepository(db_session)
+    repository = EngineeringDocumentRepository(async_session)
     ingestion_service = EngineeringDocumentIngestionService(repository=repository)
     retrieval_service = EngineeringDocumentRetrievalService(repository=repository)
 
