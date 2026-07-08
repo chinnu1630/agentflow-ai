@@ -21,6 +21,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
+from app.repositories.engineering_document_repository import EngineeringDocumentRepository
 from app.integrations.github_client import GitHubClient, GitHubClientConfig
 from app.repositories.release_run_event_repository import ReleaseRunEventRepository
 from app.repositories.release_run_repository import ReleaseRunRepository
@@ -32,6 +33,9 @@ from app.schemas.release_run_event import (
 from app.schemas.risk import ReleaseRunRiskResponse
 from app.services.github_risk_collector import RiskCollector
 from app.services.jira_risk_collector import JiraRiskCollector
+from app.services.engineering_document_retrieval_service import (
+    EngineeringDocumentRetrievalService,
+)
 from app.services.release_run_service import (
     ReleaseRunResult,
     ReleaseRunService,
@@ -332,12 +336,20 @@ async def _collect_release_risk_workflow_response(
         session=session,
         request_id=request_id,
     )
+    engineering_document_repository = EngineeringDocumentRepository(
+        session=session,
+    )
+    knowledge_service = EngineeringDocumentRetrievalService(
+        repository=engineering_document_repository,
+    )
+
     service = ReleaseRunService(
         repository=repository,
         request_id=request_id,
         risk_collector=risk_collector,
         jira_risk_collector=jira_risk_collector,
         event_repository=event_repository,
+        knowledge_service=knowledge_service,
     )
 
     try:
@@ -451,6 +463,48 @@ async def _collect_release_risks_response(
         ) from exc
 
 
+
+
+def _merge_workflow_knowledge_context(
+    result: Any,
+    workflow_state: Mapping[str, Any],
+) -> Any:
+    """Merge top-level workflow Knowledge Agent fields into API result data."""
+
+    knowledge_keys = (
+        "knowledge_query",
+        "knowledge_results",
+        "knowledge_status",
+        "knowledge_error",
+    )
+
+    knowledge_fields: dict[str, Any] = {}
+
+    for key in knowledge_keys:
+        if key not in workflow_state:
+            continue
+
+        value = workflow_state[key]
+
+        if hasattr(value, "value"):
+            value = value.value
+
+        knowledge_fields[key] = value
+
+    if not knowledge_fields:
+        return result
+
+    if hasattr(result, "model_dump"):
+        result_data = result.model_dump()
+    elif isinstance(result, Mapping):
+        result_data = dict(result)
+    else:
+        return result
+
+    result_data.update(knowledge_fields)
+    return result_data
+
+
 def _extract_risk_result_from_workflow_state(
     workflow_state: Mapping[str, Any] | Any,
 ) -> Any | None:
@@ -484,10 +538,16 @@ def _extract_risk_result_from_workflow_state(
         for key in result_keys:
             result = workflow_state.get(key)
             if result is not None:
-                return result
+                return _merge_workflow_knowledge_context(
+                    result=result,
+                    workflow_state=workflow_state,
+                )
 
         if response_shape_keys.issubset(workflow_state.keys()):
-            return workflow_state
+            return _merge_workflow_knowledge_context(
+                result=workflow_state,
+                workflow_state=workflow_state,
+            )
 
         return None
 
@@ -503,10 +563,16 @@ def _extract_risk_result_from_workflow_state(
         for key in result_keys:
             result = dumped_state.get(key)
             if result is not None:
-                return result
+                return _merge_workflow_knowledge_context(
+                    result=result,
+                    workflow_state=dumped_state,
+                )
 
         if response_shape_keys.issubset(dumped_state.keys()):
-            return dumped_state
+            return _merge_workflow_knowledge_context(
+                result=dumped_state,
+                workflow_state=dumped_state,
+            )
 
     return None
 

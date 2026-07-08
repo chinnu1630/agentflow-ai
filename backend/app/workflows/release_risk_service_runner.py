@@ -1,11 +1,12 @@
 """Application-facing runner for the service-backed release-risk workflow.
 
 This module provides a clean boundary for executing the LangGraph workflow
-that calls the existing ReleaseRunService.collect_release_risks() method.
+that calls existing application services.
 
 Current scope:
 - Build validated initial workflow state
 - Execute the service-backed LangGraph graph asynchronously
+- Optionally include Knowledge Agent retrieval
 - Return validated final workflow state
 
 Future scope:
@@ -23,7 +24,10 @@ from uuid import UUID
 from app.workflows.release_risk_service_graph import (
     build_release_risk_service_graph,
 )
-from app.workflows.release_risk_service_nodes import ReleaseRiskCollectionService
+from app.workflows.release_risk_service_nodes import (
+    KnowledgeRetrievalService,
+    ReleaseRiskCollectionService,
+)
 from app.workflows.release_risk_state import ReleaseRiskState
 
 
@@ -42,11 +46,19 @@ class ReleaseRiskServiceWorkflowRunner:
     request while keeping per-request state isolated.
     """
 
-    def __init__(self, service: ReleaseRiskCollectionService) -> None:
-        """Initialize the runner with a release-risk collection service."""
+    def __init__(
+        self,
+        service: ReleaseRiskCollectionService,
+        *,
+        knowledge_service: KnowledgeRetrievalService | None = None,
+    ) -> None:
+        """Initialize the runner with release-risk and Knowledge services."""
         self._graph = cast(
             AsyncWorkflowGraph,
-            build_release_risk_service_graph(service),
+            build_release_risk_service_graph(
+                service,
+                knowledge_service=knowledge_service,
+            ),
         )
 
     async def run(
@@ -70,7 +82,7 @@ class ReleaseRiskServiceWorkflowRunner:
 
         Raises:
             pydantic.ValidationError: If initial or final workflow state is invalid.
-            TypeError: If the service returns an unsupported payload shape.
+            TypeError: If a service returns an unsupported payload shape.
         """
         initial_state = ReleaseRiskState(
             release_run_id=release_run_id,
@@ -92,6 +104,7 @@ async def run_release_risk_service_workflow(
     run_id: str,
     manager_query: str = "What are the biggest release risks this week?",
     requested_by: str | None = None,
+    knowledge_service: KnowledgeRetrievalService | None = None,
 ) -> ReleaseRiskState:
     """Execute the service-backed release-risk workflow with a temporary runner.
 
@@ -99,7 +112,10 @@ async def run_release_risk_service_workflow(
     For high-throughput production paths, prefer creating one runner instance
     and reusing it through FastAPI dependency injection.
     """
-    runner = ReleaseRiskServiceWorkflowRunner(service)
+    runner = ReleaseRiskServiceWorkflowRunner(
+        service,
+        knowledge_service=knowledge_service,
+    )
 
     return await runner.run(
         release_run_id=release_run_id,

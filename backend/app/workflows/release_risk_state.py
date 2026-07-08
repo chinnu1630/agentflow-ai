@@ -37,6 +37,15 @@ class ReleaseRiskWorkflowStage(StrEnum):
     COLLECTING_GITHUB_RISKS = "collecting_github_risks"
     COLLECTING_JIRA_RISKS = "collecting_jira_risks"
     BUILDING_RELEASE_SUMMARY = "building_release_summary"
+    RETRIEVING_KNOWLEDGE_CONTEXT = "retrieving_knowledge_context"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class KnowledgeRetrievalStatus(StrEnum):
+    """Execution status for Knowledge Agent retrieval."""
+
+    NOT_STARTED = "not_started"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -146,6 +155,24 @@ class ReleaseRiskState(BaseModel):
     release_summary: dict[str, Any] | None = Field(
         default=None,
         description="Combined release summary output.",
+    )
+    knowledge_query: str | None = Field(
+        default=None,
+        max_length=1_000,
+        description="Query used to retrieve internal engineering knowledge.",
+    )
+    knowledge_results: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Retrieved Knowledge Agent evidence chunks.",
+    )
+    knowledge_status: KnowledgeRetrievalStatus = Field(
+        default=KnowledgeRetrievalStatus.NOT_STARTED,
+        description="Knowledge Agent retrieval execution status.",
+    )
+    knowledge_error: str | None = Field(
+        default=None,
+        max_length=1_000,
+        description="Safe Knowledge Agent retrieval error message.",
     )
 
     completed_nodes: list[str] = Field(

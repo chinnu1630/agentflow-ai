@@ -1,16 +1,17 @@
 """Service-backed LangGraph workflow for AgentFlow AI release-risk collection.
 
-This graph connects LangGraph orchestration to the existing ReleaseRunService.
+This graph connects LangGraph orchestration to existing application services.
 
 Current scope:
 - Start workflow
 - Call ReleaseRunService.collect_release_risks()
+- Optionally retrieve internal engineering knowledge context
 - Route to completion when collection succeeds
 - Stop as failed when release run is missing
 
 Future scope:
 - Split GitHub/Jira collection into separate parallel nodes
-- Add hybrid RAG node
+- Add hybrid RAG with pgvector + BM25 + reranker
 - Add XGBoost risk scoring node
 - Add Claude synthesis node
 - Add human approval gate
@@ -32,8 +33,10 @@ from app.workflows.release_risk_nodes import (
     start_release_risk_workflow,
 )
 from app.workflows.release_risk_service_nodes import (
+    KnowledgeRetrievalService,
     ReleaseRiskCollectionService,
     create_collect_release_risks_node,
+    create_retrieve_knowledge_context_node,
 )
 from app.workflows.release_risk_state import (
     ReleaseRiskState,
@@ -42,6 +45,7 @@ from app.workflows.release_risk_state import (
 
 
 _ROUTE_COMPLETE = "complete"
+_ROUTE_KNOWLEDGE = "knowledge"
 _ROUTE_END = "end"
 
 
@@ -74,12 +78,8 @@ def _complete_node(state: WorkflowStateInput) -> WorkflowStateUpdate:
     return _dump_state_update(updated_state)
 
 
-def _route_after_collection(state: WorkflowStateInput) -> str:
-    """Route after release-risk collection based on workflow status.
-
-    If collection failed, the graph stops immediately.
-    If collection succeeded or remained running, the graph completes normally.
-    """
+def _route_after_collection_without_knowledge(state: WorkflowStateInput) -> str:
+    """Route after collection when no Knowledge Agent service is configured."""
     validated_state = _validate_state_input(state)
 
     if validated_state.status == ReleaseRiskWorkflowStatus.FAILED:
@@ -88,20 +88,33 @@ def _route_after_collection(state: WorkflowStateInput) -> str:
     return _ROUTE_COMPLETE
 
 
+def _route_after_collection_with_knowledge(state: WorkflowStateInput) -> str:
+    """Route after collection when Knowledge Agent retrieval is configured."""
+    validated_state = _validate_state_input(state)
+
+    if validated_state.status == ReleaseRiskWorkflowStatus.FAILED:
+        return _ROUTE_END
+
+    return _ROUTE_KNOWLEDGE
+
+
 def build_release_risk_service_graph(
     service: ReleaseRiskCollectionService,
+    *,
+    knowledge_service: KnowledgeRetrievalService | None = None,
 ) -> Any:
     """Build and compile the service-backed release-risk workflow graph.
 
     Args:
         service: Existing application service that collects release risks.
+        knowledge_service: Optional service that retrieves engineering docs.
 
     Returns:
         A compiled LangGraph workflow.
 
-    The graph intentionally depends on the service protocol instead of the
-    concrete ReleaseRunService class. This keeps the graph testable with fake
-    services and production-ready with the real service.
+    The graph intentionally depends on service protocols instead of concrete
+    service classes. This keeps the graph testable with fake services and
+    production-ready with real services.
     """
     graph = StateGraph(ReleaseRiskState)
 
@@ -114,14 +127,31 @@ def build_release_risk_service_graph(
 
     graph.add_edge(START, "start")
     graph.add_edge("start", "collect_release_risks")
-    graph.add_conditional_edges(
-        "collect_release_risks",
-        _route_after_collection,
-        {
-            _ROUTE_COMPLETE: "complete",
-            _ROUTE_END: END,
-        },
-    )
+
+    if knowledge_service is None:
+        graph.add_conditional_edges(
+            "collect_release_risks",
+            _route_after_collection_without_knowledge,
+            {
+                _ROUTE_COMPLETE: "complete",
+                _ROUTE_END: END,
+            },
+        )
+    else:
+        graph.add_node(
+            "retrieve_knowledge_context",
+            create_retrieve_knowledge_context_node(knowledge_service),
+        )
+        graph.add_conditional_edges(
+            "collect_release_risks",
+            _route_after_collection_with_knowledge,
+            {
+                _ROUTE_KNOWLEDGE: "retrieve_knowledge_context",
+                _ROUTE_END: END,
+            },
+        )
+        graph.add_edge("retrieve_knowledge_context", "complete")
+
     graph.add_edge("complete", END)
 
     return graph.compile()

@@ -21,6 +21,7 @@ from app.services.jira_risk_collector import (
     JiraRiskCollectionResult,
     JiraRiskCollectionStatus,
 )
+from app.services.engineering_document_retrieval_service import EngineeringDocumentRetrievalService
 from app.services.release_run_service import ReleaseRunService
 
 
@@ -523,3 +524,192 @@ async def test_legacy_github_risks_api_keeps_direct_service_path(
     assert response_data["release_run"]["status"] == "completed"
     assert response_data["github"]["status"] == "success"
     assert response_data["jira"]["status"] == "success"
+
+@pytest.mark.anyio
+async def test_collect_release_risks_api_returns_knowledge_context_when_docs_match(
+    release_run_api_client: AsyncClient,
+) -> None:
+    """POST /release-runs/{id}/risks should expose retrieved Knowledge Agent context.
+
+    This protects the end-to-end explainability path:
+
+    engineering document ingestion
+    -> preferred LangGraph /risks workflow
+    -> EngineeringDocumentRetrievalService
+    -> knowledge_results in public API response
+    """
+
+    override_external_collectors_for_test()
+
+    ingest_response = await release_run_api_client.post(
+        "/api/v1/engineering-documents/ingest",
+        json={
+            "title": "Checkout Redis Incident Runbook",
+            "source_type": "runbook",
+            "source_uri": "test-knowledge-base",
+            "raw_content": (
+                "Redis checkout failure is a known release risk. "
+                "If checkout latency increases after deployment, review Redis "
+                "connection pool saturation, payment retry queues, and rollback "
+                "the checkout feature flag before continuing the release."
+            ),
+            "metadata_json": {
+                "service": "checkout",
+                "risk": "Redis checkout failure",
+            },
+        },
+    )
+
+    assert ingest_response.status_code in {200, 201}, ingest_response.text
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": (
+                "What are the biggest release risks this week for Redis "
+                "checkout failure?"
+            ),
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    release_run_id = create_response.json()["id"]
+
+    risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert risk_response.status_code == 200, risk_response.text
+
+    response_data = risk_response.json()
+
+    assert response_data["release_run"]["id"] == release_run_id
+    assert response_data["release_run"]["status"] == "completed"
+
+    assert response_data["github"]["status"] == "success"
+    assert response_data["jira"]["status"] == "success"
+    assert response_data["release_summary"]["source"] == "release"
+
+    assert response_data["knowledge_status"] == "completed"
+    assert response_data["knowledge_error"] is None
+    assert response_data["knowledge_query"]
+
+    knowledge_results = response_data["knowledge_results"]
+
+    assert isinstance(knowledge_results, list)
+    assert len(knowledge_results) >= 1
+
+    serialized_results = str(knowledge_results).lower()
+
+    assert "redis" in serialized_results
+    assert "checkout" in serialized_results
+
+    events_response = await release_run_api_client.get(
+        f"/api/v1/release-runs/{release_run_id}/events",
+    )
+
+    assert events_response.status_code == 200, events_response.text
+
+    events_data = events_response.json()
+    event_types = [
+        event["event_type"]
+        for event in events_data["events"]
+    ]
+
+    assert "knowledge_retrieval_completed" in event_types
+    assert "workflow_completed" in event_types
+
+    knowledge_event = next(
+        event
+        for event in events_data["events"]
+        if event["event_type"] == "knowledge_retrieval_completed"
+    )
+
+    assert knowledge_event["event_status"] == "success"
+    assert knowledge_event["metadata_json"]["result_count"] >= 1
+    assert knowledge_event["metadata_json"]["query_length"] > 0
+
+
+@pytest.mark.anyio
+async def test_collect_release_risks_api_audits_knowledge_retrieval_failure(
+    release_run_api_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preferred /risks endpoint should audit recoverable Knowledge Agent failure."""
+
+    override_external_collectors_for_test()
+
+    async def fail_retrieve_relevant_chunks(
+        self: EngineeringDocumentRetrievalService,
+        retrieval_request: Any,
+        *,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Simulate a recoverable Knowledge Agent retrieval failure."""
+
+        raise ValueError("Simulated retrieval failure.")
+
+    monkeypatch.setattr(
+        EngineeringDocumentRetrievalService,
+        "retrieve_relevant_chunks",
+        fail_retrieve_relevant_chunks,
+    )
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    release_run_id = create_response.json()["id"]
+
+    risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert risk_response.status_code == 200, risk_response.text
+
+    response_data = risk_response.json()
+
+    assert response_data["release_run"]["id"] == release_run_id
+    assert response_data["release_run"]["status"] == "completed"
+    assert response_data["github"]["status"] == "success"
+    assert response_data["jira"]["status"] == "success"
+    assert response_data["release_summary"]["source"] == "release"
+
+    assert response_data["knowledge_status"] == "failed"
+    assert response_data["knowledge_results"] == []
+    assert response_data["knowledge_error"] == "Knowledge retrieval failed."
+
+    events_response = await release_run_api_client.get(
+        f"/api/v1/release-runs/{release_run_id}/events",
+    )
+
+    assert events_response.status_code == 200, events_response.text
+
+    events_data = events_response.json()
+    event_types = [
+        event["event_type"]
+        for event in events_data["events"]
+    ]
+
+    assert "knowledge_retrieval_failed" in event_types
+    assert "workflow_completed" in event_types
+    assert "workflow_failed" not in event_types
+
+    knowledge_event = next(
+        event
+        for event in events_data["events"]
+        if event["event_type"] == "knowledge_retrieval_failed"
+    )
+
+    assert knowledge_event["event_status"] == "failed"
+    assert knowledge_event["metadata_json"]["result_count"] == 0
+    assert knowledge_event["metadata_json"]["query_length"] > 0
+    assert knowledge_event["metadata_json"]["error_present"] is True

@@ -49,6 +49,7 @@ from app.services.release_risk_summary import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from app.workflows.release_risk_service_nodes import KnowledgeRetrievalService
     from app.workflows.release_risk_state import ReleaseRiskState
 
 
@@ -156,6 +157,7 @@ class ReleaseRunService:
         jira_risk_summary_generator: JiraRiskSummaryGenerator | None = None,
         release_risk_summary_generator: ReleaseRiskSummaryGenerator | None = None,
         event_repository: ReleaseRunEventRepository | None = None,
+        knowledge_service: KnowledgeRetrievalService | None = None,
     ) -> None:
         """Initialize the service.
 
@@ -168,6 +170,7 @@ class ReleaseRunService:
             jira_risk_summary_generator: Optional generator used to summarize Jira risks.
             release_risk_summary_generator: Optional generator used to summarize combined release risks.
             event_repository: Optional repository used to persist audit events.
+            knowledge_service: Optional service used to retrieve engineering document evidence.
         """
 
         self._repository = repository
@@ -182,6 +185,7 @@ class ReleaseRunService:
             release_risk_summary_generator or ReleaseRiskSummaryGenerator()
         )
         self._event_repository = event_repository
+        self._knowledge_service = knowledge_service
 
     async def start_release_run(
         self,
@@ -529,7 +533,10 @@ class ReleaseRunService:
             },
         )
 
-        runner = ReleaseRiskServiceWorkflowRunner(self)
+        runner = ReleaseRiskServiceWorkflowRunner(
+            self,
+            knowledge_service=getattr(self, "_knowledge_service", None),
+        )
 
         try:
             workflow_state = await runner.run(
@@ -537,6 +544,11 @@ class ReleaseRunService:
                 run_id=self._request_id,
                 manager_query=manager_query,
                 requested_by=requested_by,
+            )
+
+            await self._record_knowledge_retrieval_event(
+                release_run_id=release_run_id,
+                workflow_state=workflow_state,
             )
 
             await self._record_event(
@@ -628,6 +640,108 @@ class ReleaseRunService:
             raise ReleaseRunServiceError(
                 "Failed to update release run status."
             ) from exc
+
+    async def _record_knowledge_retrieval_event(
+        self,
+        *,
+        release_run_id: UUID,
+        workflow_state: object,
+    ) -> None:
+        """Record safe audit metadata for Knowledge Agent retrieval.
+
+        The audit event intentionally stores only counts and status metadata.
+        It does not store raw document chunks, retrieved content, or the full
+        knowledge query because engineering documents may contain sensitive
+        internal system details.
+        """
+
+        knowledge_status = self._get_workflow_state_value(
+            workflow_state,
+            "knowledge_status",
+        )
+        status_value = self._normalize_workflow_state_value(knowledge_status)
+
+        if status_value in {None, "not_started"}:
+            return
+
+        knowledge_results = self._get_workflow_state_value(
+            workflow_state,
+            "knowledge_results",
+        )
+        knowledge_query = self._get_workflow_state_value(
+            workflow_state,
+            "knowledge_query",
+        )
+
+        result_count = (
+            len(knowledge_results)
+            if isinstance(knowledge_results, list)
+            else 0
+        )
+        query_length = len(knowledge_query) if isinstance(knowledge_query, str) else 0
+
+        if status_value == "completed":
+            await self._record_event(
+                release_run_id=release_run_id,
+                event_type="knowledge_retrieval_completed",
+                event_status="success",
+                message="Knowledge Agent retrieval completed.",
+                metadata_json={
+                    "result_count": result_count,
+                    "query_length": query_length,
+                },
+            )
+            return
+
+        if status_value == "failed":
+            knowledge_error = self._get_workflow_state_value(
+                workflow_state,
+                "knowledge_error",
+            )
+            await self._record_event(
+                release_run_id=release_run_id,
+                event_type="knowledge_retrieval_failed",
+                event_status="failed",
+                message="Knowledge Agent retrieval failed.",
+                metadata_json={
+                    "result_count": result_count,
+                    "query_length": query_length,
+                    "error_present": bool(knowledge_error),
+                },
+            )
+
+    @staticmethod
+    def _get_workflow_state_value(
+        workflow_state: object,
+        key: str,
+    ) -> object | None:
+        """Read a value from dict-like or Pydantic workflow state."""
+
+        if isinstance(workflow_state, dict):
+            return workflow_state.get(key)
+
+        if hasattr(workflow_state, key):
+            return getattr(workflow_state, key)
+
+        if hasattr(workflow_state, "model_dump"):
+            dumped_state = workflow_state.model_dump(mode="python")
+            if isinstance(dumped_state, dict):
+                return dumped_state.get(key)
+
+        return None
+
+    @staticmethod
+    def _normalize_workflow_state_value(value: object | None) -> str | None:
+        """Normalize enum or string workflow state values for audit decisions."""
+
+        if value is None:
+            return None
+
+        if hasattr(value, "value"):
+            enum_value = getattr(value, "value")
+            return str(enum_value)
+
+        return str(value)
 
     async def _record_event(
         self,

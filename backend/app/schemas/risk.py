@@ -242,6 +242,27 @@ class ReleaseRunSummaryResponse(BaseModel):
     completed_at: datetime | None = None
 
 
+
+
+class KnowledgeContextResultResponse(BaseModel):
+    """API response schema for one retrieved engineering knowledge chunk.
+
+    The retrieval layer is still evolving. This response model keeps the
+    public contract stable while allowing future retrieval metadata such as
+    BM25 score, vector score, reranker score, document source, or section name.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    document_id: UUID | None = None
+    chunk_id: UUID | None = None
+    source_type: str | None = None
+    title: str | None = None
+    content: str | None = None
+    score: float | None = Field(default=None, ge=0.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ReleaseRunRiskResponse(BaseModel):
     """API response model for release run risk analysis."""
 
@@ -253,3 +274,9 @@ class ReleaseRunRiskResponse(BaseModel):
     jira: JiraRiskCollectionResponse
     jira_summary: JiraRiskSummaryResponse
     release_summary: ReleaseRiskSummaryResponse
+    knowledge_query: str | None = None
+    knowledge_status: str | None = None
+    knowledge_results: list[KnowledgeContextResultResponse] = Field(
+        default_factory=list,
+    )
+    knowledge_error: str | None = None

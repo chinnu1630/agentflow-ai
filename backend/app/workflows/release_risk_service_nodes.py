@@ -5,8 +5,9 @@ workflow nodes.
 
 Current scope:
 - Call ReleaseRunService.collect_release_risks()
+- Optionally retrieve Knowledge Agent context from stored engineering documents
 - Store existing service output in ReleaseRiskState
-- Preserve graceful failure behavior when a release run is missing
+- Preserve graceful failure behavior when optional knowledge retrieval fails
 
 Future scope:
 - Split GitHub, Jira, RAG, ML, synthesis, HITL, and Slack into separate nodes
@@ -22,11 +23,15 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from app.services.engineering_document_retrieval_service import (
+    EngineeringDocumentRetrievalRequest,
+)
 from app.workflows.release_risk_graph import (
     WorkflowStateInput,
     WorkflowStateUpdate,
 )
 from app.workflows.release_risk_state import (
+    KnowledgeRetrievalStatus,
     ReleaseRiskState,
     ReleaseRiskWorkflowStage,
 )
@@ -37,6 +42,18 @@ class ReleaseRiskCollectionService(Protocol):
 
     async def collect_release_risks(self, release_run_id: UUID) -> object | None:
         """Collect release risks for a release run."""
+
+
+class KnowledgeRetrievalService(Protocol):
+    """Service contract required by the Knowledge Agent retrieval node."""
+
+    async def retrieve_relevant_chunks(
+        self,
+        retrieval_request: EngineeringDocumentRetrievalRequest,
+        *,
+        run_id: str | None = None,
+    ) -> object:
+        """Retrieve relevant engineering document chunks."""
 
 
 def _validate_state_input(state: WorkflowStateInput) -> ReleaseRiskState:
@@ -82,6 +99,89 @@ def _extract_optional_mapping(
         return value.model_dump(mode="python")
 
     raise TypeError(f"{key} must be a dictionary, Pydantic model, or None")
+
+
+def _collect_text_values(value: object) -> list[str]:
+    """Collect safe short text values from nested workflow payloads.
+
+    This intentionally avoids logging or exposing raw document content. It only
+    builds an internal retrieval query from existing risk titles, categories,
+    descriptions, and summary metadata.
+    """
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        stripped_value = value.strip()
+        return [stripped_value] if stripped_value else []
+
+    if isinstance(value, dict):
+        collected: list[str] = []
+
+        preferred_keys = {
+            "title",
+            "summary",
+            "description",
+            "category",
+            "severity",
+            "recommended_action",
+            "overall_status",
+            "risk_level",
+        }
+
+        for key, nested_value in value.items():
+            if key in preferred_keys:
+                collected.extend(_collect_text_values(nested_value))
+
+            elif isinstance(nested_value, dict | list):
+                collected.extend(_collect_text_values(nested_value))
+
+        return collected
+
+    if isinstance(value, list):
+        collected: list[str] = []
+
+        for item in value:
+            collected.extend(_collect_text_values(item))
+
+        return collected
+
+    return []
+
+
+def _build_knowledge_query(state: ReleaseRiskState) -> str:
+    """Build a deterministic Knowledge Agent retrieval query from workflow state."""
+    query_parts: list[str] = [state.manager_query]
+
+    query_parts.extend(
+        _collect_text_values(
+            {
+                "github_summary": state.github_summary,
+                "jira_summary": state.jira_summary,
+                "release_summary": state.release_summary,
+                "github": state.github,
+                "jira": state.jira,
+            }
+        )
+    )
+
+    query = " ".join(query_parts)
+    normalized_query = " ".join(query.split())
+
+    return normalized_query[:1_000]
+
+
+def _serialize_knowledge_result(result: object) -> dict[str, Any]:
+    """Serialize a Knowledge retrieval result into a plain dictionary."""
+    if isinstance(result, BaseModel):
+        return result.model_dump(mode="python")
+
+    if isinstance(result, dict):
+        return result
+
+    raise TypeError(
+        "retrieve_relevant_chunks() must return a Pydantic model or dictionary"
+    )
 
 
 def create_collect_release_risks_node(
@@ -151,3 +251,69 @@ def create_collect_release_risks_node(
         return updated_state.model_dump(mode="python")
 
     return collect_release_risks_node
+
+
+def create_retrieve_knowledge_context_node(
+    service: KnowledgeRetrievalService,
+) -> Callable[[WorkflowStateInput], object]:
+    """Create an async LangGraph node for Knowledge Agent retrieval.
+
+    The returned node is intentionally recoverable. If document retrieval fails,
+    the workflow records a safe error and continues with GitHub/Jira evidence.
+    """
+
+    async def retrieve_knowledge_context_node(
+        state: WorkflowStateInput,
+    ) -> WorkflowStateUpdate:
+        """Retrieve internal engineering document context for release risks."""
+        validated_state = _validate_state_input(state)
+        running_state = validated_state.mark_running(
+            ReleaseRiskWorkflowStage.RETRIEVING_KNOWLEDGE_CONTEXT
+        )
+
+        knowledge_query = _build_knowledge_query(running_state)
+
+        try:
+            retrieval_result = await service.retrieve_relevant_chunks(
+                EngineeringDocumentRetrievalRequest(
+                    query=knowledge_query,
+                    top_k=5,
+                    document_limit=100,
+                ),
+                run_id=running_state.run_id,
+            )
+            payload = _serialize_knowledge_result(retrieval_result)
+            results = payload.get("results", [])
+
+            if not isinstance(results, list):
+                raise TypeError("knowledge retrieval results must be a list")
+
+            updated_state = running_state.model_copy(
+                update={
+                    "knowledge_query": knowledge_query,
+                    "knowledge_results": results,
+                    "knowledge_status": KnowledgeRetrievalStatus.COMPLETED,
+                    "knowledge_error": None,
+                }
+            ).add_completed_node("retrieve_knowledge_context")
+
+            return updated_state.model_dump(mode="python")
+
+        except (TypeError, ValueError) as exc:
+            failed_state = running_state.model_copy(
+                update={
+                    "knowledge_query": knowledge_query,
+                    "knowledge_results": [],
+                    "knowledge_status": KnowledgeRetrievalStatus.FAILED,
+                    "knowledge_error": "Knowledge retrieval failed.",
+                }
+            ).add_error(
+                source="knowledge_retrieval",
+                message="Knowledge retrieval failed.",
+                recoverable=True,
+                details={"error_type": exc.__class__.__name__},
+            )
+
+            return failed_state.model_dump(mode="python")
+
+    return retrieve_knowledge_context_node
