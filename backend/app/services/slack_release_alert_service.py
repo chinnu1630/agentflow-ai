@@ -6,16 +6,24 @@ nothing is sent unless the release has been approved.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Mapping, Sequence
-from typing import Protocol
-from typing import Any
+from json import JSONDecodeError
+from typing import Any, Protocol
 from uuid import UUID
 
 import structlog
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.integrations.slack_client import SlackClientError, SlackPostMessageResult
+from app.repositories.release_run_approval_repository import (
+    ReleaseRunApprovalRepositoryError,
+)
+from app.repositories.release_run_risk_snapshot_repository import (
+    ReleaseRunRiskSnapshotRepositoryError,
+)
+from app.schemas.risk import ReleaseRunRiskResponse
 from app.services.slack_alert_payload_service import (
     SlackAlertPayloadService,
     SlackAlertSeverity,
@@ -37,6 +45,20 @@ class SlackAlertSender(Protocol):
         payload: SlackReleaseRiskAlertPayload,
     ) -> SlackPostMessageResult:
         """Send a release-risk alert payload to Slack."""
+
+
+class ReleaseApprovalReader(Protocol):
+    """Protocol for reading release-run approval state."""
+
+    async def get_latest_by_release_run_id(self, release_run_id: UUID) -> object | None:
+        """Fetch the latest approval request for one release run."""
+
+
+class ReleaseRiskSnapshotReader(Protocol):
+    """Protocol for reading persisted release-risk snapshots."""
+
+    async def get_latest_by_release_run_id(self, release_run_id: UUID) -> object | None:
+        """Fetch the latest trusted risk snapshot for one release run."""
 
 
 class SlackReleaseAlertRequest(BaseModel):
@@ -85,6 +107,86 @@ class SlackReleaseAlertService:
     ) -> None:
         """Initialize the service."""
         self._payload_service = payload_service or SlackAlertPayloadService()
+
+    async def send_approved_release_alert_from_snapshot(
+        self,
+        release_run_id: UUID,
+        *,
+        approval_repository: ReleaseApprovalReader,
+        risk_snapshot_repository: ReleaseRiskSnapshotReader,
+        sender: SlackAlertSender,
+        run_id: str | None = None,
+    ) -> SlackReleaseAlertResult:
+        """Send a Slack alert from the latest approved release-risk snapshot.
+
+        Args:
+            release_run_id: Release run database UUID.
+            approval_repository: Repository used to verify HITL approval state.
+            risk_snapshot_repository: Repository used to load trusted risk data.
+            sender: Slack-compatible sender, usually SlackClient.
+            run_id: Optional request/workflow ID for safe logs.
+
+        Returns:
+            Result describing the sent Slack message.
+
+        Raises:
+            SlackReleaseAlertNotApprovedError: If latest approval is not approved.
+            SlackReleaseAlertServiceError: If snapshot loading or Slack sending fails.
+        """
+        try:
+            approval = await approval_repository.get_latest_by_release_run_id(
+                release_run_id
+            )
+            approval_id = self._extract_approved_approval_id(approval)
+
+            snapshot = await risk_snapshot_repository.get_latest_by_release_run_id(
+                release_run_id
+            )
+
+        except (
+            ReleaseRunApprovalRepositoryError,
+            ReleaseRunRiskSnapshotRepositoryError,
+        ) as exc:
+            logger.exception(
+                "approved_release_slack_alert_snapshot_load_failed",
+                run_id=run_id,
+                release_run_id=str(release_run_id),
+            )
+            raise SlackReleaseAlertServiceError(
+                "Failed to load approved release-risk snapshot."
+            ) from exc
+
+        if snapshot is None:
+            logger.error(
+                "approved_release_slack_alert_snapshot_missing",
+                run_id=run_id,
+                release_run_id=str(release_run_id),
+            )
+            raise SlackReleaseAlertServiceError(
+                "No release-risk snapshot found for approved release run."
+            )
+
+        snapshot_response = self._load_snapshot_response(snapshot)
+
+        request = self._build_alert_request_from_snapshot(
+            response=snapshot_response,
+            approval_id=approval_id,
+        )
+
+        logger.info(
+            "approved_release_slack_alert_snapshot_loaded",
+            run_id=run_id,
+            release_run_id=str(release_run_id),
+            snapshot_id=str(getattr(snapshot, "id", "unknown")),
+            snapshot_version=getattr(snapshot, "snapshot_version", None),
+            approval_id=str(approval_id),
+        )
+
+        return await self.send_approved_release_alert(
+            request,
+            sender=sender,
+            run_id=run_id,
+        )
 
     async def send_approved_release_alert(
         self,
@@ -166,6 +268,78 @@ class SlackReleaseAlertService:
             risk_level=risk_level,
             risk_score=risk_score,
             recommended_action=recommended_action,
+        )
+
+    @staticmethod
+    def _extract_approved_approval_id(approval: object | None) -> UUID:
+        """Extract approval ID after verifying latest approval is approved."""
+        if approval is None:
+            raise SlackReleaseAlertNotApprovedError(
+                "Slack alert cannot be sent before approval."
+            )
+
+        approval_status = getattr(approval, "approval_status", None)
+
+        if approval_status != "approved":
+            raise SlackReleaseAlertNotApprovedError(
+                "Slack alert cannot be sent before approval."
+            )
+
+        approval_id = getattr(approval, "id", None)
+
+        if not isinstance(approval_id, UUID):
+            raise SlackReleaseAlertServiceError(
+                "Approved release approval record is missing a valid ID."
+            )
+
+        return approval_id
+
+    @staticmethod
+    def _load_snapshot_response(snapshot: object) -> ReleaseRunRiskResponse:
+        """Load and validate a stored release-risk snapshot payload."""
+        risk_payload_json = getattr(snapshot, "risk_payload_json", None)
+
+        if not isinstance(risk_payload_json, str) or not risk_payload_json.strip():
+            raise SlackReleaseAlertServiceError(
+                "Stored release-risk snapshot payload is empty."
+            )
+
+        try:
+            payload = json.loads(risk_payload_json)
+        except JSONDecodeError as exc:
+            raise SlackReleaseAlertServiceError(
+                "Stored release-risk snapshot payload is invalid JSON."
+            ) from exc
+
+        try:
+            return ReleaseRunRiskResponse.model_validate(payload)
+        except ValidationError as exc:
+            raise SlackReleaseAlertServiceError(
+                "Stored release-risk snapshot payload failed validation."
+            ) from exc
+
+    @staticmethod
+    def _build_alert_request_from_snapshot(
+        *,
+        response: ReleaseRunRiskResponse,
+        approval_id: UUID,
+    ) -> SlackReleaseAlertRequest:
+        """Build Slack alert input from a trusted release-risk snapshot."""
+        risk_score_payload = (
+            response.risk_score.model_dump(mode="json")
+            if response.risk_score is not None
+            else {}
+        )
+
+        return SlackReleaseAlertRequest(
+            release_run_id=response.release_run.id,
+            run_id=response.release_run.run_id,
+            release_run_status="approval_approved",
+            requested_by=response.release_run.requested_by,
+            approval_status="approved",
+            approval_request_id=approval_id,
+            risk_score=risk_score_payload,
+            release_summary=response.release_summary.model_dump(mode="json"),
         )
 
     @staticmethod
