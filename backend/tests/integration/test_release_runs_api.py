@@ -12,7 +12,11 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.api.routes.release_runs import get_jira_risk_collector, get_risk_collector
+from app.api.routes.release_runs import (
+    get_jira_risk_collector,
+    get_risk_collector,
+    get_slack_alert_sender,
+)
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
@@ -26,7 +30,9 @@ from app.services.jira_risk_collector import (
     JiraRiskCollectionStatus,
 )
 from app.services.engineering_document_retrieval_service import EngineeringDocumentRetrievalService
+from app.integrations.slack_client import SlackPostMessageResult
 from app.services.release_run_service import ReleaseRunService
+from app.services.slack_alert_payload_service import SlackReleaseRiskAlertPayload
 
 
 class FakeRiskCollector:
@@ -91,6 +97,27 @@ class FakeJiraRiskCollector:
         )
 
 
+class FakeSlackAlertSender:
+    """Fake Slack sender used to avoid real Slack API calls."""
+
+    def __init__(self) -> None:
+        """Initialize fake sender with captured payload list."""
+        self.sent_payloads: list[SlackReleaseRiskAlertPayload] = []
+
+    async def send_release_risk_alert(
+        self,
+        payload: SlackReleaseRiskAlertPayload,
+    ) -> SlackPostMessageResult:
+        """Capture Slack payload and return deterministic fake result."""
+        self.sent_payloads.append(payload)
+
+        return SlackPostMessageResult(
+            ok=True,
+            channel="C1234567890",
+            timestamp="12345.6789",
+        )
+
+
 def override_external_collectors_for_test() -> None:
     """Override external GitHub and Jira collectors for API tests."""
 
@@ -106,6 +133,18 @@ def override_external_collectors_for_test() -> None:
 
     app.dependency_overrides[get_risk_collector] = override_get_risk_collector
     app.dependency_overrides[get_jira_risk_collector] = override_get_jira_risk_collector
+
+
+def override_slack_alert_sender_for_test(
+    sender: FakeSlackAlertSender,
+) -> None:
+    """Override Slack sender dependency for API tests."""
+
+    async def override_get_slack_alert_sender() -> FakeSlackAlertSender:
+        """Return fake Slack sender instead of real Slack client."""
+        return sender
+
+    app.dependency_overrides[get_slack_alert_sender] = override_get_slack_alert_sender
 
 
 def _assert_risk_scoring_response(response_data: dict[str, Any]) -> None:
@@ -1023,6 +1062,149 @@ async def test_collect_release_risks_api_creates_new_snapshot_version_on_second_
     ]
 
     assert snapshot_versions == [1, 2]
+
+
+@pytest.mark.anyio
+async def test_send_release_run_slack_alert_api_sends_after_approval(
+    release_run_api_client: AsyncClient,
+) -> None:
+    """POST /slack-alert should send only after approved snapshot exists."""
+
+    override_degraded_github_collector_for_test()
+    slack_sender = FakeSlackAlertSender()
+    override_slack_alert_sender_for_test(slack_sender)
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201, create_response.text
+
+    release_run_id = create_response.json()["id"]
+
+    risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert risk_response.status_code == 200, risk_response.text
+
+    risk_response_data = risk_response.json()
+    approval_request_id = risk_response_data["approval_request_id"]
+
+    assert approval_request_id is not None
+    assert risk_response_data["approval_status"] == "pending"
+
+    decision_response = await release_run_api_client.post(
+        (
+            f"/api/v1/release-runs/{release_run_id}"
+            f"/approvals/{approval_request_id}/decision"
+        ),
+        json={
+            "approval_status": "approved",
+            "decided_by": "director@example.com",
+            "decision_note": "Approved after reviewing rollback plan.",
+        },
+    )
+
+    assert decision_response.status_code == 200, decision_response.text
+    assert decision_response.json()["approval_status"] == "approved"
+
+    slack_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/slack-alert",
+    )
+
+    assert slack_response.status_code == 200, slack_response.text
+
+    slack_response_data = slack_response.json()
+
+    assert slack_response_data["sent"] is True
+    assert slack_response_data["slack_channel"] == "C1234567890"
+    assert slack_response_data["slack_timestamp"] == "12345.6789"
+
+    assert len(slack_sender.sent_payloads) == 1
+
+    payload = slack_sender.sent_payloads[0]
+
+    assert payload.metadata["release_run_id"] == release_run_id
+    assert payload.metadata["approval_status"] == "approved"
+    assert payload.metadata["approval_request_id"] == approval_request_id
+    assert payload.metadata["release_run_status"] == "approval_approved"
+
+    events_response = await release_run_api_client.get(
+        f"/api/v1/release-runs/{release_run_id}/events",
+    )
+
+    assert events_response.status_code == 200, events_response.text
+
+    events_data = events_response.json()
+    slack_events = [
+        event
+        for event in events_data["events"]
+        if event["event_type"] == "release_slack_alert_sent"
+    ]
+
+    assert len(slack_events) == 1
+    assert slack_events[0]["event_status"] == "success"
+    assert slack_events[0]["metadata_json"]["slack_channel"] == "C1234567890"
+
+
+@pytest.mark.anyio
+async def test_send_release_run_slack_alert_api_blocks_before_approval(
+    release_run_api_client: AsyncClient,
+) -> None:
+    """POST /slack-alert should reject release runs still waiting for approval."""
+
+    override_degraded_github_collector_for_test()
+    slack_sender = FakeSlackAlertSender()
+    override_slack_alert_sender_for_test(slack_sender)
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201, create_response.text
+
+    release_run_id = create_response.json()["id"]
+
+    risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert risk_response.status_code == 200, risk_response.text
+    assert risk_response.json()["approval_status"] == "pending"
+
+    slack_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/slack-alert",
+    )
+
+    assert slack_response.status_code == 409, slack_response.text
+    assert "Slack alert cannot be sent before approval" in slack_response.text
+    assert slack_sender.sent_payloads == []
+
+    events_response = await release_run_api_client.get(
+        f"/api/v1/release-runs/{release_run_id}/events",
+    )
+
+    assert events_response.status_code == 200, events_response.text
+
+    events_data = events_response.json()
+    slack_events = [
+        event
+        for event in events_data["events"]
+        if event["event_type"] == "release_slack_alert_sent"
+    ]
+
+    assert len(slack_events) == 1
+    assert slack_events[0]["event_status"] == "blocked"
+    assert "not approved" in slack_events[0]["message"].lower()
 
 
 @pytest.mark.anyio

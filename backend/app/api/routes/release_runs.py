@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db_session
 from app.repositories.engineering_document_repository import EngineeringDocumentRepository
 from app.integrations.github_client import GitHubClient, GitHubClientConfig
+from app.integrations.slack_client import SlackClient, SlackClientConfig
 from app.repositories.release_run_event_repository import (
     CreateReleaseRunEventCommand,
     ReleaseRunEventRepository,
@@ -65,6 +66,12 @@ from app.services.release_run_service import (
     ReleaseRunService,
     ReleaseRunServiceError,
     StartReleaseRunCommand,
+)
+from app.services.slack_release_alert_service import (
+    SlackReleaseAlertNotApprovedError,
+    SlackReleaseAlertResult,
+    SlackReleaseAlertService,
+    SlackReleaseAlertServiceError,
 )
 
 router = APIRouter(prefix="/release-runs", tags=["release-runs"])
@@ -123,6 +130,40 @@ def get_jira_risk_collector() -> JiraRiskCollector:
     """
 
     return JiraRiskCollector()
+
+
+async def get_slack_alert_sender(request: Request) -> AsyncIterator[SlackClient]:
+    """Create a Slack alert sender for the current request.
+
+    Slack credentials are read from environment variables so bot tokens and
+    channel IDs are never hardcoded in source code.
+    """
+
+    request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
+
+    slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
+    slack_channel_id = os.getenv("SLACK_CHANNEL_ID")
+
+    if not slack_bot_token or not slack_channel_id:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Slack alert delivery is not configured. "
+                "Set SLACK_BOT_TOKEN and SLACK_CHANNEL_ID."
+            ),
+        )
+
+    slack_config = SlackClientConfig(
+        bot_token=SecretStr(slack_bot_token),
+        channel_id=slack_channel_id,
+    )
+
+    async with httpx.AsyncClient() as http_client:
+        yield SlackClient(
+            http_client=http_client,
+            config=slack_config,
+            request_id=request_id,
+        )
 
 
 @router.post(
@@ -492,6 +533,144 @@ async def decide_release_run_approval(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database error while deciding release-run approval.",
         ) from exc
+
+
+@router.post(
+    "/{release_run_id}/slack-alert",
+    response_model=SlackReleaseAlertResult,
+)
+async def send_release_run_slack_alert(
+    release_run_id: UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    sender: SlackClient = Depends(get_slack_alert_sender),
+) -> SlackReleaseAlertResult:
+    """Manually send an approved release-risk Slack alert.
+
+    This endpoint intentionally accepts only the release_run_id. Slack alert
+    content is loaded from the latest backend-trusted risk snapshot after the
+    latest HITL approval is verified as approved.
+    """
+
+    request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
+
+    release_run_repository = ReleaseRunRepository(
+        session=session,
+        request_id=request_id,
+    )
+    approval_repository = ReleaseRunApprovalRepository(
+        session=session,
+        request_id=request_id,
+    )
+    risk_snapshot_repository = ReleaseRunRiskSnapshotRepository(
+        session=session,
+        request_id=request_id,
+    )
+    event_repository = ReleaseRunEventRepository(
+        session=session,
+        request_id=request_id,
+    )
+    slack_service = SlackReleaseAlertService()
+
+    try:
+        release_run = await release_run_repository.get_by_id(release_run_id)
+
+        if release_run is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Release run not found.",
+            )
+
+        result = await slack_service.send_approved_release_alert_from_snapshot(
+            release_run_id,
+            approval_repository=approval_repository,
+            risk_snapshot_repository=risk_snapshot_repository,
+            sender=sender,
+            run_id=request_id,
+        )
+
+        await _record_release_slack_alert_event(
+            event_repository=event_repository,
+            release_run_id=release_run_id,
+            event_status="success",
+            message="Approved release-risk Slack alert was sent.",
+            metadata_json={
+                "slack_channel": result.slack_channel,
+                "slack_timestamp": result.slack_timestamp,
+                "risk_level": result.risk_level,
+                "risk_score": result.risk_score,
+                "recommended_action": result.recommended_action,
+            },
+        )
+
+        await session.commit()
+
+        return result
+
+    except HTTPException:
+        raise
+
+    except SlackReleaseAlertNotApprovedError as exc:
+        await _record_release_slack_alert_event(
+            event_repository=event_repository,
+            release_run_id=release_run_id,
+            event_status="blocked",
+            message="Slack alert was blocked because release is not approved.",
+            metadata_json={
+                "reason": str(exc),
+            },
+        )
+        await session.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    except SlackReleaseAlertServiceError as exc:
+        await _record_release_slack_alert_event(
+            event_repository=event_repository,
+            release_run_id=release_run_id,
+            event_status="failed",
+            message="Approved release-risk Slack alert failed.",
+            metadata_json={
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        await session.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to send approved release-risk Slack alert.",
+        ) from exc
+
+    except (ReleaseRunRepositoryError, SQLAlchemyError) as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error while sending release-risk Slack alert.",
+        ) from exc
+
+
+async def _record_release_slack_alert_event(
+    *,
+    event_repository: ReleaseRunEventRepository,
+    release_run_id: UUID,
+    event_status: str,
+    message: str,
+    metadata_json: dict[str, Any],
+) -> None:
+    """Persist a safe audit event for manual Slack alert attempts."""
+
+    await event_repository.create(
+        CreateReleaseRunEventCommand(
+            release_run_id=release_run_id,
+            event_type="release_slack_alert_sent",
+            event_status=event_status,
+            message=message,
+            metadata_json=metadata_json,
+        )
+    )
 
 
 @router.post(
