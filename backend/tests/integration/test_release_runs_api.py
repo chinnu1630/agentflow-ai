@@ -845,7 +845,10 @@ async def test_collect_release_risks_api_audits_knowledge_retrieval_failure(
     response_data = risk_response.json()
 
     assert response_data["release_run"]["id"] == release_run_id
-    assert response_data["release_run"]["status"] == "completed"
+    assert response_data["release_run"]["status"] == "waiting_for_approval"
+    assert response_data["approval_required"] is True
+    assert response_data["approval_status"] == "pending"
+    assert response_data["approval_request_id"] is not None
     assert response_data["github"]["status"] == "success"
     assert response_data["jira"]["status"] == "success"
     assert response_data["release_summary"]["source"] == "release"
@@ -914,6 +917,7 @@ async def test_collect_release_risks_api_creates_pending_approval_request_when_r
     assert first_response_data["approval_policy_version"] == "hitl_policy_v1"
     assert first_response_data["approval_request_id"] is not None
     assert first_response_data["approval_status"] == "pending"
+    assert first_response_data["release_run"]["status"] == "waiting_for_approval"
 
     second_risk_response = await release_run_api_client.post(
         f"/api/v1/release-runs/{release_run_id}/risks",
@@ -942,3 +946,4 @@ async def test_collect_release_risks_api_creates_pending_approval_request_when_r
 
     assert "approval_request_created" in event_types
     assert event_types.count("approval_request_created") == 1
+    assert "release_run_waiting_for_approval" in event_types

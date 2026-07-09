@@ -390,6 +390,17 @@ async def decide_release_run_approval(
                 detail="Approval request not found.",
             )
 
+        release_run_status = (
+            "approval_approved"
+            if decided_approval.approval_status == "approved"
+            else "approval_rejected"
+        )
+
+        await release_run_repository.update_status(
+            release_run_id=release_run_id,
+            status=release_run_status,
+        )
+
         await event_repository.create(
             CreateReleaseRunEventCommand(
                 release_run_id=release_run_id,
@@ -399,6 +410,7 @@ async def decide_release_run_approval(
                 metadata_json={
                     "approval_request_id": str(decided_approval.id),
                     "approval_status": decided_approval.approval_status,
+                    "release_run_status": release_run_status,
                     "decided_by": decided_approval.decided_by,
                     "decision_note_present": (
                         decided_approval.decision_note is not None
@@ -551,6 +563,7 @@ async def _collect_release_risk_workflow_response(
             response=response,
         )
         response = await _ensure_pending_approval_request(
+            release_run_repository=repository,
             approval_repository=approval_repository,
             event_repository=event_repository,
             release_run_id=release_run_id,
@@ -647,6 +660,7 @@ async def _collect_release_risks_response(
             response=response,
         )
         response = await _ensure_pending_approval_request(
+            release_run_repository=repository,
             approval_repository=approval_repository,
             event_repository=event_repository,
             release_run_id=release_run_id,
@@ -695,6 +709,7 @@ async def _collect_release_risks_response(
 
 async def _ensure_pending_approval_request(
     *,
+    release_run_repository: ReleaseRunRepository,
     approval_repository: ReleaseRunApprovalRepository,
     event_repository: ReleaseRunEventRepository,
     release_run_id: UUID,
@@ -718,6 +733,15 @@ async def _ensure_pending_approval_request(
         latest_approval is not None
         and latest_approval.approval_status == ReleaseRunApprovalStatus.PENDING.value
     ):
+        await _mark_release_run_waiting_for_approval(
+            release_run_repository=release_run_repository,
+            event_repository=event_repository,
+            release_run_id=release_run_id,
+            approval_request_id=latest_approval.id,
+            approval_status=latest_approval.approval_status,
+            approval_policy_version=latest_approval.approval_policy_version,
+        )
+
         return response.model_copy(
             update={
                 "approval_request_id": latest_approval.id,
@@ -754,11 +778,58 @@ async def _ensure_pending_approval_request(
         )
     )
 
+    await _mark_release_run_waiting_for_approval(
+        release_run_repository=release_run_repository,
+        event_repository=event_repository,
+        release_run_id=release_run_id,
+        approval_request_id=approval.id,
+        approval_status=approval.approval_status,
+        approval_policy_version=approval.approval_policy_version,
+    )
+
     return response.model_copy(
         update={
             "approval_request_id": approval.id,
             "approval_status": approval.approval_status,
+            "release_run": response.release_run.model_copy(
+                update={"status": "waiting_for_approval"}
+            ),
         }
+    )
+
+
+async def _mark_release_run_waiting_for_approval(
+    *,
+    release_run_repository: ReleaseRunRepository,
+    event_repository: ReleaseRunEventRepository,
+    release_run_id: UUID,
+    approval_request_id: UUID,
+    approval_status: str,
+    approval_policy_version: str,
+) -> None:
+    """Mark release run as waiting for human approval.
+
+    This status makes the parent release run reflect the real business state:
+    risk analysis is done, but the release is paused until a human decides.
+    """
+
+    await release_run_repository.update_status(
+        release_run_id=release_run_id,
+        status="waiting_for_approval",
+    )
+
+    await event_repository.create(
+        CreateReleaseRunEventCommand(
+            release_run_id=release_run_id,
+            event_type="release_run_waiting_for_approval",
+            event_status="success",
+            message="Release run is waiting for human approval.",
+            metadata_json={
+                "approval_request_id": str(approval_request_id),
+                "approval_status": approval_status,
+                "approval_policy_version": approval_policy_version,
+            },
+        )
     )
 
 async def _record_scoring_audit_events(
