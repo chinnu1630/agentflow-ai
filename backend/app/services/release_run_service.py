@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from app.models.release_run import ReleaseRun
+from app.observability.tracing import start_business_span
 from app.repositories.release_run_event_repository import (
     CreateReleaseRunEventCommand,
     ReleaseRunEventRepository,
@@ -518,64 +519,73 @@ class ReleaseRunService:
             Final validated workflow state from the LangGraph service runner.
         """
 
-        from app.workflows.release_risk_service_runner import (
-            ReleaseRiskServiceWorkflowRunner,
-        )
-
-        await self._record_event(
-            release_run_id=release_run_id,
-            event_type="workflow_started",
-            event_status="started",
-            message="LangGraph release-risk workflow started.",
-            metadata_json={
-                "manager_query": manager_query,
-                "requested_by": requested_by,
+        with start_business_span(
+            "release_risk.workflow",
+            {
+                "release_run_id": str(release_run_id),
+                "run_id": self._request_id,
+                "manager_query_present": manager_query != "",
+                "requested_by_present": requested_by is not None,
             },
-        )
-
-        runner = ReleaseRiskServiceWorkflowRunner(
-            self,
-            knowledge_service=getattr(self, "_knowledge_service", None),
-        )
-
-        try:
-            workflow_state = await runner.run(
-                release_run_id=release_run_id,
-                run_id=self._request_id,
-                manager_query=manager_query,
-                requested_by=requested_by,
-            )
-
-            await self._record_knowledge_retrieval_event(
-                release_run_id=release_run_id,
-                workflow_state=workflow_state,
+        ):
+            from app.workflows.release_risk_service_runner import (
+                ReleaseRiskServiceWorkflowRunner,
             )
 
             await self._record_event(
                 release_run_id=release_run_id,
-                event_type="workflow_completed",
-                event_status="success",
-                message="LangGraph release-risk workflow completed.",
+                event_type="workflow_started",
+                event_status="started",
+                message="LangGraph release-risk workflow started.",
                 metadata_json={
                     "manager_query": manager_query,
                     "requested_by": requested_by,
                 },
             )
 
-            return workflow_state
-
-        except ReleaseRunServiceError:
-            await self._record_event(
-                release_run_id=release_run_id,
-                event_type="workflow_failed",
-                event_status="failed",
-                message="LangGraph release-risk workflow failed.",
-                metadata_json={
-                    "manager_query": manager_query,
-                    "requested_by": requested_by,
-                },
+            runner = ReleaseRiskServiceWorkflowRunner(
+                self,
+                knowledge_service=getattr(self, "_knowledge_service", None),
             )
-            raise
+
+            try:
+                workflow_state = await runner.run(
+                    release_run_id=release_run_id,
+                    run_id=self._request_id,
+                    manager_query=manager_query,
+                    requested_by=requested_by,
+                )
+
+                await self._record_knowledge_retrieval_event(
+                    release_run_id=release_run_id,
+                    workflow_state=workflow_state,
+                )
+
+                await self._record_event(
+                    release_run_id=release_run_id,
+                    event_type="workflow_completed",
+                    event_status="success",
+                    message="LangGraph release-risk workflow completed.",
+                    metadata_json={
+                        "manager_query": manager_query,
+                        "requested_by": requested_by,
+                    },
+                )
+
+                return workflow_state
+
+            except ReleaseRunServiceError:
+                await self._record_event(
+                    release_run_id=release_run_id,
+                    event_type="workflow_failed",
+                    event_status="failed",
+                    message="LangGraph release-risk workflow failed.",
+                    metadata_json={
+                        "manager_query": manager_query,
+                        "requested_by": requested_by,
+                    },
+                )
+                raise
 
     async def mark_running(self, release_run_id: UUID) -> ReleaseRunResult | None:
         """Mark a release run as running."""

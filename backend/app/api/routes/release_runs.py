@@ -80,6 +80,7 @@ from app.services.slack_release_alert_service import (
     SlackReleaseAlertServiceError,
 )
 
+from app.observability.tracing import start_business_span
 router = APIRouter(prefix="/release-runs", tags=["release-runs"])
 
 
@@ -781,13 +782,23 @@ async def collect_release_risks(
     release_run, github, github_summary, jira, jira_summary, release_summary.
     """
 
-    return await _collect_release_risk_workflow_response(
-        release_run_id=release_run_id,
-        request=request,
-        session=session,
-        risk_collector=risk_collector,
-        jira_risk_collector=jira_risk_collector,
-    )
+    request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
+
+    with start_business_span(
+        "release_run.risks_endpoint",
+        {
+            "release_run_id": str(release_run_id),
+            "run_id": request_id,
+            "route": "/api/v1/release-runs/{release_run_id}/risks",
+        },
+    ):
+        return await _collect_release_risk_workflow_response(
+            release_run_id=release_run_id,
+            request=request,
+            session=session,
+            risk_collector=risk_collector,
+            jira_risk_collector=jira_risk_collector,
+        )
 
 
 @router.post(
