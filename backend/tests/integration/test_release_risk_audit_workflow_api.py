@@ -157,6 +157,8 @@ async def test_release_risk_workflow_writes_audit_timeline(
     assert "github_collection_completed" in event_types
     assert "jira_collection_completed" in event_types
     assert "release_summary_created" in event_types
+    assert "risk_features_extracted" in event_types
+    assert "release_risk_scored" in event_types
     assert "risk_collection_completed" in event_types
     assert "workflow_completed" in event_types
 
@@ -180,3 +182,50 @@ async def test_release_risk_workflow_writes_audit_timeline(
     assert jira_event["event_status"] == "success"
     assert jira_event["metadata_json"]["total_issues_analyzed"] == 0
     assert jira_event["metadata_json"]["total_signals"] == 0
+
+    feature_event = next(
+        event
+        for event in response_data["events"]
+        if event["event_type"] == "risk_features_extracted"
+    )
+
+    assert feature_event["event_status"] == "success"
+    assert feature_event["metadata_json"]["feature_version"] == (
+        "release_risk_features_v1"
+    )
+    assert isinstance(feature_event["metadata_json"]["total_risk_count"], int)
+    assert isinstance(feature_event["metadata_json"]["github_risk_count"], int)
+    assert isinstance(feature_event["metadata_json"]["jira_risk_count"], int)
+    assert isinstance(feature_event["metadata_json"]["knowledge_failed"], bool)
+    assert "content" not in feature_event["metadata_json"]
+    assert "knowledge_results" not in feature_event["metadata_json"]
+
+    scoring_event = next(
+        event
+        for event in response_data["events"]
+        if event["event_type"] == "release_risk_scored"
+    )
+
+    assert scoring_event["event_status"] == "success"
+    assert scoring_event["metadata_json"]["scoring_version"] == (
+        "rule_based_release_risk_v1"
+    )
+    assert scoring_event["metadata_json"]["feature_version"] == (
+        "release_risk_features_v1"
+    )
+    assert 0.0 <= scoring_event["metadata_json"]["score"] <= 1.0
+    assert scoring_event["metadata_json"]["risk_level"] in {
+        "low",
+        "medium",
+        "high",
+        "critical",
+    }
+    assert scoring_event["metadata_json"]["recommended_action"] in {
+        "proceed",
+        "review_required",
+        "block_release",
+        "partial_data_review",
+    }
+    assert scoring_event["metadata_json"]["reason_count"] >= 1
+    assert "raw_query" not in scoring_event["metadata_json"]
+    assert "stack_trace" not in scoring_event["metadata_json"]

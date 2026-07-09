@@ -23,7 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db_session
 from app.repositories.engineering_document_repository import EngineeringDocumentRepository
 from app.integrations.github_client import GitHubClient, GitHubClientConfig
-from app.repositories.release_run_event_repository import ReleaseRunEventRepository
+from app.repositories.release_run_event_repository import (
+    CreateReleaseRunEventCommand,
+    ReleaseRunEventRepository,
+)
 from app.repositories.release_run_repository import ReleaseRunRepository
 from app.schemas.github import GitHubRepositoryConfig
 from app.schemas.release_run_event import (
@@ -365,9 +368,17 @@ async def _collect_release_risk_workflow_response(
                 detail="Release run not found.",
             )
 
+        response = _to_release_run_risk_response(result)
+
+        await _record_scoring_audit_events(
+            event_repository=event_repository,
+            release_run_id=release_run_id,
+            response=response,
+        )
+
         await session.commit()
 
-        return _to_release_run_risk_response(result)
+        return response
 
     except HTTPException:
         raise
@@ -436,9 +447,17 @@ async def _collect_release_risks_response(
                 detail="Release run not found.",
             )
 
+        response = _to_release_run_risk_response(result)
+
+        await _record_scoring_audit_events(
+            event_repository=event_repository,
+            release_run_id=release_run_id,
+            response=response,
+        )
+
         await session.commit()
 
-        return _to_release_run_risk_response(result)
+        return response
 
     except HTTPException:
         raise
@@ -466,6 +485,77 @@ async def _collect_release_risks_response(
 
 
 
+
+
+async def _record_scoring_audit_events(
+    *,
+    event_repository: ReleaseRunEventRepository,
+    release_run_id: UUID,
+    response: ReleaseRunRiskResponse,
+) -> None:
+    """Persist safe audit events for feature extraction and release-risk scoring.
+
+    The metadata intentionally stores only counts, versions, and enum-like
+    decisions. It does not store raw PR text, Jira text, Knowledge chunks,
+    manager queries, or stack traces.
+    """
+
+    if response.risk_features is None or response.risk_score is None:
+        return
+
+    risk_features = response.risk_features
+    risk_score = response.risk_score
+
+    await event_repository.create(
+        CreateReleaseRunEventCommand(
+            release_run_id=release_run_id,
+            event_type="risk_features_extracted",
+            event_status="success",
+            message="Release-risk scoring features were extracted.",
+            metadata_json={
+                "feature_version": risk_features.feature_version,
+                "total_risk_count": risk_features.total_risk_count,
+                "github_risk_count": risk_features.github_risk_count,
+                "jira_risk_count": risk_features.jira_risk_count,
+                "critical_risk_count": risk_features.critical_risk_count,
+                "high_risk_count": risk_features.high_risk_count,
+                "knowledge_result_count": risk_features.knowledge_result_count,
+                "knowledge_no_results": risk_features.knowledge_no_results,
+                "knowledge_failed": risk_features.knowledge_failed,
+            },
+        )
+    )
+
+    await event_repository.create(
+        CreateReleaseRunEventCommand(
+            release_run_id=release_run_id,
+            event_type="release_risk_scored",
+            event_status="success",
+            message="Release risk was scored using deterministic rule-based scoring.",
+            metadata_json={
+                "scoring_version": risk_score.scoring_version,
+                "feature_version": risk_score.feature_version,
+                "score": risk_score.score,
+                "risk_level": _safe_enum_value(risk_score.risk_level),
+                "recommended_action": _safe_enum_value(
+                    risk_score.recommended_action
+                ),
+                "reason_count": len(risk_score.reasons),
+                "component_score_count": len(risk_score.component_scores),
+            },
+        )
+    )
+
+
+def _safe_enum_value(value: object) -> str:
+    """Return a safe string value for enum-like audit metadata."""
+
+    enum_value = getattr(value, "value", None)
+
+    if enum_value is not None:
+        return str(enum_value)
+
+    return str(value)
 
 def _merge_workflow_knowledge_context(
     result: Any,
