@@ -35,6 +35,11 @@ from app.repositories.release_run_approval_repository import (
     ReleaseRunApprovalStatus,
 )
 from app.repositories.release_run_repository import ReleaseRunRepository
+from app.repositories.release_run_risk_snapshot_repository import (
+    CreateReleaseRunRiskSnapshotCommand,
+    ReleaseRunRiskSnapshotRepository,
+    ReleaseRunRiskSnapshotRepositoryError,
+)
 from app.schemas.github import GitHubRepositoryConfig
 from app.schemas.release_run_approval import (
     ReleaseRunApprovalDecisionRequest,
@@ -576,6 +581,10 @@ async def _collect_release_risk_workflow_response(
         session=session,
         request_id=request_id,
     )
+    risk_snapshot_repository = ReleaseRunRiskSnapshotRepository(
+        session=session,
+        request_id=request_id,
+    )
     engineering_document_repository = EngineeringDocumentRepository(
         session=session,
     )
@@ -618,6 +627,13 @@ async def _collect_release_risk_workflow_response(
             response=response,
         )
 
+        await _persist_release_risk_snapshot(
+            risk_snapshot_repository=risk_snapshot_repository,
+            event_repository=event_repository,
+            release_run_id=release_run_id,
+            response=response,
+        )
+
         await session.commit()
 
         return response
@@ -644,6 +660,13 @@ async def _collect_release_risk_workflow_response(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create release approval request.",
+        ) from exc
+
+    except ReleaseRunRiskSnapshotRepositoryError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to persist release-risk snapshot.",
         ) from exc
 
     except SQLAlchemyError as exc:
@@ -750,6 +773,62 @@ async def _collect_release_risks_response(
             detail="Database error while collecting release risks.",
         ) from exc
 
+
+
+async def _persist_release_risk_snapshot(
+    *,
+    risk_snapshot_repository: ReleaseRunRiskSnapshotRepository,
+    event_repository: ReleaseRunEventRepository,
+    release_run_id: UUID,
+    response: ReleaseRunRiskResponse,
+) -> None:
+    """Persist the final backend-generated release-risk response as a snapshot.
+
+    Slack alerts must later read this trusted backend snapshot instead of
+    accepting client-supplied risk payloads. The audit event stores only safe
+    metadata and does not duplicate raw PRs, Jira tickets, Knowledge chunks,
+    prompts, or stack traces.
+    """
+
+    approval_required = response.approval_required is True
+    approval_status_at_snapshot = response.approval_status
+
+    if approval_status_at_snapshot is None:
+        approval_status_at_snapshot = (
+            ReleaseRunApprovalStatus.PENDING.value
+            if approval_required
+            else "not_required"
+        )
+
+    snapshot = await risk_snapshot_repository.create_snapshot(
+        CreateReleaseRunRiskSnapshotCommand(
+            release_run_id=release_run_id,
+            risk_payload=response.model_dump(mode="json"),
+            overall_severity=_safe_enum_value(
+                response.release_summary.overall_severity
+            ),
+            approval_required=approval_required,
+            approval_status_at_snapshot=approval_status_at_snapshot,
+        )
+    )
+
+    await event_repository.create(
+        CreateReleaseRunEventCommand(
+            release_run_id=release_run_id,
+            event_type="release_risk_snapshot_created",
+            event_status="success",
+            message="Trusted release-risk report snapshot was persisted.",
+            metadata_json={
+                "snapshot_id": str(snapshot.id),
+                "snapshot_version": snapshot.snapshot_version,
+                "overall_severity": snapshot.overall_severity,
+                "approval_required": snapshot.approval_required,
+                "approval_status_at_snapshot": (
+                    snapshot.approval_status_at_snapshot
+                ),
+            },
+        )
+    )
 
 
 

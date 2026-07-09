@@ -16,6 +16,10 @@ from app.api.routes.release_runs import get_jira_risk_collector, get_risk_collec
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
+from app.repositories.release_run_risk_snapshot_repository import (
+    CreateReleaseRunRiskSnapshotCommand,
+    ReleaseRunRiskSnapshotRepository,
+)
 from app.services.github_risk_collector import GitHubRiskCollectionResult, RiskCollectionStatus
 from app.services.jira_risk_collector import (
     JiraRiskCollectionResult,
@@ -883,6 +887,142 @@ async def test_collect_release_risks_api_audits_knowledge_retrieval_failure(
     assert knowledge_event["metadata_json"]["result_count"] == 0
     assert knowledge_event["metadata_json"]["query_length"] > 0
     assert knowledge_event["metadata_json"]["error_present"] is True
+
+
+@pytest.mark.anyio
+async def test_collect_release_risks_api_persists_release_risk_snapshot(
+    release_run_api_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST /risks should persist a trusted backend-generated risk snapshot."""
+
+    override_external_collectors_for_test()
+
+    created_snapshot_commands: list[CreateReleaseRunRiskSnapshotCommand] = []
+    original_create_snapshot = ReleaseRunRiskSnapshotRepository.create_snapshot
+
+    async def spy_create_snapshot(
+        self: ReleaseRunRiskSnapshotRepository,
+        command: CreateReleaseRunRiskSnapshotCommand,
+    ) -> object:
+        """Record snapshot persistence while preserving real repository behavior."""
+        created_snapshot_commands.append(command)
+        return await original_create_snapshot(self, command)
+
+    monkeypatch.setattr(
+        ReleaseRunRiskSnapshotRepository,
+        "create_snapshot",
+        spy_create_snapshot,
+    )
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    release_run_id = create_response.json()["id"]
+
+    risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert risk_response.status_code == 200, risk_response.text
+
+    response_data = risk_response.json()
+
+    assert len(created_snapshot_commands) == 1
+
+    snapshot_command = created_snapshot_commands[0]
+
+    assert str(snapshot_command.release_run_id) == release_run_id
+    assert snapshot_command.overall_severity == (
+        response_data["release_summary"]["overall_severity"]
+    )
+    assert snapshot_command.approval_required == response_data["approval_required"]
+    assert snapshot_command.approval_status_at_snapshot == (
+        response_data["approval_status"] or "not_required"
+    )
+
+    snapshot_payload = snapshot_command.risk_payload
+
+    assert snapshot_payload["release_run"]["id"] == release_run_id
+    assert snapshot_payload["github"]["status"] == response_data["github"]["status"]
+    assert snapshot_payload["jira"]["status"] == response_data["jira"]["status"]
+    assert snapshot_payload["release_summary"]["overall_severity"] == (
+        response_data["release_summary"]["overall_severity"]
+    )
+    assert snapshot_payload["risk_score"]["score"] == response_data["risk_score"]["score"]
+
+    events_response = await release_run_api_client.get(
+        f"/api/v1/release-runs/{release_run_id}/events",
+    )
+
+    assert events_response.status_code == 200, events_response.text
+
+    events_data = events_response.json()
+    snapshot_events = [
+        event
+        for event in events_data["events"]
+        if event["event_type"] == "release_risk_snapshot_created"
+    ]
+
+    assert len(snapshot_events) == 1
+    assert snapshot_events[0]["event_status"] == "success"
+    assert snapshot_events[0]["metadata_json"]["snapshot_version"] == 1
+    assert snapshot_events[0]["metadata_json"]["overall_severity"] == (
+        response_data["release_summary"]["overall_severity"]
+    )
+
+
+@pytest.mark.anyio
+async def test_collect_release_risks_api_creates_new_snapshot_version_on_second_run(
+    release_run_api_client: AsyncClient,
+) -> None:
+    """Repeated POST /risks calls should create append-only snapshot versions."""
+
+    override_external_collectors_for_test()
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    release_run_id = create_response.json()["id"]
+
+    first_risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+    second_risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert first_risk_response.status_code == 200, first_risk_response.text
+    assert second_risk_response.status_code == 200, second_risk_response.text
+
+    events_response = await release_run_api_client.get(
+        f"/api/v1/release-runs/{release_run_id}/events",
+    )
+
+    assert events_response.status_code == 200, events_response.text
+
+    events_data = events_response.json()
+    snapshot_versions = [
+        event["metadata_json"]["snapshot_version"]
+        for event in events_data["events"]
+        if event["event_type"] == "release_risk_snapshot_created"
+    ]
+
+    assert snapshot_versions == [1, 2]
 
 
 @pytest.mark.anyio
