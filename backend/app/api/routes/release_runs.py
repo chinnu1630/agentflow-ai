@@ -29,12 +29,18 @@ from app.repositories.release_run_event_repository import (
 )
 from app.repositories.release_run_approval_repository import (
     CreateReleaseRunApprovalCommand,
+    DecideReleaseRunApprovalCommand,
     ReleaseRunApprovalRepository,
     ReleaseRunApprovalRepositoryError,
     ReleaseRunApprovalStatus,
 )
 from app.repositories.release_run_repository import ReleaseRunRepository
 from app.schemas.github import GitHubRepositoryConfig
+from app.schemas.release_run_approval import (
+    ReleaseRunApprovalDecisionRequest,
+    ReleaseRunApprovalListResponse,
+    ReleaseRunApprovalResponse,
+)
 from app.schemas.release_run_event import (
     ReleaseRunEventListResponse,
     ReleaseRunEventResponse,
@@ -266,6 +272,160 @@ async def list_release_run_events(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database error while fetching release-run events.",
+        ) from exc
+
+
+@router.get(
+    "/{release_run_id}/approvals",
+    response_model=ReleaseRunApprovalListResponse,
+)
+async def list_release_run_approvals(
+    release_run_id: UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> ReleaseRunApprovalListResponse:
+    """List HITL approval requests for a release-risk workflow run."""
+
+    request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
+
+    release_run_repository = ReleaseRunRepository(
+        session=session,
+        request_id=request_id,
+    )
+    approval_repository = ReleaseRunApprovalRepository(
+        session=session,
+        request_id=request_id,
+    )
+
+    try:
+        release_run = await release_run_repository.get_by_id(release_run_id)
+
+        if release_run is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Release run not found.",
+            )
+
+        approvals = await approval_repository.list_by_release_run_id(
+            release_run_id
+        )
+
+        return ReleaseRunApprovalListResponse(
+            release_run_id=release_run_id,
+            approvals=[
+                ReleaseRunApprovalResponse.model_validate(approval)
+                for approval in approvals
+            ],
+        )
+
+    except HTTPException:
+        raise
+
+    except (ReleaseRunApprovalRepositoryError, SQLAlchemyError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error while fetching release-run approvals.",
+        ) from exc
+
+
+@router.post(
+    "/{release_run_id}/approvals/{approval_id}/decision",
+    response_model=ReleaseRunApprovalResponse,
+)
+async def decide_release_run_approval(
+    release_run_id: UUID,
+    approval_id: UUID,
+    decision_request: ReleaseRunApprovalDecisionRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> ReleaseRunApprovalResponse:
+    """Approve or reject a pending HITL release approval request."""
+
+    request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
+
+    release_run_repository = ReleaseRunRepository(
+        session=session,
+        request_id=request_id,
+    )
+    approval_repository = ReleaseRunApprovalRepository(
+        session=session,
+        request_id=request_id,
+    )
+    event_repository = ReleaseRunEventRepository(
+        session=session,
+        request_id=request_id,
+    )
+
+    try:
+        release_run = await release_run_repository.get_by_id(release_run_id)
+
+        if release_run is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Release run not found.",
+            )
+
+        approval = await approval_repository.get_by_id(approval_id)
+
+        if approval is None or approval.release_run_id != release_run_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Approval request not found.",
+            )
+
+        decided_approval = await approval_repository.decide(
+            DecideReleaseRunApprovalCommand(
+                approval_id=approval_id,
+                approval_status=ReleaseRunApprovalStatus(
+                    decision_request.approval_status.value
+                ),
+                decided_by=decision_request.decided_by,
+                decision_note=decision_request.decision_note,
+            )
+        )
+
+        if decided_approval is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Approval request not found.",
+            )
+
+        await event_repository.create(
+            CreateReleaseRunEventCommand(
+                release_run_id=release_run_id,
+                event_type="approval_request_decided",
+                event_status="success",
+                message="Release approval request was decided.",
+                metadata_json={
+                    "approval_request_id": str(decided_approval.id),
+                    "approval_status": decided_approval.approval_status,
+                    "decided_by": decided_approval.decided_by,
+                    "decision_note_present": (
+                        decided_approval.decision_note is not None
+                    ),
+                },
+            )
+        )
+
+        await session.commit()
+
+        return ReleaseRunApprovalResponse.model_validate(decided_approval)
+
+    except HTTPException:
+        raise
+
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    except (ReleaseRunApprovalRepositoryError, SQLAlchemyError) as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error while deciding release-run approval.",
         ) from exc
 
 
