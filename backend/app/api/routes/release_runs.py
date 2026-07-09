@@ -547,6 +547,25 @@ async def _record_scoring_audit_events(
         )
     )
 
+    if response.approval_policy_version is not None:
+        await event_repository.create(
+            CreateReleaseRunEventCommand(
+                release_run_id=release_run_id,
+                event_type="approval_requirement_determined",
+                event_status="success",
+                message="HITL approval requirement was determined.",
+                metadata_json={
+                    "approval_policy_version": response.approval_policy_version,
+                    "approval_required": response.approval_required,
+                    "approval_reason_present": response.approval_reason is not None,
+                    "risk_level": _safe_enum_value(risk_score.risk_level),
+                    "recommended_action": _safe_enum_value(
+                        risk_score.recommended_action
+                    ),
+                },
+            )
+        )
+
 
 def _safe_enum_value(value: object) -> str:
     """Return a safe string value for enum-like audit metadata."""

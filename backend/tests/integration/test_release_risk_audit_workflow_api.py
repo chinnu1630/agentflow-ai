@@ -159,6 +159,7 @@ async def test_release_risk_workflow_writes_audit_timeline(
     assert "release_summary_created" in event_types
     assert "risk_features_extracted" in event_types
     assert "release_risk_scored" in event_types
+    assert "approval_requirement_determined" in event_types
     assert "risk_collection_completed" in event_types
     assert "workflow_completed" in event_types
 
@@ -229,3 +230,34 @@ async def test_release_risk_workflow_writes_audit_timeline(
     assert scoring_event["metadata_json"]["reason_count"] >= 1
     assert "raw_query" not in scoring_event["metadata_json"]
     assert "stack_trace" not in scoring_event["metadata_json"]
+
+    approval_event = next(
+        event
+        for event in response_data["events"]
+        if event["event_type"] == "approval_requirement_determined"
+    )
+
+    assert approval_event["event_status"] == "success"
+    assert approval_event["metadata_json"]["approval_policy_version"] == (
+        "hitl_policy_v1"
+    )
+    assert isinstance(approval_event["metadata_json"]["approval_required"], bool)
+    assert isinstance(
+        approval_event["metadata_json"]["approval_reason_present"],
+        bool,
+    )
+    assert approval_event["metadata_json"]["risk_level"] in {
+        "low",
+        "medium",
+        "high",
+        "critical",
+    }
+    assert approval_event["metadata_json"]["recommended_action"] in {
+        "proceed",
+        "review_required",
+        "block_release",
+        "partial_data_review",
+    }
+    assert "approval_reason" not in approval_event["metadata_json"]
+    assert "raw_query" not in approval_event["metadata_json"]
+    assert "content" not in approval_event["metadata_json"]
