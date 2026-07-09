@@ -1153,6 +1153,82 @@ async def test_send_release_run_slack_alert_api_sends_after_approval(
 
 
 @pytest.mark.anyio
+async def test_send_release_run_slack_alert_api_blocks_duplicate_send(
+    release_run_api_client: AsyncClient,
+) -> None:
+    """POST /slack-alert should not send duplicate alerts for one release run."""
+
+    override_degraded_github_collector_for_test()
+    slack_sender = FakeSlackAlertSender()
+    override_slack_alert_sender_for_test(slack_sender)
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201, create_response.text
+
+    release_run_id = create_response.json()["id"]
+
+    risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert risk_response.status_code == 200, risk_response.text
+
+    approval_request_id = risk_response.json()["approval_request_id"]
+
+    decision_response = await release_run_api_client.post(
+        (
+            f"/api/v1/release-runs/{release_run_id}"
+            f"/approvals/{approval_request_id}/decision"
+        ),
+        json={
+            "approval_status": "approved",
+            "decided_by": "director@example.com",
+            "decision_note": "Approved after reviewing rollback plan.",
+        },
+    )
+
+    assert decision_response.status_code == 200, decision_response.text
+
+    first_slack_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/slack-alert",
+    )
+    second_slack_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/slack-alert",
+    )
+
+    assert first_slack_response.status_code == 200, first_slack_response.text
+    assert second_slack_response.status_code == 409, second_slack_response.text
+    assert "Slack alert already sent" in second_slack_response.text
+
+    assert len(slack_sender.sent_payloads) == 1
+
+    events_response = await release_run_api_client.get(
+        f"/api/v1/release-runs/{release_run_id}/events",
+    )
+
+    assert events_response.status_code == 200, events_response.text
+
+    events_data = events_response.json()
+    slack_events = [
+        event
+        for event in events_data["events"]
+        if event["event_type"] == "release_slack_alert_sent"
+    ]
+
+    assert [event["event_status"] for event in slack_events] == [
+        "success",
+        "blocked",
+    ]
+
+
+@pytest.mark.anyio
 async def test_send_release_run_slack_alert_api_blocks_before_approval(
     release_run_api_client: AsyncClient,
 ) -> None:

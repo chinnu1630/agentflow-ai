@@ -41,6 +41,12 @@ from app.repositories.release_run_risk_snapshot_repository import (
     ReleaseRunRiskSnapshotRepository,
     ReleaseRunRiskSnapshotRepositoryError,
 )
+from app.repositories.release_run_slack_alert_repository import (
+    CreateReleaseRunSlackAlertCommand,
+    ReleaseRunSlackAlertAlreadySentError,
+    ReleaseRunSlackAlertRepository,
+    ReleaseRunSlackAlertRepositoryError,
+)
 from app.schemas.github import GitHubRepositoryConfig
 from app.schemas.release_run_approval import (
     ReleaseRunApprovalDecisionRequest,
@@ -566,6 +572,10 @@ async def send_release_run_slack_alert(
         session=session,
         request_id=request_id,
     )
+    slack_alert_repository = ReleaseRunSlackAlertRepository(
+        session=session,
+        request_id=request_id,
+    )
     event_repository = ReleaseRunEventRepository(
         session=session,
         request_id=request_id,
@@ -581,6 +591,37 @@ async def send_release_run_slack_alert(
                 detail="Release run not found.",
             )
 
+        existing_slack_alert = await slack_alert_repository.get_by_release_run_id(
+            release_run_id
+        )
+
+        if existing_slack_alert is not None:
+            await _record_release_slack_alert_event(
+                event_repository=event_repository,
+                release_run_id=release_run_id,
+                event_status="blocked",
+                message="Duplicate Slack alert send was blocked.",
+                metadata_json={
+                    "reason": "Slack alert already sent for this release run.",
+                    "existing_slack_alert_id": str(existing_slack_alert.id),
+                    "existing_slack_channel": existing_slack_alert.slack_channel,
+                    "existing_slack_timestamp": existing_slack_alert.slack_timestamp,
+                },
+            )
+            await session.commit()
+
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Slack alert already sent for this release run.",
+            )
+
+        latest_approval = await approval_repository.get_latest_by_release_run_id(
+            release_run_id
+        )
+        latest_snapshot = await risk_snapshot_repository.get_latest_by_release_run_id(
+            release_run_id
+        )
+
         result = await slack_service.send_approved_release_alert_from_snapshot(
             release_run_id,
             approval_repository=approval_repository,
@@ -589,12 +630,33 @@ async def send_release_run_slack_alert(
             run_id=request_id,
         )
 
+        alert_record = await slack_alert_repository.create_sent_alert(
+            CreateReleaseRunSlackAlertCommand(
+                release_run_id=release_run_id,
+                approval_request_id=(
+                    latest_approval.id if latest_approval is not None else None
+                ),
+                snapshot_id=latest_snapshot.id if latest_snapshot is not None else None,
+                snapshot_version=(
+                    latest_snapshot.snapshot_version
+                    if latest_snapshot is not None
+                    else None
+                ),
+                slack_channel=result.slack_channel,
+                slack_timestamp=result.slack_timestamp,
+                risk_level=result.risk_level,
+                risk_score=result.risk_score,
+                recommended_action=result.recommended_action,
+            )
+        )
+
         await _record_release_slack_alert_event(
             event_repository=event_repository,
             release_run_id=release_run_id,
             event_status="success",
             message="Approved release-risk Slack alert was sent.",
             metadata_json={
+                "slack_alert_id": str(alert_record.id),
                 "slack_channel": result.slack_channel,
                 "slack_timestamp": result.slack_timestamp,
                 "risk_level": result.risk_level,
@@ -627,6 +689,23 @@ async def send_release_run_slack_alert(
             detail=str(exc),
         ) from exc
 
+    except ReleaseRunSlackAlertAlreadySentError as exc:
+        await _record_release_slack_alert_event(
+            event_repository=event_repository,
+            release_run_id=release_run_id,
+            event_status="blocked",
+            message="Duplicate Slack alert send was blocked.",
+            metadata_json={
+                "reason": str(exc),
+            },
+        )
+        await session.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
     except SlackReleaseAlertServiceError as exc:
         await _record_release_slack_alert_event(
             event_repository=event_repository,
@@ -642,6 +721,13 @@ async def send_release_run_slack_alert(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to send approved release-risk Slack alert.",
+        ) from exc
+
+    except ReleaseRunSlackAlertRepositoryError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error while recording Slack alert idempotency.",
         ) from exc
 
     except (ReleaseRunRepositoryError, SQLAlchemyError) as exc:
