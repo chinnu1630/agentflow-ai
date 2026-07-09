@@ -34,6 +34,7 @@ from app.schemas.release_run_event import (
     ReleaseRunEventResponse,
 )
 from app.schemas.risk import ReleaseRunRiskResponse
+from app.services.hitl_approval_decision_service import HITLApprovalDecisionService
 from app.services.risk_feature_extraction_service import RiskFeatureExtractionService
 from app.services.rule_based_risk_scoring_service import RuleBasedRiskScoringService
 from app.services.github_risk_collector import RiskCollector
@@ -569,6 +570,9 @@ def _merge_workflow_knowledge_context(
         "knowledge_status",
         "knowledge_error",
         "risk_score",
+        "approval_policy_version",
+        "approval_reason",
+        "approval_required",
         "risk_features",
     )
 
@@ -688,6 +692,19 @@ def _to_release_run_risk_response(result: Any) -> ReleaseRunRiskResponse:
         return ReleaseRunRiskResponse.model_validate(result)
 
     if result_data.get("risk_features") is not None and result_data.get("risk_score") is not None:
+        if result_data.get("approval_policy_version") is None:
+            approval_decision = HITLApprovalDecisionService().determine_approval(
+                result_data.get("risk_score"),
+                run_id=_extract_scoring_run_id(result_data),
+            )
+            result_data.update(
+                {
+                    "approval_required": approval_decision.approval_required,
+                    "approval_reason": approval_decision.approval_reason,
+                    "approval_policy_version": approval_decision.approval_policy_version,
+                }
+            )
+
         return ReleaseRunRiskResponse.model_validate(result_data)
 
     run_id = _extract_scoring_run_id(result_data)

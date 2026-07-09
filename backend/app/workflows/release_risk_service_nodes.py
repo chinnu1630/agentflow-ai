@@ -24,6 +24,7 @@ from uuid import UUID
 import structlog
 from pydantic import BaseModel
 
+from app.services.hitl_approval_decision_service import HITLApprovalDecisionService
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalRequest,
 )
@@ -421,3 +422,46 @@ def create_score_release_risk_node(
             return failed_state.model_dump(mode="python")
 
     return score_release_risk_node
+
+
+def create_determine_approval_requirement_node(
+    approval_decision_service: HITLApprovalDecisionService | None = None,
+) -> Callable[[WorkflowStateInput], object]:
+    """Create a LangGraph node that determines HITL approval requirement."""
+
+    decision_service = approval_decision_service or HITLApprovalDecisionService()
+
+    def determine_approval_requirement_node(
+        state: WorkflowStateInput,
+    ) -> WorkflowStateUpdate:
+        """Determine whether this release requires human approval."""
+        validated_state = _validate_state_input(state)
+        running_state = validated_state.mark_running(
+            ReleaseRiskWorkflowStage.DETERMINING_APPROVAL_REQUIREMENT
+        )
+
+        decision = decision_service.determine_approval(
+            running_state.risk_score,
+            run_id=running_state.run_id,
+        )
+
+        logger.info(
+            "approval_requirement_node_completed",
+            run_id=running_state.run_id,
+            release_run_id=str(running_state.release_run_id),
+            approval_policy_version=decision.approval_policy_version,
+            approval_required=decision.approval_required,
+            approval_reason_present=decision.approval_reason is not None,
+        )
+
+        updated_state = running_state.model_copy(
+            update={
+                "approval_required": decision.approval_required,
+                "approval_reason": decision.approval_reason,
+                "approval_policy_version": decision.approval_policy_version,
+            }
+        ).add_completed_node("determine_approval_requirement")
+
+        return updated_state.model_dump(mode="python")
+
+    return determine_approval_requirement_node

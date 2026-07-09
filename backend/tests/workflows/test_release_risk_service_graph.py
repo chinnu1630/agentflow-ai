@@ -106,6 +106,7 @@ async def test_service_graph_collects_release_risks_and_completes() -> None:
         "start_release_risk_workflow",
         "collect_release_risks",
         "score_release_risk",
+        "determine_approval_requirement",
         "complete_release_risk_workflow",
     ]
     assert final_state.risk_features is not None

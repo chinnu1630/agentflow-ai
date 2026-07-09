@@ -344,3 +344,6 @@ class ReleaseRunRiskResponse(BaseModel):
     knowledge_error: str | None = None
     risk_features: ReleaseRiskFeatureVectorResponse | None = None
     risk_score: ReleaseRiskScoreResponse | None = None
+    approval_required: bool | None = None
+    approval_reason: str | None = None
+    approval_policy_version: str | None = None

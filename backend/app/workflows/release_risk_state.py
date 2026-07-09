@@ -39,6 +39,7 @@ class ReleaseRiskWorkflowStage(StrEnum):
     BUILDING_RELEASE_SUMMARY = "building_release_summary"
     RETRIEVING_KNOWLEDGE_CONTEXT = "retrieving_knowledge_context"
     SCORING_RELEASE_RISK = "scoring_release_risk"
+    DETERMINING_APPROVAL_REQUIREMENT = "determining_approval_requirement"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -184,6 +185,21 @@ class ReleaseRiskState(BaseModel):
     risk_score: dict[str, Any] | None = Field(
         default=None,
         description="Deterministic release-risk score and recommendation.",
+    )
+
+    approval_required: bool = Field(
+        default=False,
+        description="Whether human approval is required before release action.",
+    )
+    approval_reason: str | None = Field(
+        default=None,
+        max_length=1_000,
+        description="Safe reason explaining why human approval is required.",
+    )
+    approval_policy_version: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Version of the deterministic HITL approval policy.",
     )
 
     completed_nodes: list[str] = Field(
