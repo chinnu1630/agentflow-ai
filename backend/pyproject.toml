@@ -193,6 +193,22 @@ dependencies = [
     # Rule: never use print() in production. Always use structlog.
     "structlog>=24.0.0",
 
+    # -------------------------------------------------------------------------
+    # OBSERVABILITY — DISTRIBUTED TRACING
+    # -------------------------------------------------------------------------
+    # OpenTelemetry: vendor-neutral tracing standard.
+    # Used to trace AgentFlow workflows across FastAPI, LangGraph services,
+    # repositories, external API clients, approval decisions, and Slack alerts.
+    #
+    # We use code-based instrumentation instead of only zero-code instrumentation
+    # because release-risk workflows need business spans such as:
+    # release_risk.workflow, knowledge.retrieve, risk.score, approval.decision.
+    "opentelemetry-api>=1.29.0",
+    "opentelemetry-sdk>=1.29.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.29.0",
+    "opentelemetry-instrumentation-fastapi>=0.50b0",
+    "opentelemetry-instrumentation-httpx>=0.50b0",
+
 
     # -------------------------------------------------------------------------
     # SECURITY

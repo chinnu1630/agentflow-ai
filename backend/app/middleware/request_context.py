@@ -21,6 +21,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         """Create a run_id, attach it to request state, and log request lifecycle."""
         run_id = _resolve_run_id(request.headers.get("X-Run-ID"))
         request.state.run_id = run_id
+        request.state.request_id = run_id
 
         start_time = time.perf_counter()
 

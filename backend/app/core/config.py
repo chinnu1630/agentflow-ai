@@ -23,6 +23,24 @@ class Settings(BaseSettings):
         default="/api/v1",
         description="Base prefix for version 1 API routes.",
     )
+    otel_enabled: bool = Field(
+        default=False,
+        description="Enable OpenTelemetry tracing instrumentation.",
+    )
+    otel_service_name: str = Field(
+        default="agentflow-ai-backend",
+        description="Service name shown in distributed traces.",
+    )
+    otel_exporter_otlp_endpoint: str | None = Field(
+        default=None,
+        description="Optional OTLP HTTP endpoint for exporting traces.",
+    )
+    otel_sample_ratio: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Trace sampling ratio between 0.0 and 1.0.",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
