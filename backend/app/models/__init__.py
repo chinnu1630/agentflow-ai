@@ -15,3 +15,4 @@ __all__ = [
     "ReleaseRun",
     "ReleaseRunEvent",
 ]
+from app.models.release_run_approval import ReleaseRunApproval
