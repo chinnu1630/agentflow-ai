@@ -47,6 +47,30 @@ class FakeRiskCollector:
         )
 
 
+class FakeDegradedRiskCollector:
+    """Fake GitHub collector that simulates degraded GitHub availability."""
+
+    async def collect_github_risks(
+        self,
+        *,
+        run_id: str,
+    ) -> GitHubRiskCollectionResult:
+        """Return degraded GitHub risk collection output."""
+
+        return GitHubRiskCollectionResult(
+            status=RiskCollectionStatus.DEGRADED,
+            pull_request_count=0,
+            risk_result_count=0,
+            total_signal_count=0,
+            high_risk_count=0,
+            risk_results=[],
+            error_type="GitHubClientError",
+            error_message="GitHub unavailable.",
+            collected_at=datetime.now(UTC),
+            duration_ms=1.0,
+        )
+
+
 class FakeJiraRiskCollector:
     """Fake Jira risk collector used to avoid real Jira API calls."""
 
@@ -111,6 +135,23 @@ def _assert_risk_scoring_response(response_data: dict[str, Any]) -> None:
     assert isinstance(risk_score["reasons"], list)
     assert risk_score["reasons"]
     assert isinstance(risk_score["component_scores"], dict)
+
+
+def override_degraded_github_collector_for_test() -> None:
+    """Override GitHub collector with degraded output for approval tests."""
+
+    async def override_get_risk_collector() -> FakeDegradedRiskCollector:
+        """Override GitHub collector dependency with degraded fake."""
+
+        return FakeDegradedRiskCollector()
+
+    async def override_get_jira_risk_collector() -> FakeJiraRiskCollector:
+        """Override Jira collector dependency for API tests."""
+
+        return FakeJiraRiskCollector()
+
+    app.dependency_overrides[get_risk_collector] = override_get_risk_collector
+    app.dependency_overrides[get_jira_risk_collector] = override_get_jira_risk_collector
 
 
 @pytest.fixture
@@ -839,3 +880,65 @@ async def test_collect_release_risks_api_audits_knowledge_retrieval_failure(
     assert knowledge_event["metadata_json"]["result_count"] == 0
     assert knowledge_event["metadata_json"]["query_length"] > 0
     assert knowledge_event["metadata_json"]["error_present"] is True
+
+
+@pytest.mark.anyio
+async def test_collect_release_risks_api_creates_pending_approval_request_when_required(
+    release_run_api_client: AsyncClient,
+) -> None:
+    """POST /risks should create/reuse pending approval when approval is required."""
+
+    override_degraded_github_collector_for_test()
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    release_run_id = create_response.json()["id"]
+
+    first_risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert first_risk_response.status_code == 200
+
+    first_response_data = first_risk_response.json()
+
+    assert first_response_data["approval_required"] is True
+    assert first_response_data["approval_policy_version"] == "hitl_policy_v1"
+    assert first_response_data["approval_request_id"] is not None
+    assert first_response_data["approval_status"] == "pending"
+
+    second_risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert second_risk_response.status_code == 200
+
+    second_response_data = second_risk_response.json()
+
+    assert second_response_data["approval_required"] is True
+    assert second_response_data["approval_request_id"] == (
+        first_response_data["approval_request_id"]
+    )
+    assert second_response_data["approval_status"] == "pending"
+
+    events_response = await release_run_api_client.get(
+        f"/api/v1/release-runs/{release_run_id}/events",
+    )
+
+    assert events_response.status_code == 200
+
+    event_types = [
+        event["event_type"]
+        for event in events_response.json()["events"]
+    ]
+
+    assert "approval_request_created" in event_types
+    assert event_types.count("approval_request_created") == 1

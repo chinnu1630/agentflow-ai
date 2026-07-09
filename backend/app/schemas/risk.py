@@ -347,3 +347,5 @@ class ReleaseRunRiskResponse(BaseModel):
     approval_required: bool | None = None
     approval_reason: str | None = None
     approval_policy_version: str | None = None
+    approval_request_id: UUID | None = None
+    approval_status: str | None = None
