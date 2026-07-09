@@ -31,6 +31,8 @@ from app.schemas.release_run_event import (
     ReleaseRunEventResponse,
 )
 from app.schemas.risk import ReleaseRunRiskResponse
+from app.services.risk_feature_extraction_service import RiskFeatureExtractionService
+from app.services.rule_based_risk_scoring_service import RuleBasedRiskScoringService
 from app.services.github_risk_collector import RiskCollector
 from app.services.jira_risk_collector import JiraRiskCollector
 from app.services.engineering_document_retrieval_service import (
@@ -578,9 +580,55 @@ def _extract_risk_result_from_workflow_state(
 
 
 def _to_release_run_risk_response(result: Any) -> ReleaseRunRiskResponse:
-    """Convert a service or workflow result into the public API response model."""
+    """Convert a service or workflow result into the public API response model.
+
+    This boundary enriches the existing GitHub/Jira/Knowledge response with
+    deterministic feature extraction and rule-based scoring. Keeping this here
+    makes the change small and avoids adding a new LangGraph node before the
+    scoring contract is proven through API tests.
+    """
 
     if hasattr(result, "model_dump"):
-        return ReleaseRunRiskResponse.model_validate(result.model_dump())
+        result_data = result.model_dump(mode="python")
+    elif isinstance(result, Mapping):
+        result_data = dict(result)
+    else:
+        return ReleaseRunRiskResponse.model_validate(result)
 
-    return ReleaseRunRiskResponse.model_validate(result)
+    run_id = _extract_scoring_run_id(result_data)
+
+    risk_features = RiskFeatureExtractionService().extract_from_payload(
+        result_data,
+        run_id=run_id,
+    )
+    risk_score = RuleBasedRiskScoringService().score_release(
+        risk_features,
+        run_id=run_id,
+    )
+
+    enriched_result = {
+        **result_data,
+        "risk_features": risk_features.model_dump(mode="python"),
+        "risk_score": risk_score.model_dump(mode="python"),
+    }
+
+    return ReleaseRunRiskResponse.model_validate(enriched_result)
+
+
+def _extract_scoring_run_id(result_data: Mapping[str, Any]) -> str | None:
+    """Extract a safe workflow run ID for feature/scoring logs."""
+
+    release_run = result_data.get("release_run")
+
+    if hasattr(release_run, "model_dump"):
+        release_run = release_run.model_dump(mode="python")
+
+    if not isinstance(release_run, Mapping):
+        return None
+
+    run_id = release_run.get("run_id")
+
+    if isinstance(run_id, str) and run_id.strip():
+        return run_id
+
+    return None

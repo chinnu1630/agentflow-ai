@@ -80,6 +80,39 @@ def override_external_collectors_for_test() -> None:
     app.dependency_overrides[get_jira_risk_collector] = override_get_jira_risk_collector
 
 
+def _assert_risk_scoring_response(response_data: dict[str, Any]) -> None:
+    """Assert release-risk API response includes deterministic scoring output."""
+
+    risk_features = response_data["risk_features"]
+    risk_score = response_data["risk_score"]
+
+    assert risk_features["feature_version"] == "release_risk_features_v1"
+    assert isinstance(risk_features["total_risk_count"], int)
+    assert isinstance(risk_features["github_risk_count"], int)
+    assert isinstance(risk_features["jira_risk_count"], int)
+    assert isinstance(risk_features["knowledge_result_count"], int)
+    assert isinstance(risk_features["knowledge_failed"], bool)
+
+    assert risk_score["scoring_version"] == "rule_based_release_risk_v1"
+    assert risk_score["feature_version"] == "release_risk_features_v1"
+    assert 0.0 <= risk_score["score"] <= 1.0
+    assert risk_score["risk_level"] in {
+        "low",
+        "medium",
+        "high",
+        "critical",
+    }
+    assert risk_score["recommended_action"] in {
+        "proceed",
+        "review_required",
+        "block_release",
+        "partial_data_review",
+    }
+    assert isinstance(risk_score["reasons"], list)
+    assert risk_score["reasons"]
+    assert isinstance(risk_score["component_scores"], dict)
+
+
 @pytest.fixture
 async def release_run_api_client() -> AsyncIterator[AsyncClient]:
     """Create an API client with an isolated in-memory test database."""
@@ -303,6 +336,8 @@ async def test_collect_release_risks_api_returns_full_release_risk_summary(
     }
     assert isinstance(response_data["release_summary"]["summary_text"], str)
     assert response_data["release_summary"]["summary_text"]
+
+    _assert_risk_scoring_response(response_data)
 
 
 @pytest.mark.anyio

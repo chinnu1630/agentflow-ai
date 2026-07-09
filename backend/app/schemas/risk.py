@@ -263,6 +263,68 @@ class KnowledgeContextResultResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+
+class ReleaseRiskFeatureVectorResponse(BaseModel):
+    """API response schema for extracted release-risk scoring features."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    feature_version: Literal["release_risk_features_v1"]
+    generated_at: datetime
+
+    total_risk_count: int = Field(ge=0)
+    github_risk_count: int = Field(ge=0)
+    jira_risk_count: int = Field(ge=0)
+
+    critical_risk_count: int = Field(ge=0)
+    high_risk_count: int = Field(ge=0)
+    medium_risk_count: int = Field(ge=0)
+    low_risk_count: int = Field(ge=0)
+
+    ci_failure_count: int = Field(ge=0)
+    ci_pending_count: int = Field(ge=0)
+    review_blocked_count: int = Field(ge=0)
+    review_missing_count: int = Field(ge=0)
+    stale_pr_count: int = Field(ge=0)
+    large_changeset_count: int = Field(ge=0)
+    draft_pull_request_count: int = Field(ge=0)
+    missing_jira_link_count: int = Field(ge=0)
+    critical_file_change_count: int = Field(ge=0)
+
+    open_critical_bug_count: int = Field(ge=0)
+    blocked_jira_issue_count: int = Field(ge=0)
+    release_blocker_issue_count: int = Field(ge=0)
+    unassigned_high_priority_issue_count: int = Field(ge=0)
+    due_soon_issue_count: int = Field(ge=0)
+    critical_service_issue_count: int = Field(ge=0)
+
+    knowledge_result_count: int = Field(ge=0)
+    knowledge_no_results: bool
+    knowledge_failed: bool
+
+    github_degraded: bool
+    jira_degraded: bool
+
+    max_rule_score: float = Field(ge=0.0, le=1.0)
+    average_rule_score: float = Field(ge=0.0, le=1.0)
+
+
+class ReleaseRiskScoreResponse(BaseModel):
+    """API response schema for deterministic rule-based release-risk score."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    scoring_version: Literal["rule_based_release_risk_v1"]
+    feature_version: str
+    generated_at: datetime
+
+    score: float = Field(ge=0.0, le=1.0)
+    risk_level: RiskSeverityResponse
+    recommended_action: RiskSummaryActionResponse
+    reasons: list[str] = Field(default_factory=list)
+    component_scores: dict[str, float] = Field(default_factory=dict)
+
+
 class ReleaseRunRiskResponse(BaseModel):
     """API response model for release run risk analysis."""
 
@@ -280,3 +342,5 @@ class ReleaseRunRiskResponse(BaseModel):
         default_factory=list,
     )
     knowledge_error: str | None = None
+    risk_features: ReleaseRiskFeatureVectorResponse | None = None
+    risk_score: ReleaseRiskScoreResponse | None = None
