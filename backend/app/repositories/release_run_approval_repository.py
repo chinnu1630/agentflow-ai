@@ -278,6 +278,67 @@ class ReleaseRunApprovalRepository:
                 "Failed to list release-run approval requests."
             ) from exc
 
+
+    async def list_by_status(
+        self,
+        approval_status: ReleaseRunApprovalStatus,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[ReleaseRunApproval]:
+        """List approval requests by lifecycle status.
+
+        This is used by manager dashboards to show pending approvals without
+        requiring the UI to already know individual release_run_id values.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be greater than 0.")
+
+        if offset < 0:
+            raise ValueError("offset cannot be negative.")
+
+        try:
+            statement = (
+                select(ReleaseRunApproval)
+                .where(
+                    ReleaseRunApproval.approval_status
+                    == approval_status.value
+                )
+                .order_by(ReleaseRunApproval.created_at.asc())
+                .limit(limit)
+                .offset(offset)
+            )
+
+            result = await self._session.execute(statement)
+            approvals = result.scalars().all()
+
+            logger.info(
+                "release_run_approvals_listed_by_status",
+                extra={
+                    "request_id": self._request_id,
+                    "approval_status": approval_status.value,
+                    "limit": limit,
+                    "offset": offset,
+                    "count": len(approvals),
+                },
+            )
+
+            return approvals
+
+        except SQLAlchemyError as exc:
+            logger.exception(
+                "release_run_approvals_list_by_status_failed",
+                extra={
+                    "request_id": self._request_id,
+                    "approval_status": approval_status.value,
+                    "limit": limit,
+                    "offset": offset,
+                },
+            )
+            raise ReleaseRunApprovalRepositoryError(
+                "Failed to list release-run approvals by status."
+            ) from exc
+
     async def decide(
         self,
         command: DecideReleaseRunApprovalCommand,

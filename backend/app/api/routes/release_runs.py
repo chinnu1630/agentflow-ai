@@ -15,7 +15,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import SecretStr, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +38,7 @@ from app.repositories.release_run_repository import ReleaseRunRepository
 from app.schemas.github import GitHubRepositoryConfig
 from app.schemas.release_run_approval import (
     ReleaseRunApprovalDecisionRequest,
+    PendingReleaseRunApprovalListResponse,
     ReleaseRunApprovalListResponse,
     ReleaseRunApprovalResponse,
 )
@@ -168,6 +169,53 @@ async def start_release_run(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database error while starting release-risk workflow.",
+        ) from exc
+
+
+
+@router.get(
+    "/approvals/pending",
+    response_model=PendingReleaseRunApprovalListResponse,
+)
+async def list_pending_release_run_approvals(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> PendingReleaseRunApprovalListResponse:
+    """List pending HITL approval requests across release runs.
+
+    This endpoint powers the future manager review dashboard. It lets the UI
+    show all releases waiting for human approval without knowing release IDs
+    in advance.
+    """
+
+    request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
+
+    approval_repository = ReleaseRunApprovalRepository(
+        session=session,
+        request_id=request_id,
+    )
+
+    try:
+        approvals = await approval_repository.list_by_status(
+            ReleaseRunApprovalStatus.PENDING,
+            limit=limit,
+            offset=offset,
+        )
+
+        return PendingReleaseRunApprovalListResponse(
+            approval_status=ReleaseRunApprovalStatus.PENDING.value,
+            approvals=[
+                ReleaseRunApprovalResponse.model_validate(approval)
+                for approval in approvals
+            ],
+        )
+
+    except (ReleaseRunApprovalRepositoryError, SQLAlchemyError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error while fetching pending approvals.",
         ) from exc
 
 

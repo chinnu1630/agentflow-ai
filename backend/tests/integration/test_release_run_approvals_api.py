@@ -250,3 +250,81 @@ async def test_decide_release_run_approval_api_returns_404_for_wrong_release_run
 
     assert response.status_code == 404
     assert response.json()["error"]["message"] == "Approval request not found."
+
+
+@pytest.mark.anyio
+async def test_list_pending_release_run_approvals_api_returns_only_pending(
+    release_run_approvals_api_client: AsyncClient,
+) -> None:
+    """GET /approvals/pending should return only pending approval requests."""
+    first_release_run_id = await _create_release_run(
+        release_run_approvals_api_client
+    )
+    second_release_run_id = await _create_release_run(
+        release_run_approvals_api_client
+    )
+
+    pending_approval_id = await _create_pending_approval(first_release_run_id)
+    approved_approval_id = await _create_pending_approval(second_release_run_id)
+
+    decision_response = await release_run_approvals_api_client.post(
+        (
+            f"/api/v1/release-runs/{second_release_run_id}"
+            f"/approvals/{approved_approval_id}/decision"
+        ),
+        json={
+            "approval_status": "approved",
+            "decided_by": "director@example.com",
+        },
+    )
+
+    assert decision_response.status_code == 200
+
+    response = await release_run_approvals_api_client.get(
+        "/api/v1/release-runs/approvals/pending",
+    )
+
+    assert response.status_code == 200
+
+    response_data = response.json()
+
+    assert response_data["approval_status"] == "pending"
+    assert len(response_data["approvals"]) == 1
+    assert response_data["approvals"][0]["id"] == pending_approval_id
+    assert response_data["approvals"][0]["approval_status"] == "pending"
+
+
+@pytest.mark.anyio
+async def test_list_pending_release_run_approvals_api_supports_pagination(
+    release_run_approvals_api_client: AsyncClient,
+) -> None:
+    """GET /approvals/pending should support limit and offset."""
+    release_run_id = await _create_release_run(release_run_approvals_api_client)
+
+    first_approval_id = await _create_pending_approval(release_run_id)
+    second_approval_id = await _create_pending_approval(release_run_id)
+
+    response = await release_run_approvals_api_client.get(
+        "/api/v1/release-runs/approvals/pending?limit=1&offset=1",
+    )
+
+    assert response.status_code == 200
+
+    response_data = response.json()
+
+    assert response_data["approval_status"] == "pending"
+    assert len(response_data["approvals"]) == 1
+    assert response_data["approvals"][0]["id"] == second_approval_id
+    assert response_data["approvals"][0]["id"] != first_approval_id
+
+
+@pytest.mark.anyio
+async def test_list_pending_release_run_approvals_api_rejects_invalid_limit(
+    release_run_approvals_api_client: AsyncClient,
+) -> None:
+    """GET /approvals/pending should validate pagination query params."""
+    response = await release_run_approvals_api_client.get(
+        "/api/v1/release-runs/approvals/pending?limit=0",
+    )
+
+    assert response.status_code == 422

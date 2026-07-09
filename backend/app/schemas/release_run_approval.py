@@ -46,3 +46,10 @@ class ReleaseRunApprovalDecisionRequest(BaseModel):
     approval_status: ReleaseRunApprovalDecisionStatus
     decided_by: str = Field(min_length=1, max_length=255)
     decision_note: str | None = Field(default=None, max_length=1_000)
+
+
+class PendingReleaseRunApprovalListResponse(BaseModel):
+    """API response model for manager pending approval queue."""
+
+    approval_status: str
+    approvals: list[ReleaseRunApprovalResponse]

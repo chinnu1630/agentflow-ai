@@ -311,3 +311,104 @@ def test_decide_release_run_approval_command_rejects_pending_decision() -> None:
             approval_status=ReleaseRunApprovalStatus.PENDING,
             decided_by="director@example.com",
         )
+
+
+@pytest.mark.anyio
+async def test_list_by_status_returns_only_matching_approvals(
+    session: AsyncSession,
+) -> None:
+    """Repository should list approvals filtered by status."""
+    release_run = await create_test_release_run(session)
+    other_release_run = await create_test_release_run(session)
+    repository = ReleaseRunApprovalRepository(
+        session=session,
+        request_id="test-request-id",
+    )
+
+    pending_approval = await repository.create_pending(
+        CreateReleaseRunApprovalCommand(
+            release_run_id=release_run.id,
+            approval_reason="Pending approval.",
+            approval_policy_version="hitl_policy_v1",
+        )
+    )
+    approved_approval = await repository.create_pending(
+        CreateReleaseRunApprovalCommand(
+            release_run_id=other_release_run.id,
+            approval_reason="Approval to decide.",
+            approval_policy_version="hitl_policy_v1",
+        )
+    )
+
+    await repository.decide(
+        DecideReleaseRunApprovalCommand(
+            approval_id=approved_approval.id,
+            approval_status=ReleaseRunApprovalStatus.APPROVED,
+            decided_by="director@example.com",
+        )
+    )
+
+    await session.commit()
+
+    pending_approvals = await repository.list_by_status(
+        ReleaseRunApprovalStatus.PENDING
+    )
+
+    assert len(pending_approvals) == 1
+    assert pending_approvals[0].id == pending_approval.id
+    assert pending_approvals[0].approval_status == "pending"
+
+
+@pytest.mark.anyio
+async def test_list_by_status_supports_limit_and_offset(
+    session: AsyncSession,
+) -> None:
+    """Repository should paginate approvals filtered by status."""
+    release_run = await create_test_release_run(session)
+    repository = ReleaseRunApprovalRepository(
+        session=session,
+        request_id="test-request-id",
+    )
+
+    for index in range(3):
+        await repository.create_pending(
+            CreateReleaseRunApprovalCommand(
+                release_run_id=release_run.id,
+                approval_reason=f"Pending approval {index}.",
+                approval_policy_version="hitl_policy_v1",
+            )
+        )
+
+    await session.commit()
+
+    approvals = await repository.list_by_status(
+        ReleaseRunApprovalStatus.PENDING,
+        limit=1,
+        offset=1,
+    )
+
+    assert len(approvals) == 1
+    assert approvals[0].approval_reason == "Pending approval 1."
+
+
+@pytest.mark.anyio
+async def test_list_by_status_rejects_invalid_pagination(
+    session: AsyncSession,
+) -> None:
+    """Repository should reject invalid status-list pagination input."""
+    repository = ReleaseRunApprovalRepository(
+        session=session,
+        request_id="test-request-id",
+    )
+
+    with pytest.raises(ValueError, match="limit must be greater than 0"):
+        await repository.list_by_status(
+            ReleaseRunApprovalStatus.PENDING,
+            limit=0,
+        )
+
+    with pytest.raises(ValueError, match="offset cannot be negative"):
+        await repository.list_by_status(
+            ReleaseRunApprovalStatus.PENDING,
+            offset=-1,
+        )
