@@ -81,8 +81,11 @@ async def test_release_run_service_runs_langgraph_workflow_successfully() -> Non
     assert final_state.completed_nodes == [
         "start_release_risk_workflow",
         "collect_release_risks",
+        "score_release_risk",
         "complete_release_risk_workflow",
     ]
+    assert final_state.risk_features is not None
+    assert final_state.risk_score is not None
 
 
 @pytest.mark.anyio

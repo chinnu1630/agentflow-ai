@@ -568,6 +568,8 @@ def _merge_workflow_knowledge_context(
         "knowledge_results",
         "knowledge_status",
         "knowledge_error",
+        "risk_score",
+        "risk_features",
     )
 
     knowledge_fields: dict[str, Any] = {}
@@ -684,6 +686,9 @@ def _to_release_run_risk_response(result: Any) -> ReleaseRunRiskResponse:
         result_data = dict(result)
     else:
         return ReleaseRunRiskResponse.model_validate(result)
+
+    if result_data.get("risk_features") is not None and result_data.get("risk_score") is not None:
+        return ReleaseRunRiskResponse.model_validate(result_data)
 
     run_id = _extract_scoring_run_id(result_data)
 

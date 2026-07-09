@@ -37,6 +37,7 @@ from app.workflows.release_risk_service_nodes import (
     ReleaseRiskCollectionService,
     create_collect_release_risks_node,
     create_retrieve_knowledge_context_node,
+    create_score_release_risk_node,
 )
 from app.workflows.release_risk_state import (
     ReleaseRiskState,
@@ -46,6 +47,7 @@ from app.workflows.release_risk_state import (
 
 _ROUTE_COMPLETE = "complete"
 _ROUTE_KNOWLEDGE = "knowledge"
+_ROUTE_SCORE = "score"
 _ROUTE_END = "end"
 
 
@@ -85,7 +87,7 @@ def _route_after_collection_without_knowledge(state: WorkflowStateInput) -> str:
     if validated_state.status == ReleaseRiskWorkflowStatus.FAILED:
         return _ROUTE_END
 
-    return _ROUTE_COMPLETE
+    return _ROUTE_SCORE
 
 
 def _route_after_collection_with_knowledge(state: WorkflowStateInput) -> str:
@@ -97,6 +99,16 @@ def _route_after_collection_with_knowledge(state: WorkflowStateInput) -> str:
 
     return _ROUTE_KNOWLEDGE
 
+
+
+def _route_after_scoring(state: WorkflowStateInput) -> str:
+    """Route after release-risk scoring."""
+    validated_state = _validate_state_input(state)
+
+    if validated_state.status == ReleaseRiskWorkflowStatus.FAILED:
+        return _ROUTE_END
+
+    return _ROUTE_COMPLETE
 
 def build_release_risk_service_graph(
     service: ReleaseRiskCollectionService,
@@ -124,6 +136,7 @@ def build_release_risk_service_graph(
         create_collect_release_risks_node(service),
     )
     graph.add_node("complete", _complete_node)
+    graph.add_node("score_release_risk", create_score_release_risk_node())
 
     graph.add_edge(START, "start")
     graph.add_edge("start", "collect_release_risks")
@@ -133,7 +146,7 @@ def build_release_risk_service_graph(
             "collect_release_risks",
             _route_after_collection_without_knowledge,
             {
-                _ROUTE_COMPLETE: "complete",
+                _ROUTE_SCORE: "score_release_risk",
                 _ROUTE_END: END,
             },
         )
@@ -150,8 +163,16 @@ def build_release_risk_service_graph(
                 _ROUTE_END: END,
             },
         )
-        graph.add_edge("retrieve_knowledge_context", "complete")
+        graph.add_edge("retrieve_knowledge_context", "score_release_risk")
 
+    graph.add_conditional_edges(
+        "score_release_risk",
+        _route_after_scoring,
+        {
+            _ROUTE_COMPLETE: "complete",
+            _ROUTE_END: END,
+        },
+    )
     graph.add_edge("complete", END)
 
     return graph.compile()

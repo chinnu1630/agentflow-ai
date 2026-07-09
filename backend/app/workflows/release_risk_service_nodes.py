@@ -27,6 +27,8 @@ from pydantic import BaseModel
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalRequest,
 )
+from app.services.risk_feature_extraction_service import RiskFeatureExtractionService
+from app.services.rule_based_risk_scoring_service import RuleBasedRiskScoringService
 from app.workflows.release_risk_graph import (
     WorkflowStateInput,
     WorkflowStateUpdate,
@@ -344,3 +346,78 @@ def create_retrieve_knowledge_context_node(
             return failed_state.model_dump(mode="python")
 
     return retrieve_knowledge_context_node
+
+
+def create_score_release_risk_node(
+    feature_extraction_service: RiskFeatureExtractionService | None = None,
+    risk_scoring_service: RuleBasedRiskScoringService | None = None,
+) -> Callable[[WorkflowStateInput], object]:
+    """Create a LangGraph node for deterministic release-risk scoring.
+
+    The node converts current workflow state into a stable feature vector,
+    scores the release using deterministic rules, stores both outputs in
+    ReleaseRiskState, and logs only safe metadata.
+    """
+
+    feature_service = feature_extraction_service or RiskFeatureExtractionService()
+    scoring_service = risk_scoring_service or RuleBasedRiskScoringService()
+
+    def score_release_risk_node(state: WorkflowStateInput) -> WorkflowStateUpdate:
+        """Extract features and score release risk from current workflow state."""
+        validated_state = _validate_state_input(state)
+        running_state = validated_state.mark_running(
+            ReleaseRiskWorkflowStage.SCORING_RELEASE_RISK
+        )
+
+        try:
+            payload = running_state.model_dump(mode="python")
+
+            risk_features = feature_service.extract_from_payload(
+                payload,
+                run_id=running_state.run_id,
+            )
+            risk_score = scoring_service.score_release(
+                risk_features,
+                run_id=running_state.run_id,
+            )
+
+            logger.info(
+                "release_risk_scoring_node_completed",
+                run_id=running_state.run_id,
+                release_run_id=str(running_state.release_run_id),
+                feature_version=risk_features.feature_version,
+                scoring_version=risk_score.scoring_version,
+                score=risk_score.score,
+                risk_level=risk_score.risk_level.value,
+                recommended_action=risk_score.recommended_action.value,
+                total_risk_count=risk_features.total_risk_count,
+                knowledge_failed=risk_features.knowledge_failed,
+            )
+
+            updated_state = running_state.model_copy(
+                update={
+                    "risk_features": risk_features.model_dump(mode="python"),
+                    "risk_score": risk_score.model_dump(mode="python"),
+                }
+            ).add_completed_node("score_release_risk")
+
+            return updated_state.model_dump(mode="python")
+
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "release_risk_scoring_node_failed",
+                run_id=running_state.run_id,
+                release_run_id=str(running_state.release_run_id),
+                error_type=exc.__class__.__name__,
+            )
+
+            failed_state = running_state.add_error(
+                source="release_risk_scoring",
+                message="Release-risk scoring failed.",
+                recoverable=False,
+                details={"error_type": exc.__class__.__name__},
+            )
+
+            return failed_state.model_dump(mode="python")
+
+    return score_release_risk_node

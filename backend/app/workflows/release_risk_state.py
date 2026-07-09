@@ -38,6 +38,7 @@ class ReleaseRiskWorkflowStage(StrEnum):
     COLLECTING_JIRA_RISKS = "collecting_jira_risks"
     BUILDING_RELEASE_SUMMARY = "building_release_summary"
     RETRIEVING_KNOWLEDGE_CONTEXT = "retrieving_knowledge_context"
+    SCORING_RELEASE_RISK = "scoring_release_risk"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -174,6 +175,15 @@ class ReleaseRiskState(BaseModel):
         default=None,
         max_length=1_000,
         description="Safe Knowledge Agent retrieval error message.",
+    )
+
+    risk_features: dict[str, Any] | None = Field(
+        default=None,
+        description="Extracted numeric feature vector used for release-risk scoring.",
+    )
+    risk_score: dict[str, Any] | None = Field(
+        default=None,
+        description="Deterministic release-risk score and recommendation.",
     )
 
     completed_nodes: list[str] = Field(
