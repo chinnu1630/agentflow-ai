@@ -145,32 +145,43 @@ async def get_slack_alert_sender(request: Request) -> AsyncIterator[SlackClient]
     Slack credentials are read from environment variables so bot tokens and
     channel IDs are never hardcoded in source code.
     """
-
-    request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
-
-    slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
-    slack_channel_id = os.getenv("SLACK_CHANNEL_ID")
-
-    if not slack_bot_token or not slack_channel_id:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Slack alert delivery is not configured. "
-                "Set SLACK_BOT_TOKEN and SLACK_CHANNEL_ID."
-            ),
-        )
-
-    slack_config = SlackClientConfig(
-        bot_token=SecretStr(slack_bot_token),
-        channel_id=slack_channel_id,
+    request_id_for_span = str(
+        getattr(request.state, "request_id", "unknown-request-id")
     )
+    with start_business_span(
+        "slack.release_alert.route",
+        {
+            "release_run_id": str(release_run_id),
+            "run_id": request_id_for_span,
+            "route": "/api/v1/release-runs/{release_run_id}/slack-alert",
+        },
+    ):
 
-    async with httpx.AsyncClient() as http_client:
-        yield SlackClient(
-            http_client=http_client,
-            config=slack_config,
-            request_id=request_id,
+        request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
+
+        slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
+        slack_channel_id = os.getenv("SLACK_CHANNEL_ID")
+
+        if not slack_bot_token or not slack_channel_id:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Slack alert delivery is not configured. "
+                    "Set SLACK_BOT_TOKEN and SLACK_CHANNEL_ID."
+                ),
+            )
+
+        slack_config = SlackClientConfig(
+            bot_token=SecretStr(slack_bot_token),
+            channel_id=slack_channel_id,
         )
+
+        async with httpx.AsyncClient() as http_client:
+            yield SlackClient(
+                http_client=http_client,
+                config=slack_config,
+                request_id=request_id,
+            )
 
 
 @router.post(

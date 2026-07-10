@@ -87,3 +87,19 @@ def test_knowledge_retrieval_node_has_business_span() -> None:
     assert '"query_present": bool(getattr(validated_state, "manager_query", None))' in node_source
     assert "chunk.content" not in node_source
     assert "document_text" not in node_source
+
+
+def test_slack_alert_route_has_business_span() -> None:
+    """Manual approved Slack alert route should be traced safely."""
+    route_source = Path("app/api/routes/release_runs.py").read_text()
+
+    assert '"slack.release_alert.route"' in route_source
+    assert '"release_run_id": str(release_run_id)' in route_source
+    assert '"run_id": request_id_for_span' in route_source
+    assert (
+        '"route": "/api/v1/release-runs/{release_run_id}/slack-alert"'
+        in route_source
+    )
+    assert "SLACK_BOT_TOKEN" in route_source
+    assert "slack_bot_token" in route_source
+    assert '"slack_bot_token"' not in route_source
