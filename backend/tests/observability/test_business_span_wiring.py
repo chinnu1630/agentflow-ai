@@ -64,3 +64,16 @@ def test_risk_count_helper_is_defensive() -> None:
     assert "def _count_collection_risks(collection: object) -> int:" in route_source
     assert 'for attribute_name in ("risks", "risk_signals", "signals"):' in route_source
     assert "return 0" in route_source
+
+
+def test_langgraph_approval_decision_node_has_business_span() -> None:
+    """HITL approval decision node should expose safe tracing metadata."""
+    node_source = Path("app/workflows/release_risk_service_nodes.py").read_text()
+
+    assert '"approval.decision"' in node_source
+    assert '"release_run_id": str(running_state.release_run_id)' in node_source
+    assert '"run_id": running_state.run_id' in node_source
+    assert '"release_summary_present": running_state.release_summary is not None' in node_source
+    assert '"risk_score_present": running_state.risk_score is not None' in node_source
+    assert '"approval.required", decision.approval_required' in node_source
+    assert '"approval.reason_present"' in node_source

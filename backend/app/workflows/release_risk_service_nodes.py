@@ -25,6 +25,7 @@ import structlog
 from pydantic import BaseModel
 
 from app.services.hitl_approval_decision_service import HITLApprovalDecisionService
+from app.observability.tracing import start_business_span
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalRequest,
 )
@@ -440,28 +441,40 @@ def create_determine_approval_requirement_node(
             ReleaseRiskWorkflowStage.DETERMINING_APPROVAL_REQUIREMENT
         )
 
-        decision = decision_service.determine_approval(
-            running_state.risk_score,
-            run_id=running_state.run_id,
-        )
+        with start_business_span(
+            "approval.decision",
+            {
+                "release_run_id": str(running_state.release_run_id),
+                "run_id": running_state.run_id,
+                "release_summary_present": running_state.release_summary is not None,
+                "risk_score_present": running_state.risk_score is not None,
+            },
+        ) as span:
+            decision = decision_service.determine_approval(
+                running_state.risk_score,
+                run_id=running_state.run_id,
+            )
+            span.set_attribute("approval.required", decision.approval_required)
+            span.set_attribute("approval.policy_version", decision.approval_policy_version)
+            span.set_attribute("approval.reason_present", decision.approval_reason is not None)
 
-        logger.info(
-            "approval_requirement_node_completed",
-            run_id=running_state.run_id,
-            release_run_id=str(running_state.release_run_id),
-            approval_policy_version=decision.approval_policy_version,
-            approval_required=decision.approval_required,
-            approval_reason_present=decision.approval_reason is not None,
-        )
+            logger.info(
+                "approval_requirement_node_completed",
+                run_id=running_state.run_id,
+                release_run_id=str(running_state.release_run_id),
+                approval_policy_version=decision.approval_policy_version,
+                approval_required=decision.approval_required,
+                approval_reason_present=decision.approval_reason is not None,
+            )
 
-        updated_state = running_state.model_copy(
-            update={
-                "approval_required": decision.approval_required,
-                "approval_reason": decision.approval_reason,
-                "approval_policy_version": decision.approval_policy_version,
-            }
-        ).add_completed_node("determine_approval_requirement")
+            updated_state = running_state.model_copy(
+                update={
+                    "approval_required": decision.approval_required,
+                    "approval_reason": decision.approval_reason,
+                    "approval_policy_version": decision.approval_policy_version,
+                }
+            ).add_completed_node("determine_approval_requirement")
 
-        return updated_state.model_dump(mode="python")
+            return updated_state.model_dump(mode="python")
 
     return determine_approval_requirement_node
