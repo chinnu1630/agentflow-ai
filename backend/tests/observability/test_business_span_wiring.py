@@ -77,3 +77,13 @@ def test_langgraph_approval_decision_node_has_business_span() -> None:
     assert '"risk_score_present": running_state.risk_score is not None' in node_source
     assert '"approval.required", decision.approval_required' in node_source
     assert '"approval.reason_present"' in node_source
+
+
+def test_knowledge_retrieval_node_has_business_span() -> None:
+    """Knowledge retrieval node should be traced without exposing document text."""
+    node_source = Path("app/workflows/release_risk_service_nodes.py").read_text()
+
+    assert '"knowledge.retrieve"' in node_source
+    assert '"query_present": bool(getattr(validated_state, "manager_query", None))' in node_source
+    assert "chunk.content" not in node_source
+    assert "document_text" not in node_source

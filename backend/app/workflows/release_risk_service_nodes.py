@@ -274,78 +274,86 @@ def create_retrieve_knowledge_context_node(
         state: WorkflowStateInput,
     ) -> WorkflowStateUpdate:
         """Retrieve internal engineering document context for release risks."""
-        validated_state = _validate_state_input(state)
-        running_state = validated_state.mark_running(
-            ReleaseRiskWorkflowStage.RETRIEVING_KNOWLEDGE_CONTEXT
-        )
-
-        knowledge_query = _build_knowledge_query(running_state)
-
-        try:
-            retrieval_result = await service.retrieve_relevant_chunks(
-                EngineeringDocumentRetrievalRequest(
-                    query=knowledge_query,
-                    top_k=5,
-                    document_limit=100,
-                ),
-                run_id=running_state.run_id,
-            )
-            payload = _serialize_knowledge_result(retrieval_result)
-            results = payload.get("results", [])
-
-            if not isinstance(results, list):
-                raise TypeError("knowledge retrieval results must be a list")
-
-            knowledge_status = (
-                KnowledgeRetrievalStatus.COMPLETED
-                if results
-                else KnowledgeRetrievalStatus.NO_RESULTS
+        with start_business_span(
+            "knowledge.retrieve",
+            {
+                "release_run_id": str(validated_state.release_run_id) if "validated_state" in locals() else "unknown",
+                "run_id": validated_state.run_id if "validated_state" in locals() else "unknown",
+                "query_present": bool(getattr(validated_state, "manager_query", None)) if "validated_state" in locals() else False,
+            },
+        ):
+            validated_state = _validate_state_input(state)
+            running_state = validated_state.mark_running(
+                ReleaseRiskWorkflowStage.RETRIEVING_KNOWLEDGE_CONTEXT
             )
 
-            logger.info(
-                "knowledge_retrieval_node_completed",
-                run_id=running_state.run_id,
-                release_run_id=str(running_state.release_run_id),
-                knowledge_status=knowledge_status.value,
-                result_count=len(results),
-                query_length=len(knowledge_query),
-            )
+            knowledge_query = _build_knowledge_query(running_state)
 
-            updated_state = running_state.model_copy(
-                update={
-                    "knowledge_query": knowledge_query,
-                    "knowledge_results": results,
-                    "knowledge_status": knowledge_status,
-                    "knowledge_error": None,
-                }
-            ).add_completed_node("retrieve_knowledge_context")
+            try:
+                retrieval_result = await service.retrieve_relevant_chunks(
+                    EngineeringDocumentRetrievalRequest(
+                        query=knowledge_query,
+                        top_k=5,
+                        document_limit=100,
+                    ),
+                    run_id=running_state.run_id,
+                )
+                payload = _serialize_knowledge_result(retrieval_result)
+                results = payload.get("results", [])
 
-            return updated_state.model_dump(mode="python")
+                if not isinstance(results, list):
+                    raise TypeError("knowledge retrieval results must be a list")
 
-        except (TypeError, ValueError) as exc:
-            logger.warning(
-                "knowledge_retrieval_node_failed",
-                run_id=running_state.run_id,
-                release_run_id=str(running_state.release_run_id),
-                error_type=exc.__class__.__name__,
-                query_length=len(knowledge_query),
-            )
+                knowledge_status = (
+                    KnowledgeRetrievalStatus.COMPLETED
+                    if results
+                    else KnowledgeRetrievalStatus.NO_RESULTS
+                )
 
-            failed_state = running_state.model_copy(
-                update={
-                    "knowledge_query": knowledge_query,
-                    "knowledge_results": [],
-                    "knowledge_status": KnowledgeRetrievalStatus.FAILED,
-                    "knowledge_error": "Knowledge retrieval failed.",
-                }
-            ).add_error(
-                source="knowledge_retrieval",
-                message="Knowledge retrieval failed.",
-                recoverable=True,
-                details={"error_type": exc.__class__.__name__},
-            )
+                logger.info(
+                    "knowledge_retrieval_node_completed",
+                    run_id=running_state.run_id,
+                    release_run_id=str(running_state.release_run_id),
+                    knowledge_status=knowledge_status.value,
+                    result_count=len(results),
+                    query_length=len(knowledge_query),
+                )
 
-            return failed_state.model_dump(mode="python")
+                updated_state = running_state.model_copy(
+                    update={
+                        "knowledge_query": knowledge_query,
+                        "knowledge_results": results,
+                        "knowledge_status": knowledge_status,
+                        "knowledge_error": None,
+                    }
+                ).add_completed_node("retrieve_knowledge_context")
+
+                return updated_state.model_dump(mode="python")
+
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "knowledge_retrieval_node_failed",
+                    run_id=running_state.run_id,
+                    release_run_id=str(running_state.release_run_id),
+                    error_type=exc.__class__.__name__,
+                    query_length=len(knowledge_query),
+                )
+
+                failed_state = running_state.model_copy(
+                    update={
+                        "knowledge_query": knowledge_query,
+                        "knowledge_results": [],
+                        "knowledge_status": KnowledgeRetrievalStatus.FAILED,
+                        "knowledge_error": "Knowledge retrieval failed.",
+                    }
+                ).add_error(
+                    source="knowledge_retrieval",
+                    message="Knowledge retrieval failed.",
+                    recoverable=True,
+                    details={"error_type": exc.__class__.__name__},
+                )
+
+                return failed_state.model_dump(mode="python")
 
     return retrieve_knowledge_context_node
 
