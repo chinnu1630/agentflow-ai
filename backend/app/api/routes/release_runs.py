@@ -1065,46 +1065,54 @@ async def _persist_release_risk_snapshot(
     metadata and does not duplicate raw PRs, Jira tickets, Knowledge chunks,
     prompts, or stack traces.
     """
+    with start_business_span(
+        "snapshot.persist",
+        {
+                "release_run_id": str(release_run_id),
+                "approval_required": response.approval_required is True,
+                "overall_severity": _safe_enum_value(response.release_summary.overall_severity),
+        },
+    ):
 
-    approval_required = response.approval_required is True
-    approval_status_at_snapshot = response.approval_status
+        approval_required = response.approval_required is True
+        approval_status_at_snapshot = response.approval_status
 
-    if approval_status_at_snapshot is None:
-        approval_status_at_snapshot = (
-            ReleaseRunApprovalStatus.PENDING.value
-            if approval_required
-            else "not_required"
-        )
+        if approval_status_at_snapshot is None:
+            approval_status_at_snapshot = (
+                ReleaseRunApprovalStatus.PENDING.value
+                if approval_required
+                else "not_required"
+            )
 
-    snapshot = await risk_snapshot_repository.create_snapshot(
-        CreateReleaseRunRiskSnapshotCommand(
-            release_run_id=release_run_id,
-            risk_payload=response.model_dump(mode="json"),
-            overall_severity=_safe_enum_value(
-                response.release_summary.overall_severity
-            ),
-            approval_required=approval_required,
-            approval_status_at_snapshot=approval_status_at_snapshot,
-        )
-    )
-
-    await event_repository.create(
-        CreateReleaseRunEventCommand(
-            release_run_id=release_run_id,
-            event_type="release_risk_snapshot_created",
-            event_status="success",
-            message="Trusted release-risk report snapshot was persisted.",
-            metadata_json={
-                "snapshot_id": str(snapshot.id),
-                "snapshot_version": snapshot.snapshot_version,
-                "overall_severity": snapshot.overall_severity,
-                "approval_required": snapshot.approval_required,
-                "approval_status_at_snapshot": (
-                    snapshot.approval_status_at_snapshot
+        snapshot = await risk_snapshot_repository.create_snapshot(
+            CreateReleaseRunRiskSnapshotCommand(
+                release_run_id=release_run_id,
+                risk_payload=response.model_dump(mode="json"),
+                overall_severity=_safe_enum_value(
+                    response.release_summary.overall_severity
                 ),
-            },
+                approval_required=approval_required,
+                approval_status_at_snapshot=approval_status_at_snapshot,
+            )
         )
-    )
+
+        await event_repository.create(
+            CreateReleaseRunEventCommand(
+                release_run_id=release_run_id,
+                event_type="release_risk_snapshot_created",
+                event_status="success",
+                message="Trusted release-risk report snapshot was persisted.",
+                metadata_json={
+                    "snapshot_id": str(snapshot.id),
+                    "snapshot_version": snapshot.snapshot_version,
+                    "overall_severity": snapshot.overall_severity,
+                    "approval_required": snapshot.approval_required,
+                    "approval_status_at_snapshot": (
+                        snapshot.approval_status_at_snapshot
+                    ),
+                },
+            )
+        )
 
 
 
@@ -1124,81 +1132,88 @@ async def _ensure_pending_approval_request(
     deterministic HITL policy. It does not store raw PRs, Jira tickets,
     Knowledge chunks, prompts, or stack traces.
     """
-
-    if response.approval_required is not True:
-        return response
-
-    latest_approval = await approval_repository.get_latest_by_release_run_id(
-        release_run_id
-    )
-
-    if (
-        latest_approval is not None
-        and latest_approval.approval_status == ReleaseRunApprovalStatus.PENDING.value
+    with start_business_span(
+        "approval.ensure_pending",
+        {
+                "release_run_id": str(release_run_id),
+                "approval_required": response.approval_required is True,
+        },
     ):
+
+        if response.approval_required is not True:
+            return response
+
+        latest_approval = await approval_repository.get_latest_by_release_run_id(
+            release_run_id
+        )
+
+        if (
+            latest_approval is not None
+            and latest_approval.approval_status == ReleaseRunApprovalStatus.PENDING.value
+        ):
+            await _mark_release_run_waiting_for_approval(
+                release_run_repository=release_run_repository,
+                event_repository=event_repository,
+                release_run_id=release_run_id,
+                approval_request_id=latest_approval.id,
+                approval_status=latest_approval.approval_status,
+                approval_policy_version=latest_approval.approval_policy_version,
+            )
+
+            return response.model_copy(
+                update={
+                    "approval_request_id": latest_approval.id,
+                    "approval_status": latest_approval.approval_status,
+                }
+            )
+
+        approval = await approval_repository.create_pending(
+            CreateReleaseRunApprovalCommand(
+                release_run_id=release_run_id,
+                approval_reason=(
+                    response.approval_reason
+                    or "Release requires human approval before proceeding."
+                ),
+                approval_policy_version=(
+                    response.approval_policy_version or "hitl_policy_v1"
+                ),
+                requested_by=response.release_run.requested_by,
+            )
+        )
+
+        await event_repository.create(
+            CreateReleaseRunEventCommand(
+                release_run_id=release_run_id,
+                event_type="approval_request_created",
+                event_status="success",
+                message="Pending release approval request was created.",
+                metadata_json={
+                    "approval_request_id": str(approval.id),
+                    "approval_status": approval.approval_status,
+                    "approval_policy_version": approval.approval_policy_version,
+                    "approval_reason_present": bool(approval.approval_reason),
+                },
+            )
+        )
+
         await _mark_release_run_waiting_for_approval(
             release_run_repository=release_run_repository,
             event_repository=event_repository,
             release_run_id=release_run_id,
-            approval_request_id=latest_approval.id,
-            approval_status=latest_approval.approval_status,
-            approval_policy_version=latest_approval.approval_policy_version,
+            approval_request_id=approval.id,
+            approval_status=approval.approval_status,
+            approval_policy_version=approval.approval_policy_version,
         )
 
         return response.model_copy(
             update={
-                "approval_request_id": latest_approval.id,
-                "approval_status": latest_approval.approval_status,
+                "approval_request_id": approval.id,
+                "approval_status": approval.approval_status,
+                "release_run": response.release_run.model_copy(
+                    update={"status": "waiting_for_approval"}
+                ),
             }
         )
-
-    approval = await approval_repository.create_pending(
-        CreateReleaseRunApprovalCommand(
-            release_run_id=release_run_id,
-            approval_reason=(
-                response.approval_reason
-                or "Release requires human approval before proceeding."
-            ),
-            approval_policy_version=(
-                response.approval_policy_version or "hitl_policy_v1"
-            ),
-            requested_by=response.release_run.requested_by,
-        )
-    )
-
-    await event_repository.create(
-        CreateReleaseRunEventCommand(
-            release_run_id=release_run_id,
-            event_type="approval_request_created",
-            event_status="success",
-            message="Pending release approval request was created.",
-            metadata_json={
-                "approval_request_id": str(approval.id),
-                "approval_status": approval.approval_status,
-                "approval_policy_version": approval.approval_policy_version,
-                "approval_reason_present": bool(approval.approval_reason),
-            },
-        )
-    )
-
-    await _mark_release_run_waiting_for_approval(
-        release_run_repository=release_run_repository,
-        event_repository=event_repository,
-        release_run_id=release_run_id,
-        approval_request_id=approval.id,
-        approval_status=approval.approval_status,
-        approval_policy_version=approval.approval_policy_version,
-    )
-
-    return response.model_copy(
-        update={
-            "approval_request_id": approval.id,
-            "approval_status": approval.approval_status,
-            "release_run": response.release_run.model_copy(
-                update={"status": "waiting_for_approval"}
-            ),
-        }
-    )
 
 
 async def _mark_release_run_waiting_for_approval(
@@ -1235,6 +1250,23 @@ async def _mark_release_run_waiting_for_approval(
         )
     )
 
+def _count_collection_risks(collection: object) -> int:
+    """Return a safe risk count from a risk collection response.
+
+    Observability must never break the release-risk workflow. This helper
+    supports multiple response shapes and returns 0 when no known risk list
+    field exists.
+    """
+
+    for attribute_name in ("risks", "risk_signals", "signals"):
+        value = getattr(collection, attribute_name, None)
+
+        if isinstance(value, list):
+            return len(value)
+
+    return 0
+
+
 async def _record_scoring_audit_events(
     *,
     event_repository: ReleaseRunEventRepository,
@@ -1247,71 +1279,81 @@ async def _record_scoring_audit_events(
     decisions. It does not store raw PR text, Jira text, Knowledge chunks,
     manager queries, or stack traces.
     """
+    with start_business_span(
+        "risk.scoring_audit",
+        {
+                "release_run_id": str(release_run_id),
+                "github_risk_count": _count_collection_risks(response.github),
+                "jira_risk_count": _count_collection_risks(response.jira),
+                "total_risk_count": _count_collection_risks(response.github) + _count_collection_risks(response.jira),
+                "approval_required": response.approval_required is True,
+        },
+    ):
 
-    if response.risk_features is None or response.risk_score is None:
-        return
+        if response.risk_features is None or response.risk_score is None:
+            return
 
-    risk_features = response.risk_features
-    risk_score = response.risk_score
+        risk_features = response.risk_features
+        risk_score = response.risk_score
 
-    await event_repository.create(
-        CreateReleaseRunEventCommand(
-            release_run_id=release_run_id,
-            event_type="risk_features_extracted",
-            event_status="success",
-            message="Release-risk scoring features were extracted.",
-            metadata_json={
-                "feature_version": risk_features.feature_version,
-                "total_risk_count": risk_features.total_risk_count,
-                "github_risk_count": risk_features.github_risk_count,
-                "jira_risk_count": risk_features.jira_risk_count,
-                "critical_risk_count": risk_features.critical_risk_count,
-                "high_risk_count": risk_features.high_risk_count,
-                "knowledge_result_count": risk_features.knowledge_result_count,
-                "knowledge_no_results": risk_features.knowledge_no_results,
-                "knowledge_failed": risk_features.knowledge_failed,
-            },
-        )
-    )
-
-    await event_repository.create(
-        CreateReleaseRunEventCommand(
-            release_run_id=release_run_id,
-            event_type="release_risk_scored",
-            event_status="success",
-            message="Release risk was scored using deterministic rule-based scoring.",
-            metadata_json={
-                "scoring_version": risk_score.scoring_version,
-                "feature_version": risk_score.feature_version,
-                "score": risk_score.score,
-                "risk_level": _safe_enum_value(risk_score.risk_level),
-                "recommended_action": _safe_enum_value(
-                    risk_score.recommended_action
-                ),
-                "reason_count": len(risk_score.reasons),
-                "component_score_count": len(risk_score.component_scores),
-            },
-        )
-    )
-
-    if response.approval_policy_version is not None:
         await event_repository.create(
             CreateReleaseRunEventCommand(
                 release_run_id=release_run_id,
-                event_type="approval_requirement_determined",
+                event_type="risk_features_extracted",
                 event_status="success",
-                message="HITL approval requirement was determined.",
+                message="Release-risk scoring features were extracted.",
                 metadata_json={
-                    "approval_policy_version": response.approval_policy_version,
-                    "approval_required": response.approval_required,
-                    "approval_reason_present": response.approval_reason is not None,
+                    "feature_version": risk_features.feature_version,
+                    "total_risk_count": risk_features.total_risk_count,
+                    "github_risk_count": risk_features.github_risk_count,
+                    "jira_risk_count": risk_features.jira_risk_count,
+                    "critical_risk_count": risk_features.critical_risk_count,
+                    "high_risk_count": risk_features.high_risk_count,
+                    "knowledge_result_count": risk_features.knowledge_result_count,
+                    "knowledge_no_results": risk_features.knowledge_no_results,
+                    "knowledge_failed": risk_features.knowledge_failed,
+                },
+            )
+        )
+
+        await event_repository.create(
+            CreateReleaseRunEventCommand(
+                release_run_id=release_run_id,
+                event_type="release_risk_scored",
+                event_status="success",
+                message="Release risk was scored using deterministic rule-based scoring.",
+                metadata_json={
+                    "scoring_version": risk_score.scoring_version,
+                    "feature_version": risk_score.feature_version,
+                    "score": risk_score.score,
                     "risk_level": _safe_enum_value(risk_score.risk_level),
                     "recommended_action": _safe_enum_value(
                         risk_score.recommended_action
                     ),
+                    "reason_count": len(risk_score.reasons),
+                    "component_score_count": len(risk_score.component_scores),
                 },
             )
         )
+
+        if response.approval_policy_version is not None:
+            await event_repository.create(
+                CreateReleaseRunEventCommand(
+                    release_run_id=release_run_id,
+                    event_type="approval_requirement_determined",
+                    event_status="success",
+                    message="HITL approval requirement was determined.",
+                    metadata_json={
+                        "approval_policy_version": response.approval_policy_version,
+                        "approval_required": response.approval_required,
+                        "approval_reason_present": response.approval_reason is not None,
+                        "risk_level": _safe_enum_value(risk_score.risk_level),
+                        "recommended_action": _safe_enum_value(
+                            risk_score.recommended_action
+                        ),
+                    },
+                )
+            )
 
 
 def _safe_enum_value(value: object) -> str:
