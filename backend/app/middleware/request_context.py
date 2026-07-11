@@ -2,9 +2,11 @@ import time
 from uuid import UUID, uuid4
 
 from fastapi import Request, Response
+from opentelemetry import trace
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from app.core.logging import get_logger
+from app.observability.tracing import set_safe_span_attributes
 
 
 logger = get_logger(__name__)
@@ -22,6 +24,16 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         run_id = _resolve_run_id(request.headers.get("X-Run-ID"))
         request.state.run_id = run_id
         request.state.request_id = run_id
+
+        set_safe_span_attributes(
+            trace.get_current_span(),
+            {
+                "agentflow.run_id": run_id,
+                "agentflow.request_id": run_id,
+                "http.request.method": request.method,
+                "http.route.path": request.url.path,
+            },
+        )
 
         start_time = time.perf_counter()
 
