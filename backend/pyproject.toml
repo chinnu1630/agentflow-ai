@@ -427,6 +427,10 @@ ignore = [
 # Production code in app/ still gets the full rule set.
 "tests/*" = ["S101", "ANN"]
 
+# FastAPI intentionally uses Depends(...) calls as endpoint parameter defaults.
+# Keep B008 enabled elsewhere so genuine default-argument calls are still detected.
+"app/api/routes/*.py" = ["B008"]
+
 
 # =============================================================================
 # MYPY — STATIC TYPE CHECKER
