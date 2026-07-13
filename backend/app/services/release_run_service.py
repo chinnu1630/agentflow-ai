@@ -814,23 +814,6 @@ class ReleaseRunService:
 
         return await self._jira_risk_collector.collect(run_id=run_id)
 
-    async def _collect_jira_risks(
-        self,
-        *,
-        run_id: str,
-    ) -> JiraRiskCollectionResponse:
-        """Collect Jira risks or return an empty response when Jira is not configured.
-
-        Args:
-            run_id: Workflow run ID used for audit logs and risk traceability.
-
-        Returns:
-            API-safe Jira risk collection response.
-        """
-
-        jira_result = await self._collect_jira_risk_result(run_id=run_id)
-        return self._to_jira_response(jira_result)
-
     @staticmethod
     def _to_jira_response(
         jira_result: JiraRiskCollectionResult,
@@ -871,24 +854,6 @@ class ReleaseRunService:
             ],
             error_message=jira_result.error_message,
             duration_ms=jira_result.duration_ms,
-        )
-
-    @staticmethod
-    def _build_empty_jira_response() -> JiraRiskCollectionResponse:
-        """Build an empty Jira risk response.
-
-        This keeps the release-risk API contract stable when Jira collection is
-        not configured in a test or local development path.
-        """
-
-        return JiraRiskCollectionResponse(
-            status=RiskCollectionStatusResponse.SUCCESS,
-            total_issues_analyzed=0,
-            total_signals=0,
-            issues=[],
-            signals=[],
-            error_message=None,
-            duration_ms=0.0,
         )
 
     @staticmethod
