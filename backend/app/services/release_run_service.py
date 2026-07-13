@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid4
 
@@ -169,7 +170,8 @@ class ReleaseRunService:
             jira_risk_collector: Optional collector used to collect Jira risks.
             risk_summary_generator: Optional generator used to summarize GitHub risks.
             jira_risk_summary_generator: Optional generator used to summarize Jira risks.
-            release_risk_summary_generator: Optional generator used to summarize combined release risks.
+            release_risk_summary_generator:
+                Optional generator used to summarize combined release risks.
             event_repository: Optional repository used to persist audit events.
             knowledge_service: Optional service used to retrieve engineering document evidence.
         """
@@ -750,9 +752,8 @@ class ReleaseRunService:
         if value is None:
             return None
 
-        if hasattr(value, "value"):
-            enum_value = getattr(value, "value")
-            return str(enum_value)
+        if isinstance(value, Enum):
+            return str(value.value)
 
         return str(value)
 
