@@ -414,11 +414,6 @@ select = [
 ]
 
 ignore = [
-    # ANN101: requires type annotation on 'self' parameter in class methods.
-    # This is universally considered unnecessary — 'self' is always the class.
-    # Every Python style guide ignores self annotations.
-    "ANN101",
-
     # S101: flags use of assert statements as a security risk.
     # assert is fine in test files — it IS the test assertion mechanism.
     # We re-allow it per-file for tests/ below.
