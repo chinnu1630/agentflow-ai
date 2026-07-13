@@ -23,6 +23,9 @@ from app.models.engineering_document import (
     EngineeringDocumentSourceType,
 )
 from app.models.engineering_document_chunk import EngineeringDocumentChunk
+from app.repositories.engineering_document_repository import (
+    EngineeringDocumentRepository,
+)
 
 logger = structlog.get_logger(__name__)
 
