@@ -13,7 +13,6 @@ from sqlalchemy.pool import StaticPool
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
-from app.models.release_run import ReleaseRun
 from app.repositories.release_run_event_repository import (
     CreateReleaseRunEventCommand,
     ReleaseRunEventRepository,
