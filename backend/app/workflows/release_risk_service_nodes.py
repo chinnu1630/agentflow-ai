@@ -24,11 +24,11 @@ from uuid import UUID
 import structlog
 from pydantic import BaseModel
 
-from app.services.hitl_approval_decision_service import HITLApprovalDecisionService
 from app.observability.tracing import start_business_span
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalRequest,
 )
+from app.services.hitl_approval_decision_service import HITLApprovalDecisionService
 from app.services.risk_feature_extraction_service import RiskFeatureExtractionService
 from app.services.rule_based_risk_scoring_service import RuleBasedRiskScoringService
 from app.workflows.release_risk_graph import (
@@ -40,7 +40,6 @@ from app.workflows.release_risk_state import (
     ReleaseRiskState,
     ReleaseRiskWorkflowStage,
 )
-
 
 logger = structlog.get_logger(__name__)
 
@@ -274,15 +273,16 @@ def create_retrieve_knowledge_context_node(
         state: WorkflowStateInput,
     ) -> WorkflowStateUpdate:
         """Retrieve internal engineering document context for release risks."""
+        validated_state = _validate_state_input(state)
+
         with start_business_span(
             "knowledge.retrieve",
             {
-                "release_run_id": str(validated_state.release_run_id) if "validated_state" in locals() else "unknown",
-                "run_id": validated_state.run_id if "validated_state" in locals() else "unknown",
-                "query_present": bool(getattr(validated_state, "manager_query", None)) if "validated_state" in locals() else False,
+                "release_run_id": str(validated_state.release_run_id),
+                "run_id": validated_state.run_id,
+                "query_present": bool(validated_state.manager_query),
             },
         ):
-            validated_state = _validate_state_input(state)
             running_state = validated_state.mark_running(
                 ReleaseRiskWorkflowStage.RETRIEVING_KNOWLEDGE_CONTEXT
             )

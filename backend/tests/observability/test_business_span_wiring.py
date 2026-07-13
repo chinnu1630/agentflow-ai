@@ -46,10 +46,12 @@ def test_post_workflow_helpers_have_child_business_spans() -> None:
         '"jira_risk_count": _count_collection_risks(response.jira)'
         in route_source
     )
-    assert (
-        '"total_risk_count": _count_collection_risks(response.github) + _count_collection_risks(response.jira)'
-        in route_source
+    expected_total_risk_count = (
+        '"total_risk_count": _count_collection_risks(response.github) + '
+        '_count_collection_risks(response.jira)'
     )
+
+    assert expected_total_risk_count in route_source
     assert '"approval_required": response.approval_required is True' in route_source
     assert (
         '"overall_severity": _safe_enum_value(response.release_summary.overall_severity)'
@@ -84,7 +86,9 @@ def test_knowledge_retrieval_node_has_business_span() -> None:
     node_source = Path("app/workflows/release_risk_service_nodes.py").read_text()
 
     assert '"knowledge.retrieve"' in node_source
-    assert '"query_present": bool(getattr(validated_state, "manager_query", None))' in node_source
+    assert '"release_run_id": str(validated_state.release_run_id)' in node_source
+    assert '"run_id": validated_state.run_id' in node_source
+    assert '"query_present": bool(validated_state.manager_query)' in node_source
     assert "chunk.content" not in node_source
     assert "document_text" not in node_source
 

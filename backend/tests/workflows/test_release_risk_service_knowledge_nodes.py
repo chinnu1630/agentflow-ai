@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -17,7 +19,6 @@ from app.workflows.release_risk_state import (
     ReleaseRiskState,
     ReleaseRiskWorkflowStatus,
 )
-
 
 
 class CapturingLogger:
@@ -52,7 +53,7 @@ class FakeKnowledgeRetrievalService:
         run_id: str | None = None,
     ) -> dict[str, Any]:
         """Return deterministic fake Knowledge retrieval results."""
-        self.received_query = getattr(retrieval_request, "query")
+        self.received_query = retrieval_request.query
         self.received_run_id = run_id
 
         return {
@@ -87,7 +88,7 @@ class EmptyKnowledgeRetrievalService:
     ) -> dict[str, Any]:
         """Return an empty but successful Knowledge retrieval response."""
         return {
-            "query": getattr(retrieval_request, "query"),
+            "query": retrieval_request.query,
             "total_candidates": 0,
             "results": [],
         }
@@ -202,6 +203,48 @@ async def test_retrieve_knowledge_context_node_adds_results_to_state() -> None:
     assert knowledge_service.received_query is not None
     assert "Redis checkout failure" in knowledge_service.received_query
 
+
+
+@pytest.mark.asyncio
+async def test_retrieve_knowledge_context_node_uses_validated_span_attributes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Knowledge span should receive identifiers from validated workflow state."""
+    captured_span_name: str | None = None
+    captured_attributes: dict[str, object] = {}
+
+    @contextmanager
+    def capture_business_span(
+        span_name: str,
+        attributes: dict[str, object],
+    ) -> Iterator[None]:
+        """Capture business span arguments without starting a real trace."""
+        nonlocal captured_span_name, captured_attributes
+
+        captured_span_name = span_name
+        captured_attributes = attributes
+
+        yield
+
+    monkeypatch.setattr(
+        release_risk_service_nodes,
+        "start_business_span",
+        capture_business_span,
+    )
+
+    workflow_state = _workflow_state()
+    node = create_retrieve_knowledge_context_node(
+        FakeKnowledgeRetrievalService()
+    )
+
+    await node(workflow_state.model_dump(mode="python"))
+
+    assert captured_span_name == "knowledge.retrieve"
+    assert captured_attributes == {
+        "release_run_id": str(workflow_state.release_run_id),
+        "run_id": workflow_state.run_id,
+        "query_present": True,
+    }
 
 
 @pytest.mark.asyncio
