@@ -770,7 +770,7 @@ async def test_collect_release_risks_api_audits_knowledge_retrieval_no_results(
         """Simulate successful Knowledge retrieval with no matching chunks."""
 
         return {
-            "query": getattr(retrieval_request, "query"),
+            "query": retrieval_request.query,
             "total_candidates": 0,
             "results": [],
         }

@@ -216,7 +216,7 @@ class ReleaseRiskSummaryGenerator:
         release_items: list[ReleaseRiskSummaryItem] = []
 
         for item in items:
-            source_type = getattr(item, "source_type")
+            source_type = item.source_type
 
             if source_type not in {"github_pull_request", "jira_issue"}:
                 raise ValueError(f"Unsupported risk source_type: {source_type}")
