@@ -6,9 +6,9 @@ business services can create safe domain spans without leaking sensitive data.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 
 from fastapi import FastAPI
 from opentelemetry import trace
@@ -22,7 +22,6 @@ from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 from opentelemetry.trace import Span, Tracer
 
 from app.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 

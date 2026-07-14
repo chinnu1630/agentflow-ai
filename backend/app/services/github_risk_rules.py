@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Literal, Sequence
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 

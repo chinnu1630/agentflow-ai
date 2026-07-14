@@ -8,9 +8,10 @@ auditable, and testable before we add ML scoring or LLM synthesis.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Literal, Sequence
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
