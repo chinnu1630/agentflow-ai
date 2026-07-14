@@ -20,9 +20,9 @@ Future scope:
 
 from __future__ import annotations
 
-from typing import Any
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from app.workflows.release_risk_graph import (
     WorkflowStateInput,
@@ -44,7 +44,6 @@ from app.workflows.release_risk_state import (
     ReleaseRiskState,
     ReleaseRiskWorkflowStatus,
 )
-
 
 _ROUTE_COMPLETE = "complete"
 _ROUTE_KNOWLEDGE = "knowledge"
@@ -126,7 +125,12 @@ def build_release_risk_service_graph(
     service: ReleaseRiskCollectionService,
     *,
     knowledge_service: KnowledgeRetrievalService | None = None,
-) -> Any:
+) -> CompiledStateGraph[
+    ReleaseRiskState,
+    None,
+    ReleaseRiskState,
+    ReleaseRiskState,
+]:
     """Build and compile the service-backed release-risk workflow graph.
 
     Args:

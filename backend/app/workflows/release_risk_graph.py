@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from app.workflows.release_risk_nodes import (
     complete_release_risk_workflow,
@@ -32,7 +33,6 @@ from app.workflows.release_risk_nodes import (
     start_release_risk_workflow,
 )
 from app.workflows.release_risk_state import ReleaseRiskState
-
 
 WorkflowStateInput = ReleaseRiskState | dict[str, Any]
 WorkflowStateUpdate = dict[str, Any]
@@ -110,7 +110,14 @@ class ReleaseRiskGraphNodeSet:
     complete: WorkflowNode = _complete_node
 
 
-def build_release_risk_graph(nodes: ReleaseRiskGraphNodeSet | None = None) -> Any:
+def build_release_risk_graph(
+    nodes: ReleaseRiskGraphNodeSet | None = None,
+) -> CompiledStateGraph[
+    ReleaseRiskState,
+    None,
+    ReleaseRiskState,
+    ReleaseRiskState,
+]:
     """Build and compile the initial release-risk LangGraph workflow.
 
     Args:
