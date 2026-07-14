@@ -76,7 +76,10 @@ class EngineeringDocumentRepository:
                 source_uri=document_create.source_uri,
             )
             raise EngineeringDocumentRepositoryError(
-                "Engineering document could not be created because it violates a database constraint."
+                (
+                "Engineering document could not be created because "
+                "it violates a database constraint."
+            )
             ) from exc
 
         logger.info(
@@ -219,7 +222,10 @@ class EngineeringDocumentRepository:
                 chunk_index=chunk_create.chunk_index,
             )
             raise EngineeringDocumentRepositoryError(
-                "Engineering document chunk could not be created because it violates a database constraint."
+                (
+                "Engineering document chunk could not be created because "
+                "it violates a database constraint."
+            )
             ) from exc
 
         logger.info(
@@ -273,7 +279,10 @@ class EngineeringDocumentRepository:
                 chunk_count=len(chunk_creates),
             )
             raise EngineeringDocumentRepositoryError(
-                "Engineering document chunks could not be created because one or more chunks violate a database constraint."
+                (
+                "Engineering document chunks could not be created because "
+                "one or more chunks violate a database constraint."
+            )
             ) from exc
 
         logger.info(
