@@ -248,7 +248,7 @@ class JiraClient:
         )
 
     @staticmethod
-    def _get_string(value: Any) -> str:
+    def _get_string(value: object) -> str:
         """Convert a raw Jira value to a string."""
         if value is None:
             return ""
@@ -256,7 +256,7 @@ class JiraClient:
         return str(value).strip()
 
     @staticmethod
-    def _get_string_list(value: Any) -> list[str]:
+    def _get_string_list(value: object) -> list[str]:
         """Extract a clean string list from a raw Jira value."""
         if not isinstance(value, list):
             return []
@@ -264,7 +264,7 @@ class JiraClient:
         return [str(item).strip() for item in value if str(item).strip()]
 
     @staticmethod
-    def _get_component_names(value: Any) -> list[str]:
+    def _get_component_names(value: object) -> list[str]:
         """Extract Jira component names from raw component objects."""
         if not isinstance(value, list):
             return []
@@ -283,7 +283,7 @@ class JiraClient:
         return component_names
 
     @staticmethod
-    def _get_user_email(value: Any) -> str | None:
+    def _get_user_email(value: object) -> str | None:
         """Extract user email or display name from a Jira user object."""
         if not isinstance(value, dict):
             return None
@@ -300,7 +300,7 @@ class JiraClient:
         return None
 
     @staticmethod
-    def _get_optional_description(value: Any) -> str | None:
+    def _get_optional_description(value: object) -> str | None:
         """Convert Jira description into a safe optional string.
 
         Jira Cloud descriptions can be Atlassian Document Format objects.
@@ -316,7 +316,7 @@ class JiraClient:
         return None
 
     @staticmethod
-    def _map_issue_type(value: Any) -> JiraIssueType:
+    def _map_issue_type(value: object) -> JiraIssueType:
         """Map Jira issue type names into normalized issue types."""
         if not isinstance(value, dict):
             return JiraIssueType.TASK
@@ -338,7 +338,7 @@ class JiraClient:
         return JiraIssueType.TASK
 
     @staticmethod
-    def _map_status(value: Any) -> JiraIssueStatus:
+    def _map_status(value: object) -> JiraIssueStatus:
         """Map Jira workflow status into normalized release-risk status."""
         if not isinstance(value, dict):
             return JiraIssueStatus.TO_DO
@@ -360,7 +360,7 @@ class JiraClient:
         return JiraIssueStatus.TO_DO
 
     @staticmethod
-    def _map_priority(value: Any) -> JiraIssuePriority:
+    def _map_priority(value: object) -> JiraIssuePriority:
         """Map Jira priority names into normalized priority values."""
         if not isinstance(value, dict):
             return JiraIssuePriority.P3
@@ -382,7 +382,7 @@ class JiraClient:
         return JiraIssuePriority.P4
 
     @staticmethod
-    def _parse_datetime(value: Any) -> datetime:
+    def _parse_datetime(value: object) -> datetime:
         """Parse Jira datetime strings into timezone-aware datetimes."""
         if not isinstance(value, str) or not value.strip():
             return datetime.now(UTC)
@@ -392,7 +392,7 @@ class JiraClient:
         return datetime.fromisoformat(normalized_value)
 
     @staticmethod
-    def _parse_optional_date(value: Any) -> datetime | None:
+    def _parse_optional_date(value: object) -> datetime | None:
         """Parse Jira due date value into a timezone-aware datetime."""
         if not isinstance(value, str) or not value.strip():
             return None
