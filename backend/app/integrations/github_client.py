@@ -111,7 +111,7 @@ class GitHubClient:
         method: str,
         path: str,
         params: dict[str, str] | None = None,
-    ) -> Any:
+    ) -> object:
         """Send a GitHub API request with exponential backoff retry."""
         last_error: Exception | None = None
 
@@ -205,7 +205,9 @@ class GitHubClient:
 
     def _calculate_backoff_delay(self, attempt: int) -> float:
         """Calculate exponential backoff delay in seconds."""
-        return self._config.retry_backoff_seconds * (2 ** (attempt - 1))
+        return float(
+            self._config.retry_backoff_seconds * (2 ** (attempt - 1))
+        )
 
     def _log_github_failure(self, error: Exception) -> None:
         """Log GitHub API failure without exposing secrets."""
