@@ -12,10 +12,7 @@ def test_preferred_release_risks_endpoint_has_business_span() -> None:
     assert '"release_run.risks_endpoint"' in route_source
     assert '"release_run_id": str(release_run_id)' in route_source
     assert '"run_id": request_id' in route_source
-    assert (
-        '"route": "/api/v1/release-runs/{release_run_id}/risks"'
-        in route_source
-    )
+    assert '"route": "/api/v1/release-runs/{release_run_id}/risks"' in route_source
 
 
 def test_release_risk_workflow_has_safe_business_span() -> None:
@@ -32,40 +29,30 @@ def test_release_risk_workflow_has_safe_business_span() -> None:
 
 def test_post_workflow_helpers_have_child_business_spans() -> None:
     """Post-workflow scoring, approval, and snapshot helpers should be traced."""
-    route_source = Path("app/api/routes/release_runs.py").read_text()
 
-    assert '"risk.scoring_audit"' in route_source
-    assert '"approval.ensure_pending"' in route_source
-    assert '"snapshot.persist"' in route_source
+    finalizer_source = Path("app/services/release_risk_execution_finalizer.py").read_text()
+    normalized_source = " ".join(finalizer_source.split())
 
-    assert (
-        '"github_risk_count": _count_collection_risks(response.github)'
-        in route_source
-    )
-    assert (
-        '"jira_risk_count": _count_collection_risks(response.jira)'
-        in route_source
-    )
-    expected_total_risk_count = (
-        '"total_risk_count": _count_collection_risks(response.github) + '
-        '_count_collection_risks(response.jira)'
-    )
+    assert '"risk.scoring_audit"' in finalizer_source
+    assert '"approval.ensure_pending"' in finalizer_source
+    assert '"snapshot.persist"' in finalizer_source
 
-    assert expected_total_risk_count in route_source
-    assert '"approval_required": response.approval_required is True' in route_source
-    assert (
-        '"overall_severity": _safe_enum_value(response.release_summary.overall_severity)'
-        in route_source
-    )
+    assert "github_risk_count = _count_collection_risks(response.github)" in normalized_source
+    assert "jira_risk_count = _count_collection_risks(response.jira)" in normalized_source
+    assert '"total_risk_count": (github_risk_count + jira_risk_count)' in normalized_source
+    assert '"approval_required": response.approval_required is True' in normalized_source
+    assert '"overall_severity": _safe_enum_value(' in normalized_source
+    assert "response.release_summary.overall_severity" in normalized_source
 
 
 def test_risk_count_helper_is_defensive() -> None:
     """Risk-count tracing helper should not crash on unknown response shapes."""
-    route_source = Path("app/api/routes/release_runs.py").read_text()
 
-    assert "def _count_collection_risks(collection: object) -> int:" in route_source
-    assert 'for attribute_name in ("risks", "risk_signals", "signals"):' in route_source
-    assert "return 0" in route_source
+    finalizer_source = Path("app/services/release_risk_execution_finalizer.py").read_text()
+
+    assert "def _count_collection_risks(collection: object) -> int:" in finalizer_source
+    assert 'for attribute_name in ("risks", "risk_signals", "signals"):' in finalizer_source
+    assert "return 0" in finalizer_source
 
 
 def test_langgraph_approval_decision_node_has_business_span() -> None:
@@ -100,10 +87,7 @@ def test_slack_alert_route_has_business_span() -> None:
     assert '"slack.release_alert.route"' in route_source
     assert '"release_run_id": str(release_run_id)' in route_source
     assert '"run_id": request_id_for_span' in route_source
-    assert (
-        '"route": "/api/v1/release-runs/{release_run_id}/slack-alert"'
-        in route_source
-    )
+    assert '"route": "/api/v1/release-runs/{release_run_id}/slack-alert"' in route_source
     assert "SLACK_BOT_TOKEN" in route_source
     assert "slack_bot_token" in route_source
     assert '"slack_bot_token"' not in route_source

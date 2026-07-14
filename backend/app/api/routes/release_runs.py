@@ -9,25 +9,23 @@ FastAPI route -> ReleaseRunService -> LangGraph workflow -> GitHub/Jira collecto
 
 from __future__ import annotations
 
-import os
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import SecretStr, ValidationError
+from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.db.session import get_db_session
-from app.repositories.engineering_document_repository import EngineeringDocumentRepository
 from app.integrations.github_client import GitHubClient, GitHubClientConfig
+from app.integrations.jira_client import JiraClient, JiraClientConfig
 from app.integrations.slack_client import SlackClient, SlackClientConfig
-from app.repositories.release_run_event_repository import (
-    CreateReleaseRunEventCommand,
-    ReleaseRunEventRepository,
-)
+from app.observability.tracing import start_business_span
+from app.repositories.engineering_document_repository import EngineeringDocumentRepository
 from app.repositories.release_run_approval_repository import (
     CreateReleaseRunApprovalCommand,
     DecideReleaseRunApprovalCommand,
@@ -35,7 +33,14 @@ from app.repositories.release_run_approval_repository import (
     ReleaseRunApprovalRepositoryError,
     ReleaseRunApprovalStatus,
 )
-from app.repositories.release_run_repository import ReleaseRunRepository
+from app.repositories.release_run_event_repository import (
+    CreateReleaseRunEventCommand,
+    ReleaseRunEventRepository,
+)
+from app.repositories.release_run_repository import (
+    ReleaseRunRepository,
+    ReleaseRunRepositoryError,
+)
 from app.repositories.release_run_risk_snapshot_repository import (
     CreateReleaseRunRiskSnapshotCommand,
     ReleaseRunRiskSnapshotRepository,
@@ -49,8 +54,8 @@ from app.repositories.release_run_slack_alert_repository import (
 )
 from app.schemas.github import GitHubRepositoryConfig
 from app.schemas.release_run_approval import (
-    ReleaseRunApprovalDecisionRequest,
     PendingReleaseRunApprovalListResponse,
+    ReleaseRunApprovalDecisionRequest,
     ReleaseRunApprovalListResponse,
     ReleaseRunApprovalResponse,
 )
@@ -59,13 +64,17 @@ from app.schemas.release_run_event import (
     ReleaseRunEventResponse,
 )
 from app.schemas.risk import ReleaseRunRiskResponse
-from app.services.hitl_approval_decision_service import HITLApprovalDecisionService
-from app.services.risk_feature_extraction_service import RiskFeatureExtractionService
-from app.services.rule_based_risk_scoring_service import RuleBasedRiskScoringService
-from app.services.github_risk_collector import RiskCollector
-from app.services.jira_risk_collector import JiraRiskCollector
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalService,
+)
+from app.services.github_risk_collector import RiskCollector
+from app.services.jira_risk_collector import JiraRiskCollector
+from app.services.release_risk_execution_finalizer import (
+    ReleaseRiskExecutionFinalizer,
+)
+from app.services.release_risk_response_mapper import (
+    extract_risk_result_from_workflow_state,
+    to_release_run_risk_response,
 )
 from app.services.release_run_service import (
     ReleaseRunResult,
@@ -80,7 +89,6 @@ from app.services.slack_release_alert_service import (
     SlackReleaseAlertServiceError,
 )
 
-from app.observability.tracing import start_business_span
 router = APIRouter(prefix="/release-runs", tags=["release-runs"])
 
 
@@ -93,10 +101,9 @@ async def get_risk_collector(request: Request) -> AsyncIterator[RiskCollector]:
 
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
 
-    repository_owner = os.getenv("GITHUB_REPOSITORY_OWNER")
-    repository_name = os.getenv("GITHUB_REPOSITORY_NAME")
-    repository_default_branch = os.getenv("GITHUB_DEFAULT_BRANCH", "main")
-    github_token = os.getenv("GITHUB_TOKEN")
+    settings = get_settings()
+    repository_owner = settings.github_repository_owner
+    repository_name = settings.github_repository_name
 
     if not repository_owner or not repository_name:
         raise HTTPException(
@@ -110,12 +117,12 @@ async def get_risk_collector(request: Request) -> AsyncIterator[RiskCollector]:
     repository_config = GitHubRepositoryConfig(
         owner=repository_owner,
         repo=repository_name,
-        default_branch=repository_default_branch,
+        default_branch=settings.github_default_branch,
     )
 
     github_config = GitHubClientConfig(
         repository=repository_config,
-        token=SecretStr(github_token) if github_token else None,
+        token=settings.github_token,
     )
 
     async with httpx.AsyncClient() as http_client:
@@ -128,7 +135,7 @@ async def get_risk_collector(request: Request) -> AsyncIterator[RiskCollector]:
         yield RiskCollector(github_client=github_client)
 
 
-def get_jira_risk_collector() -> JiraRiskCollector:
+async def get_jira_risk_collector() -> AsyncIterator[JiraRiskCollector]:
     """Create a Jira risk collector dependency.
 
     The collector internally uses JiraClient and JiraRiskRuleEngine. Keeping
@@ -136,7 +143,35 @@ def get_jira_risk_collector() -> JiraRiskCollector:
     collector and prevents API tests from making real Jira network calls.
     """
 
-    return JiraRiskCollector()
+    settings = get_settings()
+    jira_base_url = settings.jira_base_url
+    jira_email = settings.jira_email
+    jira_api_token = settings.jira_api_token
+    jira_project_key = settings.jira_project_key
+
+    if (
+        jira_base_url is None
+        or jira_email is None
+        or jira_api_token is None
+        or jira_project_key is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Jira risk collection is not configured. Set JIRA_BASE_URL, "
+                "JIRA_EMAIL, JIRA_API_TOKEN, and JIRA_PROJECT_KEY."
+            ),
+        )
+
+    jira_config = JiraClientConfig(
+        base_url=jira_base_url,
+        email=jira_email,
+        api_token=jira_api_token,
+        project_key=jira_project_key,
+    )
+
+    async with JiraClient(config=jira_config) as jira_client:
+        yield JiraRiskCollector(jira_client=jira_client)
 
 
 async def get_slack_alert_sender(request: Request) -> AsyncIterator[SlackClient]:
@@ -148,20 +183,20 @@ async def get_slack_alert_sender(request: Request) -> AsyncIterator[SlackClient]
 
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
 
-    slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
-    slack_channel_id = os.getenv("SLACK_CHANNEL_ID")
+    settings = get_settings()
+    slack_bot_token = settings.slack_bot_token
+    slack_channel_id = settings.slack_channel_id
 
     if not slack_bot_token or not slack_channel_id:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "Slack alert delivery is not configured. "
-                "Set SLACK_BOT_TOKEN and SLACK_CHANNEL_ID."
+                "Slack alert delivery is not configured. Set SLACK_BOT_TOKEN and SLACK_CHANNEL_ID."
             ),
         )
 
     slack_config = SlackClientConfig(
-        bot_token=SecretStr(slack_bot_token),
+        bot_token=slack_bot_token,
         channel_id=slack_channel_id,
     )
 
@@ -195,10 +230,6 @@ async def start_release_run(
         session=session,
         request_id=request_id,
     )
-    approval_repository = ReleaseRunApprovalRepository(
-        session=session,
-        request_id=request_id,
-    )
     service = ReleaseRunService(
         repository=repository,
         request_id=request_id,
@@ -223,7 +254,6 @@ async def start_release_run(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database error while starting release-risk workflow.",
         ) from exc
-
 
 
 @router.get(
@@ -260,8 +290,7 @@ async def list_pending_release_run_approvals(
         return PendingReleaseRunApprovalListResponse(
             approval_status=ReleaseRunApprovalStatus.PENDING.value,
             approvals=[
-                ReleaseRunApprovalResponse.model_validate(approval)
-                for approval in approvals
+                ReleaseRunApprovalResponse.model_validate(approval) for approval in approvals
             ],
         )
 
@@ -360,10 +389,7 @@ async def list_release_run_events(
 
         return ReleaseRunEventListResponse(
             release_run_id=release_run_id,
-            events=[
-                ReleaseRunEventResponse.model_validate(event)
-                for event in events
-            ],
+            events=[ReleaseRunEventResponse.model_validate(event) for event in events],
         )
 
     except HTTPException:
@@ -407,15 +433,12 @@ async def list_release_run_approvals(
                 detail="Release run not found.",
             )
 
-        approvals = await approval_repository.list_by_release_run_id(
-            release_run_id
-        )
+        approvals = await approval_repository.list_by_release_run_id(release_run_id)
 
         return ReleaseRunApprovalListResponse(
             release_run_id=release_run_id,
             approvals=[
-                ReleaseRunApprovalResponse.model_validate(approval)
-                for approval in approvals
+                ReleaseRunApprovalResponse.model_validate(approval) for approval in approvals
             ],
         )
 
@@ -477,9 +500,7 @@ async def decide_release_run_approval(
         decided_approval = await approval_repository.decide(
             DecideReleaseRunApprovalCommand(
                 approval_id=approval_id,
-                approval_status=ReleaseRunApprovalStatus(
-                    decision_request.approval_status.value
-                ),
+                approval_status=ReleaseRunApprovalStatus(decision_request.approval_status.value),
                 decided_by=decision_request.decided_by,
                 decision_note=decision_request.decision_note,
             )
@@ -513,9 +534,7 @@ async def decide_release_run_approval(
                     "approval_status": decided_approval.approval_status,
                     "release_run_status": release_run_status,
                     "decided_by": decided_approval.decided_by,
-                    "decision_note_present": (
-                        decided_approval.decision_note is not None
-                    ),
+                    "decision_note_present": (decided_approval.decision_note is not None),
                 },
             )
         )
@@ -559,9 +578,7 @@ async def send_release_run_slack_alert(
     latest HITL approval is verified as approved.
     """
 
-    request_id_for_span = str(
-        getattr(request.state, "request_id", "unknown-request-id")
-    )
+    request_id_for_span = str(getattr(request.state, "request_id", "unknown-request-id"))
     with start_business_span(
         "slack.release_alert.route",
         {
@@ -636,9 +653,7 @@ async def send_release_run_slack_alert(
                         detail="Slack alert already sent for this release run.",
                     )
 
-            latest_approval = await approval_repository.get_latest_by_release_run_id(
-                release_run_id
-            )
+            latest_approval = await approval_repository.get_latest_by_release_run_id(release_run_id)
             latest_snapshot = await risk_snapshot_repository.get_latest_by_release_run_id(
                 release_run_id
             )
@@ -659,9 +674,7 @@ async def send_release_run_slack_alert(
                     ),
                     snapshot_id=latest_snapshot.id if latest_snapshot is not None else None,
                     snapshot_version=(
-                        latest_snapshot.snapshot_version
-                        if latest_snapshot is not None
-                        else None
+                        latest_snapshot.snapshot_version if latest_snapshot is not None else None
                     ),
                     slack_channel=result.slack_channel,
                     slack_timestamp=result.slack_timestamp,
@@ -896,10 +909,16 @@ async def _collect_release_risk_workflow_response(
         event_repository=event_repository,
         knowledge_service=knowledge_service,
     )
+    finalizer = ReleaseRiskExecutionFinalizer(
+        release_run_repository=repository,
+        approval_repository=approval_repository,
+        event_repository=event_repository,
+        risk_snapshot_repository=risk_snapshot_repository,
+    )
 
     try:
         workflow_state = await service.run_release_risk_workflow(release_run_id)
-        result = _extract_risk_result_from_workflow_state(workflow_state)
+        result = extract_risk_result_from_workflow_state(workflow_state)
 
         if result is None:
             await session.rollback()
@@ -908,24 +927,9 @@ async def _collect_release_risk_workflow_response(
                 detail="Release run not found.",
             )
 
-        response = _to_release_run_risk_response(result)
+        response = to_release_run_risk_response(result)
 
-        await _record_scoring_audit_events(
-            event_repository=event_repository,
-            release_run_id=release_run_id,
-            response=response,
-        )
-        response = await _ensure_pending_approval_request(
-            release_run_repository=repository,
-            approval_repository=approval_repository,
-            event_repository=event_repository,
-            release_run_id=release_run_id,
-            response=response,
-        )
-
-        await _persist_release_risk_snapshot(
-            risk_snapshot_repository=risk_snapshot_repository,
-            event_repository=event_repository,
+        response = await finalizer.finalize(
             release_run_id=release_run_id,
             response=response,
         )
@@ -1019,7 +1023,7 @@ async def _collect_release_risks_response(
                 detail="Release run not found.",
             )
 
-        response = _to_release_run_risk_response(result)
+        response = to_release_run_risk_response(result)
 
         await _record_scoring_audit_events(
             event_repository=event_repository,
@@ -1070,7 +1074,6 @@ async def _collect_release_risks_response(
         ) from exc
 
 
-
 async def _persist_release_risk_snapshot(
     *,
     risk_snapshot_repository: ReleaseRunRiskSnapshotRepository,
@@ -1088,29 +1091,24 @@ async def _persist_release_risk_snapshot(
     with start_business_span(
         "snapshot.persist",
         {
-                "release_run_id": str(release_run_id),
-                "approval_required": response.approval_required is True,
-                "overall_severity": _safe_enum_value(response.release_summary.overall_severity),
+            "release_run_id": str(release_run_id),
+            "approval_required": response.approval_required is True,
+            "overall_severity": _safe_enum_value(response.release_summary.overall_severity),
         },
     ):
-
         approval_required = response.approval_required is True
         approval_status_at_snapshot = response.approval_status
 
         if approval_status_at_snapshot is None:
             approval_status_at_snapshot = (
-                ReleaseRunApprovalStatus.PENDING.value
-                if approval_required
-                else "not_required"
+                ReleaseRunApprovalStatus.PENDING.value if approval_required else "not_required"
             )
 
         snapshot = await risk_snapshot_repository.create_snapshot(
             CreateReleaseRunRiskSnapshotCommand(
                 release_run_id=release_run_id,
                 risk_payload=response.model_dump(mode="json"),
-                overall_severity=_safe_enum_value(
-                    response.release_summary.overall_severity
-                ),
+                overall_severity=_safe_enum_value(response.release_summary.overall_severity),
                 approval_required=approval_required,
                 approval_status_at_snapshot=approval_status_at_snapshot,
             )
@@ -1127,15 +1125,10 @@ async def _persist_release_risk_snapshot(
                     "snapshot_version": snapshot.snapshot_version,
                     "overall_severity": snapshot.overall_severity,
                     "approval_required": snapshot.approval_required,
-                    "approval_status_at_snapshot": (
-                        snapshot.approval_status_at_snapshot
-                    ),
+                    "approval_status_at_snapshot": (snapshot.approval_status_at_snapshot),
                 },
             )
         )
-
-
-
 
 
 async def _ensure_pending_approval_request(
@@ -1155,17 +1148,14 @@ async def _ensure_pending_approval_request(
     with start_business_span(
         "approval.ensure_pending",
         {
-                "release_run_id": str(release_run_id),
-                "approval_required": response.approval_required is True,
+            "release_run_id": str(release_run_id),
+            "approval_required": response.approval_required is True,
         },
     ):
-
         if response.approval_required is not True:
             return response
 
-        latest_approval = await approval_repository.get_latest_by_release_run_id(
-            release_run_id
-        )
+        latest_approval = await approval_repository.get_latest_by_release_run_id(release_run_id)
 
         if (
             latest_approval is not None
@@ -1191,12 +1181,9 @@ async def _ensure_pending_approval_request(
             CreateReleaseRunApprovalCommand(
                 release_run_id=release_run_id,
                 approval_reason=(
-                    response.approval_reason
-                    or "Release requires human approval before proceeding."
+                    response.approval_reason or "Release requires human approval before proceeding."
                 ),
-                approval_policy_version=(
-                    response.approval_policy_version or "hitl_policy_v1"
-                ),
+                approval_policy_version=(response.approval_policy_version or "hitl_policy_v1"),
                 requested_by=response.release_run.requested_by,
             )
         )
@@ -1270,6 +1257,7 @@ async def _mark_release_run_waiting_for_approval(
         )
     )
 
+
 def _count_collection_risks(collection: object) -> int:
     """Return a safe risk count from a risk collection response.
 
@@ -1302,14 +1290,14 @@ async def _record_scoring_audit_events(
     with start_business_span(
         "risk.scoring_audit",
         {
-                "release_run_id": str(release_run_id),
-                "github_risk_count": _count_collection_risks(response.github),
-                "jira_risk_count": _count_collection_risks(response.jira),
-                "total_risk_count": _count_collection_risks(response.github) + _count_collection_risks(response.jira),
-                "approval_required": response.approval_required is True,
+            "release_run_id": str(release_run_id),
+            "github_risk_count": _count_collection_risks(response.github),
+            "jira_risk_count": _count_collection_risks(response.jira),
+            "total_risk_count": _count_collection_risks(response.github)
+            + _count_collection_risks(response.jira),  # noqa: E501
+            "approval_required": response.approval_required is True,
         },
     ):
-
         if response.risk_features is None or response.risk_score is None:
             return
 
@@ -1347,9 +1335,7 @@ async def _record_scoring_audit_events(
                     "feature_version": risk_score.feature_version,
                     "score": risk_score.score,
                     "risk_level": _safe_enum_value(risk_score.risk_level),
-                    "recommended_action": _safe_enum_value(
-                        risk_score.recommended_action
-                    ),
+                    "recommended_action": _safe_enum_value(risk_score.recommended_action),
                     "reason_count": len(risk_score.reasons),
                     "component_score_count": len(risk_score.component_scores),
                 },
@@ -1368,9 +1354,7 @@ async def _record_scoring_audit_events(
                         "approval_required": response.approval_required,
                         "approval_reason_present": response.approval_reason is not None,
                         "risk_level": _safe_enum_value(risk_score.risk_level),
-                        "recommended_action": _safe_enum_value(
-                            risk_score.recommended_action
-                        ),
+                        "recommended_action": _safe_enum_value(risk_score.recommended_action),
                     },
                 )
             )
@@ -1385,190 +1369,3 @@ def _safe_enum_value(value: object) -> str:
         return str(enum_value)
 
     return str(value)
-
-def _merge_workflow_knowledge_context(
-    result: Any,
-    workflow_state: Mapping[str, Any],
-) -> Any:
-    """Merge top-level workflow Knowledge Agent fields into API result data."""
-
-    knowledge_keys = (
-        "knowledge_query",
-        "knowledge_results",
-        "knowledge_status",
-        "knowledge_error",
-        "risk_score",
-        "approval_policy_version",
-        "approval_reason",
-        "approval_required",
-        "risk_features",
-    )
-
-    knowledge_fields: dict[str, Any] = {}
-
-    for key in knowledge_keys:
-        if key not in workflow_state:
-            continue
-
-        value = workflow_state[key]
-
-        if hasattr(value, "value"):
-            value = value.value
-
-        knowledge_fields[key] = value
-
-    if not knowledge_fields:
-        return result
-
-    if hasattr(result, "model_dump"):
-        result_data = result.model_dump()
-    elif isinstance(result, Mapping):
-        result_data = dict(result)
-    else:
-        return result
-
-    result_data.update(knowledge_fields)
-    return result_data
-
-
-def _extract_risk_result_from_workflow_state(
-    workflow_state: Mapping[str, Any] | Any,
-) -> Any | None:
-    """Extract the release-risk result from the LangGraph workflow state.
-
-    LangGraph state can evolve over time. We first check known result keys.
-    If the workflow already returned the public API response shape directly,
-    we return the full state.
-    """
-
-    result_keys = (
-        "risk_result",
-        "release_risk_result",
-        "release_run_risk_result",
-        "release_risk_response",
-        "final_result",
-        "result",
-        "response",
-    )
-
-    response_shape_keys = {
-        "release_run",
-        "github",
-        "github_summary",
-        "jira",
-        "jira_summary",
-        "release_summary",
-    }
-
-    if isinstance(workflow_state, Mapping):
-        for key in result_keys:
-            result = workflow_state.get(key)
-            if result is not None:
-                return _merge_workflow_knowledge_context(
-                    result=result,
-                    workflow_state=workflow_state,
-                )
-
-        if response_shape_keys.issubset(workflow_state.keys()):
-            return _merge_workflow_knowledge_context(
-                result=workflow_state,
-                workflow_state=workflow_state,
-            )
-
-        return None
-
-    for key in result_keys:
-        if hasattr(workflow_state, key):
-            result = getattr(workflow_state, key)
-            if result is not None:
-                return result
-
-    if hasattr(workflow_state, "model_dump"):
-        dumped_state = workflow_state.model_dump()
-
-        for key in result_keys:
-            result = dumped_state.get(key)
-            if result is not None:
-                return _merge_workflow_knowledge_context(
-                    result=result,
-                    workflow_state=dumped_state,
-                )
-
-        if response_shape_keys.issubset(dumped_state.keys()):
-            return _merge_workflow_knowledge_context(
-                result=dumped_state,
-                workflow_state=dumped_state,
-            )
-
-    return None
-
-
-def _to_release_run_risk_response(result: Any) -> ReleaseRunRiskResponse:
-    """Convert a service or workflow result into the public API response model.
-
-    This boundary enriches the existing GitHub/Jira/Knowledge response with
-    deterministic feature extraction and rule-based scoring. Keeping this here
-    makes the change small and avoids adding a new LangGraph node before the
-    scoring contract is proven through API tests.
-    """
-
-    if hasattr(result, "model_dump"):
-        result_data = result.model_dump(mode="python")
-    elif isinstance(result, Mapping):
-        result_data = dict(result)
-    else:
-        return ReleaseRunRiskResponse.model_validate(result)
-
-    if result_data.get("risk_features") is not None and result_data.get("risk_score") is not None:
-        if result_data.get("approval_policy_version") is None:
-            approval_decision = HITLApprovalDecisionService().determine_approval(
-                result_data.get("risk_score"),
-                run_id=_extract_scoring_run_id(result_data),
-            )
-            result_data.update(
-                {
-                    "approval_required": approval_decision.approval_required,
-                    "approval_reason": approval_decision.approval_reason,
-                    "approval_policy_version": approval_decision.approval_policy_version,
-                }
-            )
-
-        return ReleaseRunRiskResponse.model_validate(result_data)
-
-    run_id = _extract_scoring_run_id(result_data)
-
-    risk_features = RiskFeatureExtractionService().extract_from_payload(
-        result_data,
-        run_id=run_id,
-    )
-    risk_score = RuleBasedRiskScoringService().score_release(
-        risk_features,
-        run_id=run_id,
-    )
-
-    enriched_result = {
-        **result_data,
-        "risk_features": risk_features.model_dump(mode="python"),
-        "risk_score": risk_score.model_dump(mode="python"),
-    }
-
-    return ReleaseRunRiskResponse.model_validate(enriched_result)
-
-
-def _extract_scoring_run_id(result_data: Mapping[str, Any]) -> str | None:
-    """Extract a safe workflow run ID for feature/scoring logs."""
-
-    release_run = result_data.get("release_run")
-
-    if hasattr(release_run, "model_dump"):
-        release_run = release_run.model_dump(mode="python")
-
-    if not isinstance(release_run, Mapping):
-        return None
-
-    run_id = release_run.get("run_id")
-
-    if isinstance(run_id, str) and run_id.strip():
-        return run_id
-
-    return None
