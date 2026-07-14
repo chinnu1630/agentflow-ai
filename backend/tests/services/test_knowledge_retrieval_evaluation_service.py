@@ -2,12 +2,29 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator as _AsyncGenerator
 from collections.abc import Sequence
 from uuid import UUID, uuid4
 
 import pytest
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
+import app.models  # noqa: F401 - ensures SQLAlchemy models are registered
+from app.db.base import Base
+from app.models.engineering_document import EngineeringDocumentSourceType
+from app.repositories.engineering_document_repository import EngineeringDocumentRepository
+from app.services.document_chunker import DocumentChunkingConfig
+from app.services.engineering_document_ingestion_service import (
+    EngineeringDocumentIngestionRequest,
+    EngineeringDocumentIngestionService,
+)
+from app.services.engineering_document_retrieval_service import (
+    EngineeringDocumentRetrievalService,
+)
 from app.services.knowledge_retrieval_evaluation_service import (
+    EngineeringDocumentRetrievalEvaluationAdapter,
     KnowledgeRetrievalEvalCandidate,
     KnowledgeRetrievalEvalCase,
     KnowledgeRetrievalEvaluationError,
@@ -255,29 +272,6 @@ async def test_retrieval_error_fails_safely_without_raw_query() -> None:
 
     failure_json = failure.model_dump_json()
     assert "Redis checkout failure" not in failure_json
-
-from collections.abc import AsyncGenerator as _AsyncGenerator
-
-import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
-
-import app.models  # noqa: F401 - ensures SQLAlchemy models are registered
-from app.db.base import Base
-from app.models.engineering_document import EngineeringDocumentSourceType
-from app.repositories.engineering_document_repository import EngineeringDocumentRepository
-from app.services.document_chunker import DocumentChunkingConfig
-from app.services.engineering_document_ingestion_service import (
-    EngineeringDocumentIngestionRequest,
-    EngineeringDocumentIngestionService,
-)
-from app.services.engineering_document_retrieval_service import (
-    EngineeringDocumentRetrievalService,
-)
-from app.services.knowledge_retrieval_evaluation_service import (
-    EngineeringDocumentRetrievalEvaluationAdapter,
-)
-
 
 @pytest_asyncio.fixture
 async def evaluation_async_session() -> _AsyncGenerator[AsyncSession, None]:
