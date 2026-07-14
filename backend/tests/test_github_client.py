@@ -38,7 +38,7 @@ def _github_config() -> GitHubClientConfig:
             repo="backend-services",
             default_branch="main",
         ),
-        token="test-token",
+        token="test-token",  # noqa: S106 - fake credential used only for testing
         api_base_url="https://api.github.test",
         retry_backoff_seconds=0.001,
     )
