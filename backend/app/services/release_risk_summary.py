@@ -279,7 +279,7 @@ class ReleaseRiskSummaryGenerator:
     def _to_source_summary(
         *,
         source: RiskSource,
-        summary: Any,
+        summary: GitHubRiskSummary | JiraRiskSummary,
     ) -> ReleaseRiskSourceSummary:
         """Convert one source summary into a compact release source summary."""
 
@@ -324,7 +324,7 @@ class ReleaseRiskSummaryGenerator:
         return "Release summary found no current GitHub or Jira release-risk signals."
 
     @staticmethod
-    def _enum_value(value: Any) -> str:
+    def _enum_value(value: object) -> str:
         """Return enum value if value is an enum, otherwise return string form."""
 
         if hasattr(value, "value"):
