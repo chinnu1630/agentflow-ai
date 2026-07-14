@@ -431,6 +431,10 @@ ignore = [
 # Keep B008 enabled elsewhere so genuine default-argument calls are still detected.
 "app/api/routes/*.py" = ["B008"]
 
+# Alembic migration files are generated historical artifacts and often contain
+# long SQLAlchemy expressions. Keep E501 enabled for the application code.
+"alembic/versions/*.py" = ["E501"]
+
 
 # =============================================================================
 # MYPY — STATIC TYPE CHECKER
