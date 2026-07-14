@@ -1,7 +1,8 @@
-"""API router registration for AgentFlow AI."""
+"""Central API router for AgentFlow AI."""
 
 from fastapi import APIRouter
 
+from app.api.routes.agent_queries import router as agent_queries_router
 from app.api.routes.engineering_documents import (
     router as engineering_documents_router,
 )
