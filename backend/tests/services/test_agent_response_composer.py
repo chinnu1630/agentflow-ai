@@ -244,3 +244,56 @@ def test_composes_focused_specific_risk_explanation() -> None:
     assert response.citations[0].source_id == "1"
     assert response.release_risk is release_risk
     assert response.approval_required is True
+
+
+def test_composes_filtered_risk_response() -> None:
+    """Filtered responses should include only matching risks and citations."""
+
+    payload = build_snapshot_payload(
+        release_run_id=uuid4(),
+        approval_request_id=uuid4(),
+    )
+    payload["release_summary"]["top_risks"].append(
+        {
+            "source": "jira",
+            "source_type": "jira_issue",
+            "source_id": "PAY-102",
+            "source_url": "https://jira.example/browse/PAY-102",
+            "severity": "critical",
+            "score": 0.95,
+            "title": "Payment release blocker",
+            "reason": "A critical payment issue blocks the release.",
+            "evidence": {
+                "status": "blocked",
+                "is_blocking_release": True,
+            },
+        }
+    )
+
+    release_risk = ReleaseRunRiskResponse.model_validate(payload)
+    selected_risks = [
+        release_risk.release_summary.top_risks[1],
+    ]
+    plan = build_plan(ResponseDepth.STANDARD).model_copy(
+        update={
+            "intent": AgentIntent.FILTER_RISKS,
+            "routing_reason_code": "test_risk_filter",
+        }
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_filtered_risks(
+        plan=plan,
+        release_risk=release_risk,
+        selected_risks=selected_risks,
+    )
+
+    assert "1 matching risk" in response.answer
+    assert "Payment release blocker" in response.answer
+    assert "A critical payment issue blocks the release." in response.answer
+    assert "Payment API has failing CI" not in response.answer
+
+    assert len(response.citations) == 1
+    assert response.citations[0].source_type == "jira_issue"
+    assert response.citations[0].source_id == "PAY-102"
+    assert response.release_risk is release_risk

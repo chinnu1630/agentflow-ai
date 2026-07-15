@@ -58,6 +58,7 @@ from app.services.agent_query_executor import (
 )
 from app.services.agent_query_router import AgentQueryRouter
 from app.services.agent_response_composer import AgentResponseComposer
+from app.services.agent_risk_filter import AgentRiskFilter
 from app.services.agent_specific_risk_matcher import (
     AgentSpecificRiskMatcher,
     AgentSpecificRiskNotFoundError,
@@ -107,6 +108,7 @@ async def get_executable_agent_query_plan(
         AgentIntent.RELEASE_RISK_SUMMARY,
         AgentIntent.EXPLAIN_RISK_SCORE,
         AgentIntent.EXPLAIN_SPECIFIC_RISK,
+        AgentIntent.FILTER_RISKS,
     }:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -262,6 +264,7 @@ async def execute_agent_query(
         if plan.intent in {
             AgentIntent.EXPLAIN_RISK_SCORE,
             AgentIntent.EXPLAIN_SPECIFIC_RISK,
+            AgentIntent.FILTER_RISKS,
         }:
             context_resolver = AgentQueryContextResolver(
                 snapshot_repository=risk_snapshot_repository,
@@ -282,6 +285,19 @@ async def execute_agent_query(
                     plan=plan,
                     release_risk=context.release_risk,
                     selected_risk=selected_risk,
+                )
+            elif plan.intent is AgentIntent.FILTER_RISKS:
+                risk_filter = AgentRiskFilter(
+                    request_id=request_id,
+                )
+                selected_risks = risk_filter.filter(
+                    plan=plan,
+                    release_risk=context.release_risk,
+                )
+                agent_response = response_composer.compose_filtered_risks(
+                    plan=plan,
+                    release_risk=context.release_risk,
+                    selected_risks=selected_risks,
                 )
             else:
                 agent_response = response_composer.compose(

@@ -140,6 +140,79 @@ class AgentResponseComposer:
             approval_required=release_risk.approval_required is True,
         )
 
+    def compose_filtered_risks(
+        self,
+        *,
+        plan: AgentQueryPlan,
+        release_risk: ReleaseRunRiskResponse,
+        selected_risks: list[ReleaseRiskSummaryItemResponse],
+    ) -> AgentQueryResponse:
+        """Compose a response containing only risks matching query filters.
+
+        Args:
+            plan: Validated risk-filter query plan.
+            release_risk: Trusted persisted release-risk snapshot.
+            selected_risks: Persisted risks matching all requested filters.
+
+        Returns:
+            Filtered conversational response with matching citations.
+        """
+
+        risk_count = len(selected_risks)
+        risk_label = "risk" if risk_count == 1 else "risks"
+
+        if selected_risks:
+            risk_lines = [
+                (
+                    f"{index}. {risk.title}: {risk.reason} "
+                    f"({risk.severity.value} severity)."
+                )
+                for index, risk in enumerate(selected_risks, start=1)
+            ]
+            answer = (
+                f"Found {risk_count} matching {risk_label}. "
+                + " ".join(risk_lines)
+            )
+        else:
+            answer = "No persisted release risks matched the requested filters."
+
+        citations = [
+            AgentCitation(
+                source=risk.source,
+                source_type=risk.source_type,
+                source_id=risk.source_id,
+                title=risk.title,
+                source_url=risk.source_url,
+            )
+            for risk in selected_risks
+        ]
+
+        if release_risk.approval_required is True:
+            answer += (
+                " Human approval is required before any downstream "
+                "release notification or Slack action."
+            )
+
+        logger.info(
+            "agent_filtered_risk_response_composed",
+            extra={
+                "run_id": self._request_id,
+                "release_run_id": str(release_risk.release_run.id),
+                "intent": plan.intent.value,
+                "filtered_risk_count": risk_count,
+                "citation_count": len(citations),
+                "approval_required": release_risk.approval_required is True,
+            },
+        )
+
+        return AgentQueryResponse(
+            answer=answer,
+            plan=plan,
+            release_risk=release_risk,
+            citations=citations,
+            approval_required=release_risk.approval_required is True,
+        )
+
     def _build_answer(
         self,
         *,

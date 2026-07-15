@@ -447,3 +447,53 @@ async def test_specific_risk_follow_up_uses_persisted_snapshot(
 
     assert FakeAgentGitHubRiskCollector.call_count == github_calls
     assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+
+@pytest.mark.anyio
+async def test_filter_risks_follow_up_uses_persisted_snapshot(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Risk filtering should use the persisted snapshot without recollection."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert initial_response.status_code == 200
+
+    initial_payload = initial_response.json()
+    release_run_id = initial_payload["release_risk"]["release_run"]["id"]
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Show GitHub risks only.",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert follow_up_response.status_code == 200, follow_up_response.json()
+
+    follow_up_payload = follow_up_response.json()
+
+    assert follow_up_payload["plan"]["intent"] == "filter_risks"
+    assert follow_up_payload["plan"]["filters"]["sources"] == ["github"]
+    assert follow_up_payload["release_risk"]["release_run"]["id"] == release_run_id
+
+    assert "1 matching risk" in follow_up_payload["answer"]
+    assert "Payment API has failing CI" in follow_up_payload["answer"]
+
+    assert len(follow_up_payload["citations"]) == 1
+    assert follow_up_payload["citations"][0]["source_type"] == (
+        "github_pull_request"
+    )
+    assert follow_up_payload["citations"][0]["source_id"] == "PR-42"
+
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls
