@@ -15,6 +15,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.risk import ReleaseRunRiskResponse
+
 
 class AgentIntent(StrEnum):
     """Supported workflow-aware intents for AgentFlow queries."""
@@ -138,3 +140,27 @@ class AgentQueryPlan(BaseModel):
             "contain raw user input, hidden prompts, or chain-of-thought."
         ),
     )
+
+
+class AgentCitation(BaseModel):
+    """Trusted evidence reference supporting an AgentFlow answer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=1, max_length=50)
+    source_type: str = Field(min_length=1, max_length=100)
+    source_id: str = Field(min_length=1, max_length=255)
+    title: str = Field(min_length=1, max_length=500)
+    source_url: str | None = None
+
+
+class AgentQueryResponse(BaseModel):
+    """Conversational response returned after executing an AgentFlow query."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str = Field(min_length=1)
+    plan: AgentQueryPlan
+    release_risk: ReleaseRunRiskResponse
+    citations: list[AgentCitation] = Field(default_factory=list)
+    approval_required: bool

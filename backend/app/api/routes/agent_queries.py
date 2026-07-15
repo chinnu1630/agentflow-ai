@@ -39,9 +39,9 @@ from app.schemas.agent_query import (
     AgentIntent,
     AgentQueryPlan,
     AgentQueryRequest,
+    AgentQueryResponse,
 )
 from app.schemas.github import GitHubRepositoryConfig
-from app.schemas.risk import ReleaseRunRiskResponse
 from app.services.agent_query_executor import (
     AgentQueryContextMismatchError,
     AgentQueryExecutor,
@@ -49,6 +49,7 @@ from app.services.agent_query_executor import (
     UnsupportedAgentQueryIntentError,
 )
 from app.services.agent_query_router import AgentQueryRouter
+from app.services.agent_response_composer import AgentResponseComposer
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalService,
 )
@@ -214,7 +215,7 @@ async def create_agent_query_plan(
 
 @router.post(
     "/query",
-    response_model=ReleaseRunRiskResponse,
+    response_model=AgentQueryResponse,
     status_code=status.HTTP_200_OK,
 )
 async def execute_agent_query(
@@ -224,8 +225,8 @@ async def execute_agent_query(
     risk_collector: AgentGitHubRiskCollectorDependency,
     jira_risk_collector: AgentJiraRiskCollectorDependency,
     session: AsyncSession = Depends(get_db_session),
-) -> ReleaseRunRiskResponse:
-    """Route and execute a natural-language release-risk query."""
+) -> AgentQueryResponse:
+    """Route, execute, and compose a natural-language query response."""
 
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
 
@@ -270,6 +271,9 @@ async def execute_agent_query(
         event_repository=event_repository,
         risk_snapshot_repository=risk_snapshot_repository,
     )
+    response_composer = AgentResponseComposer(
+        request_id=request_id,
+    )
 
     try:
         response = await executor.execute(
@@ -283,8 +287,13 @@ async def execute_agent_query(
             response=response,
         )
 
+        agent_response = response_composer.compose(
+            plan=plan,
+            release_risk=response,
+        )
+
         await session.commit()
-        return response
+        return agent_response
 
     except UnsupportedAgentQueryIntentError as exc:
         await session.rollback()

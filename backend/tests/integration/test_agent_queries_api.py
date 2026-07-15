@@ -155,7 +155,7 @@ async def test_create_agent_query_plan_returns_structured_plan(
 async def test_execute_agent_query_runs_release_risk_workflow(
     agent_query_api_client: AsyncClient,
 ) -> None:
-    """The agent query endpoint should execute and persist the workflow."""
+    """The agent query endpoint should return a conversational risk answer."""
 
     response = await agent_query_api_client.post(
         "/api/v1/agent/query",
@@ -167,7 +167,15 @@ async def test_execute_agent_query_runs_release_risk_workflow(
     assert response.status_code == 200
 
     payload = response.json()
-    release_run = payload["release_run"]
+    release_risk = payload["release_risk"]
+    release_run = release_risk["release_run"]
+
+    assert payload["answer"]
+    assert "release risk" in payload["answer"].lower()
+    assert payload["plan"]["intent"] == "release_risk_summary"
+    assert payload["plan"]["response_depth"] == "standard"
+    assert isinstance(payload["citations"], list)
+    assert isinstance(payload["approval_required"], bool)
 
     assert release_run["id"] is not None
     assert release_run["run_id"].startswith("release-run-")
@@ -178,13 +186,12 @@ async def test_execute_agent_query_runs_release_risk_workflow(
         "waiting_for_approval",
     }
 
-    assert payload["github"]["status"] == "success"
-    assert payload["jira"]["status"] == "success"
-    assert payload["release_summary"]["source"] == "release"
-
-    assert payload["risk_features"] is not None
-    assert payload["risk_score"] is not None
-    assert payload["risk_score"]["scoring_version"] == ("rule_based_release_risk_v1")
+    assert release_risk["github"]["status"] == "success"
+    assert release_risk["jira"]["status"] == "success"
+    assert release_risk["release_summary"]["source"] == "release"
+    assert release_risk["risk_features"] is not None
+    assert release_risk["risk_score"] is not None
+    assert release_risk["risk_score"]["scoring_version"] == ("rule_based_release_risk_v1")
 
     events_response = await agent_query_api_client.get(
         f"/api/v1/release-runs/{release_run['id']}/events"
