@@ -334,3 +334,24 @@ async def test_routes_jira_key_as_jira_ticket_question(
     assert plan.entity_references.jira_issue_keys == ["PAY-102"]
     assert plan.filters.sources == [RiskSourceFilter.JIRA]
     assert plan.requires_current_snapshot is True
+
+
+@pytest.mark.anyio
+async def test_routes_release_approval_question_as_approval_status(
+    router: AgentQueryRouter,
+) -> None:
+    """Natural approval wording should route to approval-status lookup."""
+
+    release_run_id = uuid4()
+    request = AgentQueryRequest(
+        query="Has this release been approved?",
+        release_run_id=release_run_id,
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.APPROVAL_STATUS_QUESTION
+    assert plan.response_depth is ResponseDepth.BRIEF
+    assert plan.release_run_id == release_run_id
+    assert plan.requires_current_snapshot is True
+    assert plan.may_execute_side_effect is False

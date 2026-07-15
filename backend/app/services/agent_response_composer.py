@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Protocol
 
 from app.schemas.agent_query import (
     AgentCitation,
@@ -18,6 +19,20 @@ from app.schemas.risk import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class ApprovalStatusRecordProtocol(Protocol):
+    """Approval fields required to compose an approval-status response."""
+
+    id: object
+    approval_status: str
+    approval_reason: str
+    approval_policy_version: str
+    requested_by: str | None
+    decided_by: str | None
+    decision_note: str | None
+    created_at: object
+    decided_at: object
 
 
 class AgentResponseComposer:
@@ -407,6 +422,84 @@ class AgentResponseComposer:
             plan=plan,
             release_risk=release_risk,
             citations=[citation],
+            approval_required=release_risk.approval_required is True,
+        )
+
+    def compose_approval_status(
+        self,
+        *,
+        plan: AgentQueryPlan,
+        release_risk: ReleaseRunRiskResponse,
+        latest_approval: ApprovalStatusRecordProtocol | None,
+    ) -> AgentQueryResponse:
+        """Compose the latest durable HITL approval status.
+
+        Args:
+            plan: Validated approval-status query plan.
+            release_risk: Trusted persisted release-risk snapshot.
+            latest_approval: Latest durable approval record, when one exists.
+
+        Returns:
+            Approval-status response without evidence citations.
+        """
+
+        if latest_approval is not None:
+            approval_status = latest_approval.approval_status
+            approval_reason = latest_approval.approval_reason
+            decided_by = latest_approval.decided_by
+            decision_note = latest_approval.decision_note
+            approval_policy_version = latest_approval.approval_policy_version
+        else:
+            approval_status = (
+                release_risk.approval_status
+                or (
+                    "pending"
+                    if release_risk.approval_required is True
+                    else "not_required"
+                )
+            )
+            approval_reason = release_risk.approval_reason
+            decided_by = None
+            decision_note = None
+            approval_policy_version = release_risk.approval_policy_version
+
+        readable_status = approval_status.replace("_", " ")
+        answer = f"Approval status: {readable_status}."
+
+        if decided_by:
+            answer += f" Decided by: {decided_by}."
+
+        if decision_note:
+            answer += f" Decision note: {decision_note}"
+
+            if not answer.endswith((".", "!", "?")):
+                answer += "."
+
+        if approval_reason:
+            answer += f" Approval reason: {approval_reason}"
+
+            if not answer.endswith((".", "!", "?")):
+                answer += "."
+
+        logger.info(
+            "agent_approval_status_response_composed",
+            extra={
+                "run_id": self._request_id,
+                "release_run_id": str(release_risk.release_run.id),
+                "intent": plan.intent.value,
+                "approval_status": approval_status,
+                "approval_policy_version": approval_policy_version,
+                "approval_record_found": latest_approval is not None,
+                "decision_recorded": decided_by is not None,
+                "citation_count": 0,
+            },
+        )
+
+        return AgentQueryResponse(
+            answer=answer,
+            plan=plan,
+            release_risk=release_risk,
+            citations=[],
             approval_required=release_risk.approval_required is True,
         )
 

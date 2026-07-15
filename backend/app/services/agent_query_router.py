@@ -114,6 +114,7 @@ class AgentQueryRouter:
                 "release approved",
                 "was it approved",
                 "has it been approved",
+                "been approved",
             ),
             routing_reason_code="matched_approval_status",
             priority=90,

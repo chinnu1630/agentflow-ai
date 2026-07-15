@@ -688,3 +688,73 @@ async def test_workflow_status_question_uses_persisted_snapshot(
 
     assert FakeAgentGitHubRiskCollector.call_count == github_calls
     assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+
+@pytest.mark.anyio
+async def test_approval_status_question_uses_latest_durable_decision(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Approval questions should report the latest durable HITL decision."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert initial_response.status_code == 200
+
+    initial_payload = initial_response.json()
+    release_risk = initial_payload["release_risk"]
+    release_run_id = release_risk["release_run"]["id"]
+    approval_request_id = release_risk["approval_request_id"]
+
+    assert approval_request_id is not None
+    assert release_risk["approval_status"] == "pending"
+
+    decision_response = await agent_query_api_client.post(
+        (
+            f"/api/v1/release-runs/{release_run_id}"
+            f"/approvals/{approval_request_id}/decision"
+        ),
+        json={
+            "approval_status": "approved",
+            "decided_by": "director@example.com",
+            "decision_note": "Approved after reviewing the rollback plan.",
+        },
+    )
+
+    assert decision_response.status_code == 200
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Has this release been approved?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert follow_up_response.status_code == 200, follow_up_response.json()
+
+    follow_up_payload = follow_up_response.json()
+
+    assert follow_up_payload["plan"]["intent"] == "approval_status_question"
+    assert follow_up_payload["plan"]["response_depth"] == "brief"
+    assert follow_up_payload["release_risk"]["release_run"]["id"] == (
+        release_run_id
+    )
+
+    assert "Approval status: approved." in follow_up_payload["answer"]
+    assert "Decided by: director@example.com." in follow_up_payload["answer"]
+    assert (
+        "Decision note: Approved after reviewing the rollback plan."
+        in follow_up_payload["answer"]
+    )
+    assert follow_up_payload["citations"] == []
+
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls

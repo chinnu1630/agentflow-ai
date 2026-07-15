@@ -120,6 +120,7 @@ async def get_executable_agent_query_plan(
         AgentIntent.GITHUB_PR_QUESTION,
         AgentIntent.JIRA_TICKET_QUESTION,
         AgentIntent.WORKFLOW_STATUS_QUESTION,
+        AgentIntent.APPROVAL_STATUS_QUESTION,
     }:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -269,6 +270,10 @@ async def execute_agent_query(
         session=session,
         request_id=request_id,
     )
+    approval_repository = ReleaseRunApprovalRepository(
+        session=session,
+        request_id=request_id,
+    )
     response_composer = AgentResponseComposer(request_id=request_id)
 
     try:
@@ -279,6 +284,7 @@ async def execute_agent_query(
             AgentIntent.GITHUB_PR_QUESTION,
             AgentIntent.JIRA_TICKET_QUESTION,
             AgentIntent.WORKFLOW_STATUS_QUESTION,
+            AgentIntent.APPROVAL_STATUS_QUESTION,
         }:
             context_resolver = AgentQueryContextResolver(
                 snapshot_repository=risk_snapshot_repository,
@@ -344,6 +350,17 @@ async def execute_agent_query(
                     plan=plan,
                     release_risk=context.release_risk,
                 )
+            elif plan.intent is AgentIntent.APPROVAL_STATUS_QUESTION:
+                latest_approval = (
+                    await approval_repository.get_latest_by_release_run_id(
+                        context.release_run_id,
+                    )
+                )
+                agent_response = response_composer.compose_approval_status(
+                    plan=plan,
+                    release_risk=context.release_risk,
+                    latest_approval=latest_approval,
+                )
             else:
                 agent_response = response_composer.compose(
                     plan=plan,
@@ -364,10 +381,6 @@ async def execute_agent_query(
             request_id=request_id,
         )
         event_repository = ReleaseRunEventRepository(
-            session=session,
-            request_id=request_id,
-        )
-        approval_repository = ReleaseRunApprovalRepository(
             session=session,
             request_id=request_id,
         )

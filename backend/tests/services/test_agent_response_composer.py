@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from types import SimpleNamespace
 from uuid import uuid4
 
 from app.schemas.agent_query import (
@@ -456,6 +457,47 @@ def test_composes_workflow_status_from_persisted_snapshot() -> None:
     assert "Jira collection: success." in response.answer
     assert "Knowledge retrieval: not available." in response.answer
     assert "Approval status: pending." in response.answer
+    assert response.citations == []
+    assert response.release_risk is release_risk
+    assert response.approval_required is True
+
+
+def test_composes_latest_approval_status_instead_of_snapshot_status() -> None:
+    """Approval responses should prefer the latest durable approval decision."""
+
+    release_risk = build_release_risk_response()
+    plan = build_plan(ResponseDepth.BRIEF).model_copy(
+        update={
+            "intent": AgentIntent.APPROVAL_STATUS_QUESTION,
+            "routing_reason_code": "test_approval_status_question",
+        }
+    )
+    latest_approval = SimpleNamespace(
+        id=uuid4(),
+        approval_status="approved",
+        approval_reason="High risk requires manager approval.",
+        approval_policy_version="hitl_policy_v1",
+        requested_by="agent-query-api",
+        decided_by="director@example.com",
+        decision_note="Approved after reviewing the rollback plan.",
+        created_at=None,
+        decided_at=None,
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_approval_status(
+        plan=plan,
+        release_risk=release_risk,
+        latest_approval=latest_approval,
+    )
+
+    assert "Approval status: approved." in response.answer
+    assert "Decided by: director@example.com." in response.answer
+    assert (
+        "Decision note: Approved after reviewing the rollback plan."
+        in response.answer
+    )
+    assert "Approval reason: High risk requires manager approval." in response.answer
     assert response.citations == []
     assert response.release_risk is release_risk
     assert response.approval_required is True
