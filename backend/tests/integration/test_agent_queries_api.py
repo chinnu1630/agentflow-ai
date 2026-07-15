@@ -34,12 +34,16 @@ from app.services.jira_risk_collector import (
 class FakeAgentGitHubRiskCollector:
     """Fake GitHub collector for agent execution integration tests."""
 
+    call_count = 0
+
     async def collect_github_risks(
         self,
         *,
         run_id: str,
     ) -> GitHubRiskCollectionResult:
         """Return deterministic GitHub release-risk data."""
+
+        type(self).call_count += 1
 
         return GitHubRiskCollectionResult(
             status=RiskCollectionStatus.SUCCESS,
@@ -56,12 +60,16 @@ class FakeAgentGitHubRiskCollector:
 class FakeAgentJiraRiskCollector:
     """Fake Jira collector for agent execution integration tests."""
 
+    call_count = 0
+
     async def collect(
         self,
         *,
         run_id: str,
     ) -> JiraRiskCollectionResult:
         """Return deterministic Jira release-risk data."""
+
+        type(self).call_count += 1
 
         return JiraRiskCollectionResult(
             status=JiraRiskCollectionStatus.SUCCESS,
@@ -108,6 +116,9 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
         """Return the fake Jira collector."""
 
         return FakeAgentJiraRiskCollector()
+
+    FakeAgentGitHubRiskCollector.call_count = 0
+    FakeAgentJiraRiskCollector.call_count = 0
 
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_agent_github_risk_collector] = override_get_github_collector
@@ -206,6 +217,71 @@ async def test_execute_agent_query_runs_release_risk_workflow(
     assert "risk_features_extracted" in event_types
     assert "release_risk_scored" in event_types
     assert "release_risk_snapshot_created" in event_types
+
+
+@pytest.mark.anyio
+async def test_risk_score_follow_up_uses_persisted_snapshot(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Risk-score follow-up should not rerun GitHub or Jira collection."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert initial_response.status_code == 200
+
+    initial_payload = initial_response.json()
+    release_run_id = initial_payload["release_risk"]["release_run"]["id"]
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Why is the risk score high?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert follow_up_response.status_code == 200
+
+    follow_up_payload = follow_up_response.json()
+
+    assert follow_up_payload["plan"]["intent"] == "explain_risk_score"
+    assert follow_up_payload["plan"]["response_depth"] == "deep"
+    assert follow_up_payload["release_risk"]["release_run"]["id"] == release_run_id
+    assert "risk score" in follow_up_payload["answer"].lower()
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+
+@pytest.mark.anyio
+async def test_risk_score_follow_up_requires_release_run_id(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Risk-score follow-up must include trusted release-run context."""
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Why is the risk score high?",
+        },
+    )
+
+    assert response.status_code == 422
+
+    error_payload = response.json()
+
+    assert error_payload["error"]["code"] == "HTTP_ERROR"
+    assert error_payload["error"]["message"] == (
+        "A release-run ID is required for this follow-up query."
+    )
+    assert error_payload["run_id"] != "unknown"
 
 
 @pytest.mark.anyio

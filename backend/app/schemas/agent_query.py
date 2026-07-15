@@ -164,3 +164,14 @@ class AgentQueryResponse(BaseModel):
     release_risk: ReleaseRunRiskResponse
     citations: list[AgentCitation] = Field(default_factory=list)
     approval_required: bool
+
+
+class AgentQueryContext(BaseModel):
+    """Trusted persisted context resolved for a follow-up agent query."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    release_run_id: UUID
+    snapshot_id: UUID
+    snapshot_version: int = Field(ge=1)
+    release_risk: ReleaseRunRiskResponse

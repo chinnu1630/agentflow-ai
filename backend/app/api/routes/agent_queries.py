@@ -42,6 +42,14 @@ from app.schemas.agent_query import (
     AgentQueryResponse,
 )
 from app.schemas.github import GitHubRepositoryConfig
+from app.services.agent_query_context_resolver import (
+    AgentQueryContextConflictError,
+    AgentQueryContextRequiredError,
+    AgentQueryContextResolver,
+    AgentQueryContextResolverError,
+    AgentQuerySnapshotNotFoundError,
+    AgentQuerySnapshotValidationError,
+)
 from app.services.agent_query_executor import (
     AgentQueryContextMismatchError,
     AgentQueryExecutor,
@@ -91,7 +99,10 @@ async def get_executable_agent_query_plan(
 
     plan = await query_router.create_plan(payload)
 
-    if plan.intent is not AgentIntent.RELEASE_RISK_SUMMARY:
+    if plan.intent not in {
+        AgentIntent.RELEASE_RISK_SUMMARY,
+        AgentIntent.EXPLAIN_RISK_SCORE,
+    }:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="This agent query intent is not executable yet.",
@@ -109,8 +120,12 @@ ExecutableAgentQueryPlanDependency = Annotated[
 async def get_agent_github_risk_collector(
     request: Request,
     plan: ExecutableAgentQueryPlanDependency,
-) -> AsyncIterator[RiskCollector]:
-    """Create the GitHub collector used by agent query execution."""
+) -> AsyncIterator[RiskCollector | None]:
+    """Create GitHub collector only when fresh collection is required."""
+
+    if plan.intent is not AgentIntent.RELEASE_RISK_SUMMARY:
+        yield None
+        return
 
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
     settings = get_settings()
@@ -142,10 +157,12 @@ async def get_agent_github_risk_collector(
 
 async def get_agent_jira_risk_collector(
     plan: ExecutableAgentQueryPlanDependency,
-) -> AsyncIterator[JiraRiskCollector]:
-    """Create the Jira collector used by agent query execution."""
+) -> AsyncIterator[JiraRiskCollector | None]:
+    """Create Jira collector only when fresh collection is required."""
 
-    del plan
+    if plan.intent is not AgentIntent.RELEASE_RISK_SUMMARY:
+        yield None
+        return
 
     settings = get_settings()
 
@@ -172,11 +189,11 @@ async def get_agent_jira_risk_collector(
 
 
 AgentGitHubRiskCollectorDependency = Annotated[
-    RiskCollector,
+    RiskCollector | None,
     Depends(get_agent_github_risk_collector),
 ]
 AgentJiraRiskCollectorDependency = Annotated[
-    JiraRiskCollector,
+    JiraRiskCollector | None,
     Depends(get_agent_jira_risk_collector),
 ]
 
@@ -226,56 +243,76 @@ async def execute_agent_query(
     jira_risk_collector: AgentJiraRiskCollectorDependency,
     session: AsyncSession = Depends(get_db_session),
 ) -> AgentQueryResponse:
-    """Route, execute, and compose a natural-language query response."""
+    """Execute a fresh query or answer from trusted persisted context."""
 
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
 
-    release_run_repository = ReleaseRunRepository(
-        session=session,
-        request_id=request_id,
-    )
-    event_repository = ReleaseRunEventRepository(
-        session=session,
-        request_id=request_id,
-    )
-    approval_repository = ReleaseRunApprovalRepository(
-        session=session,
-        request_id=request_id,
-    )
     risk_snapshot_repository = ReleaseRunRiskSnapshotRepository(
         session=session,
         request_id=request_id,
     )
-    engineering_document_repository = EngineeringDocumentRepository(
-        session=session,
-    )
-    knowledge_service = EngineeringDocumentRetrievalService(
-        repository=engineering_document_repository,
-    )
-
-    release_run_service = ReleaseRunService(
-        repository=release_run_repository,
-        request_id=request_id,
-        risk_collector=risk_collector,
-        jira_risk_collector=jira_risk_collector,
-        event_repository=event_repository,
-        knowledge_service=knowledge_service,
-    )
-    executor = AgentQueryExecutor(
-        release_run_service=release_run_service,
-        request_id=request_id,
-    )
-    finalizer = ReleaseRiskExecutionFinalizer(
-        release_run_repository=release_run_repository,
-        approval_repository=approval_repository,
-        event_repository=event_repository,
-        risk_snapshot_repository=risk_snapshot_repository,
-    )
-    response_composer = AgentResponseComposer(
-        request_id=request_id,
-    )
+    response_composer = AgentResponseComposer(request_id=request_id)
 
     try:
+        if plan.intent is AgentIntent.EXPLAIN_RISK_SCORE:
+            context_resolver = AgentQueryContextResolver(
+                snapshot_repository=risk_snapshot_repository,
+                request_id=request_id,
+            )
+            context = await context_resolver.resolve(payload, plan)
+
+            agent_response = response_composer.compose(
+                plan=plan,
+                release_risk=context.release_risk,
+            )
+
+            await session.commit()
+            return agent_response
+
+        if risk_collector is None or jira_risk_collector is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Release-risk collectors are unavailable.",
+            )
+
+        release_run_repository = ReleaseRunRepository(
+            session=session,
+            request_id=request_id,
+        )
+        event_repository = ReleaseRunEventRepository(
+            session=session,
+            request_id=request_id,
+        )
+        approval_repository = ReleaseRunApprovalRepository(
+            session=session,
+            request_id=request_id,
+        )
+        engineering_document_repository = EngineeringDocumentRepository(
+            session=session,
+        )
+        knowledge_service = EngineeringDocumentRetrievalService(
+            repository=engineering_document_repository,
+        )
+
+        release_run_service = ReleaseRunService(
+            repository=release_run_repository,
+            request_id=request_id,
+            risk_collector=risk_collector,
+            jira_risk_collector=jira_risk_collector,
+            event_repository=event_repository,
+            knowledge_service=knowledge_service,
+        )
+        executor = AgentQueryExecutor(
+            release_run_service=release_run_service,
+            request_id=request_id,
+        )
+        finalizer = ReleaseRiskExecutionFinalizer(
+            release_run_repository=release_run_repository,
+            approval_repository=approval_repository,
+            event_repository=event_repository,
+            risk_snapshot_repository=risk_snapshot_repository,
+        )
+
         response = await executor.execute(
             payload,
             plan,
@@ -294,6 +331,41 @@ async def execute_agent_query(
 
         await session.commit()
         return agent_response
+
+    except AgentQueryContextRequiredError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="A release-run ID is required for this follow-up query.",
+        ) from exc
+
+    except AgentQueryContextConflictError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Agent query context does not match the query plan.",
+        ) from exc
+
+    except AgentQuerySnapshotNotFoundError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No persisted release-risk snapshot was found.",
+        ) from exc
+
+    except AgentQuerySnapshotValidationError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Persisted release-risk context is invalid.",
+        ) from exc
+
+    except AgentQueryContextResolverError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to resolve persisted agent query context.",
+        ) from exc
 
     except UnsupportedAgentQueryIntentError as exc:
         await session.rollback()
