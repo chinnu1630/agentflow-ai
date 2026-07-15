@@ -11,6 +11,7 @@ from app.schemas.agent_query import (
     ResponseDepth,
 )
 from app.schemas.risk import (
+    PullRequestRiskResponse,
     ReleaseRiskSummaryItemResponse,
     ReleaseRunRiskResponse,
 )
@@ -210,6 +211,98 @@ class AgentResponseComposer:
             plan=plan,
             release_risk=release_risk,
             citations=citations,
+            approval_required=release_risk.approval_required is True,
+        )
+
+    def compose_github_pr(
+        self,
+        *,
+        plan: AgentQueryPlan,
+        release_risk: ReleaseRunRiskResponse,
+        pull_request: PullRequestRiskResponse,
+    ) -> AgentQueryResponse:
+        """Compose a focused response for one persisted GitHub pull request.
+
+        Args:
+            plan: Validated GitHub PR query plan.
+            release_risk: Trusted persisted release-risk snapshot.
+            pull_request: Persisted risk result for the requested PR.
+
+        Returns:
+            Focused PR response with a single trusted citation.
+        """
+
+        severity = (
+            pull_request.max_severity.value.replace("_", " ")
+            if pull_request.max_severity is not None
+            else "no detected"
+        )
+        score_percentage = round(pull_request.total_score * 100)
+
+        answer = (
+            f"PR {pull_request.pull_request_number} has {severity} severity "
+            f"with an {score_percentage}% risk score."
+        )
+
+        if pull_request.signals:
+            signal_lines: list[str] = []
+
+            for index, signal in enumerate(
+                pull_request.signals,
+                start=1,
+            ):
+                signal_text = (
+                    f"{index}. {signal.title}: {signal.description}"
+                )
+
+                if signal.evidence:
+                    evidence_items = [
+                        f"{key.replace('_', ' ')}: {value}"
+                        for key, value in sorted(signal.evidence.items())
+                    ]
+                    signal_text += (
+                        f" Evidence: {'; '.join(evidence_items)}."
+                    )
+
+                signal_lines.append(signal_text)
+
+            answer += " Detected signals: " + " ".join(signal_lines)
+        else:
+            answer += " No persisted risk signals were detected for this PR."
+
+        if release_risk.approval_required is True:
+            answer += (
+                " Human approval is required before any downstream "
+                "release notification or Slack action."
+            )
+
+        citation = AgentCitation(
+            source="github",
+            source_type=pull_request.source_type,
+            source_id=pull_request.source_id,
+            title=f"GitHub PR {pull_request.pull_request_number}",
+            source_url=pull_request.source_url,
+        )
+
+        logger.info(
+            "agent_github_pr_response_composed",
+            extra={
+                "run_id": self._request_id,
+                "release_run_id": str(release_risk.release_run.id),
+                "intent": plan.intent.value,
+                "pull_request_number": pull_request.pull_request_number,
+                "source_id": pull_request.source_id,
+                "signal_count": len(pull_request.signals),
+                "citation_count": 1,
+                "approval_required": release_risk.approval_required is True,
+            },
+        )
+
+        return AgentQueryResponse(
+            answer=answer,
+            plan=plan,
+            release_risk=release_risk,
+            citations=[citation],
             approval_required=release_risk.approval_required is True,
         )
 

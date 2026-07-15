@@ -297,3 +297,71 @@ def test_composes_filtered_risk_response() -> None:
     assert response.citations[0].source_type == "jira_issue"
     assert response.citations[0].source_id == "PAY-102"
     assert response.release_risk is release_risk
+
+
+def test_composes_github_pr_response_from_persisted_signals() -> None:
+    """PR responses should explain only the requested persisted pull request."""
+
+    payload = build_snapshot_payload(
+        release_run_id=uuid4(),
+        approval_request_id=uuid4(),
+    )
+    payload["github"]["risk_results"] = [
+        {
+            "source_type": "github_pull_request",
+            "source_id": "PR-42",
+            "source_url": "https://github.example/pulls/42",
+            "pull_request_number": 42,
+            "total_score": 0.85,
+            "max_severity": "high",
+            "signals": [
+                {
+                    "source_type": "github_pull_request",
+                    "source_id": "PR-42",
+                    "source_url": "https://github.example/pulls/42",
+                    "rule_id": "ci_failure",
+                    "category": "ci_failure",
+                    "severity": "high",
+                    "score": 0.85,
+                    "title": "Payment API has failing CI",
+                    "description": (
+                        "CI failed on a release-critical payment service."
+                    ),
+                    "evidence": {
+                        "ci_status": "failed",
+                        "service": "payment-api",
+                    },
+                }
+            ],
+            "evaluated_at": payload["release_summary"]["generated_at"],
+        }
+    ]
+    payload["github"]["risk_result_count"] = 1
+
+    release_risk = ReleaseRunRiskResponse.model_validate(payload)
+    pull_request = release_risk.github.risk_results[0]
+    plan = build_plan(ResponseDepth.STANDARD).model_copy(
+        update={
+            "intent": AgentIntent.GITHUB_PR_QUESTION,
+            "routing_reason_code": "test_github_pr_question",
+        }
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_github_pr(
+        plan=plan,
+        release_risk=release_risk,
+        pull_request=pull_request,
+    )
+
+    assert "PR 42" in response.answer
+    assert "high severity" in response.answer
+    assert "85%" in response.answer
+    assert "Payment API has failing CI" in response.answer
+    assert "CI failed on a release-critical payment service." in response.answer
+    assert "ci status: failed" in response.answer.lower()
+
+    assert len(response.citations) == 1
+    assert response.citations[0].source_type == "github_pull_request"
+    assert response.citations[0].source_id == "PR-42"
+    assert response.release_risk is release_risk

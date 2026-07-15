@@ -296,3 +296,22 @@ async def test_extracts_complete_word_severity_filter(
     plan = await router.create_plan(request)
 
     assert plan.filters.severities == ["critical", "high"]
+
+
+@pytest.mark.anyio
+async def test_routes_pr_number_as_github_question(
+    router: AgentQueryRouter,
+) -> None:
+    """A PR abbreviation with a number should route to the GitHub PR intent."""
+
+    request = AgentQueryRequest(
+        query="What is happening with PR 42?",
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.GITHUB_PR_QUESTION
+    assert plan.entity_references.pull_request_numbers == [42]
+    assert plan.filters.sources == [RiskSourceFilter.GITHUB]
+    assert plan.requires_current_snapshot is True

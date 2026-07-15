@@ -42,6 +42,10 @@ from app.schemas.agent_query import (
     AgentQueryResponse,
 )
 from app.schemas.github import GitHubRepositoryConfig
+from app.services.agent_github_pr_resolver import (
+    AgentGitHubPRNotFoundError,
+    AgentGitHubPRResolver,
+)
 from app.services.agent_query_context_resolver import (
     AgentQueryContextConflictError,
     AgentQueryContextRequiredError,
@@ -109,6 +113,7 @@ async def get_executable_agent_query_plan(
         AgentIntent.EXPLAIN_RISK_SCORE,
         AgentIntent.EXPLAIN_SPECIFIC_RISK,
         AgentIntent.FILTER_RISKS,
+        AgentIntent.GITHUB_PR_QUESTION,
     }:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -265,6 +270,7 @@ async def execute_agent_query(
             AgentIntent.EXPLAIN_RISK_SCORE,
             AgentIntent.EXPLAIN_SPECIFIC_RISK,
             AgentIntent.FILTER_RISKS,
+            AgentIntent.GITHUB_PR_QUESTION,
         }:
             context_resolver = AgentQueryContextResolver(
                 snapshot_repository=risk_snapshot_repository,
@@ -298,6 +304,19 @@ async def execute_agent_query(
                     plan=plan,
                     release_risk=context.release_risk,
                     selected_risks=selected_risks,
+                )
+            elif plan.intent is AgentIntent.GITHUB_PR_QUESTION:
+                github_pr_resolver = AgentGitHubPRResolver(
+                    request_id=request_id,
+                )
+                pull_request = github_pr_resolver.resolve(
+                    plan=plan,
+                    release_risk=context.release_risk,
+                )
+                agent_response = response_composer.compose_github_pr(
+                    plan=plan,
+                    release_risk=context.release_risk,
+                    pull_request=pull_request,
                 )
             else:
                 agent_response = response_composer.compose(
@@ -370,6 +389,13 @@ async def execute_agent_query(
 
         await session.commit()
         return agent_response
+
+    except AgentGitHubPRNotFoundError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No persisted GitHub pull request matched the question.",
+        ) from exc
 
     except AgentSpecificRiskNotFoundError as exc:
         await session.rollback()

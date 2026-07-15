@@ -497,3 +497,60 @@ async def test_filter_risks_follow_up_uses_persisted_snapshot(
 
     assert FakeAgentGitHubRiskCollector.call_count == github_calls
     assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+
+@pytest.mark.anyio
+async def test_github_pr_question_uses_persisted_snapshot(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """A PR question should use persisted GitHub evidence without recollection."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert initial_response.status_code == 200
+
+    initial_payload = initial_response.json()
+    release_run_id = initial_payload["release_risk"]["release_run"]["id"]
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What is happening with PR 42?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert follow_up_response.status_code == 200, follow_up_response.json()
+
+    follow_up_payload = follow_up_response.json()
+
+    assert follow_up_payload["plan"]["intent"] == "github_pr_question"
+    assert follow_up_payload["plan"]["entity_references"][
+        "pull_request_numbers"
+    ] == [42]
+    assert follow_up_payload["release_risk"]["release_run"]["id"] == (
+        release_run_id
+    )
+
+    assert "PR 42" in follow_up_payload["answer"]
+    assert "Payment API has failing CI" in follow_up_payload["answer"]
+    assert "CI failed on a release-critical payment service." in (
+        follow_up_payload["answer"]
+    )
+
+    assert len(follow_up_payload["citations"]) == 1
+    assert follow_up_payload["citations"][0]["source_type"] == (
+        "github_pull_request"
+    )
+    assert follow_up_payload["citations"][0]["source_id"] == "PR-42"
+
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls

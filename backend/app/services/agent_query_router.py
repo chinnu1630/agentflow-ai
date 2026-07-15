@@ -274,6 +274,19 @@ class AgentQueryRouter:
         normalized_query = self._normalize_query(request.query)
         matched_rule = self._find_matching_rule(normalized_query)
 
+        if (
+            matched_rule is None
+            and self._PR_PATTERN.search(request.query) is not None
+        ):
+            matched_rule = IntentRule(
+                intent=AgentIntent.GITHUB_PR_QUESTION,
+                response_depth=ResponseDepth.STANDARD,
+                phrases=("explicit_pr_reference",),
+                routing_reason_code="matched_github_pr_reference",
+                priority=50,
+                requires_current_snapshot=True,
+            )
+
         if matched_rule is None:
             if not self._contains_release_context(normalized_query):
                 return self._create_out_of_scope_plan(request)
@@ -339,7 +352,11 @@ class AgentQueryRouter:
 
         sources: list[RiskSourceFilter] = []
 
-        if "github" in normalized_query or "pull request" in normalized_query:
+        if (
+            "github" in normalized_query
+            or "pull request" in normalized_query
+            or self._PR_PATTERN.search(normalized_query) is not None
+        ):
             sources.append(RiskSourceFilter.GITHUB)
 
         if "jira" in normalized_query or "ticket" in normalized_query:
