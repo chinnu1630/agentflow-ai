@@ -879,3 +879,119 @@ async def test_previous_release_comparison_uses_persisted_snapshots(
 
     assert FakeAgentGitHubRiskCollector.call_count == github_calls
     assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+@pytest.mark.anyio
+async def test_slack_status_question_reports_not_sent_without_recollection(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Slack-status questions should read durable state without recollection."""
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert initial_response.status_code == 200
+    initial_payload = initial_response.json()
+    release_run_id = initial_payload["release_risk"]["release_run"]["id"]
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    status_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Was the Slack alert sent?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert status_response.status_code == 200, status_response.json()
+
+    status_payload = status_response.json()
+
+    assert status_payload["plan"]["intent"] == "slack_status_question"
+    assert status_payload["plan"]["response_depth"] == "brief"
+    assert status_payload["release_risk"]["release_run"]["id"] == release_run_id
+    assert status_payload["answer"] == (
+        "No Slack alert has been sent for this release run."
+    )
+    assert status_payload["citations"] == []
+
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+@pytest.mark.anyio
+async def test_slack_status_question_reports_sent_alert(
+    agent_query_api_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Slack-status questions should report a durable successful delivery."""
+    from types import SimpleNamespace
+
+    from app.repositories.release_run_slack_alert_repository import (
+        ReleaseRunSlackAlertRepository,
+    )
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert initial_response.status_code == 200
+    initial_payload = initial_response.json()
+    release_run_id = initial_payload["release_risk"]["release_run"]["id"]
+
+    async def fake_get_by_release_run_id(
+        self: ReleaseRunSlackAlertRepository,
+        queried_release_run_id: object,
+    ) -> object:
+        """Return a deterministic persisted Slack delivery record."""
+        del self
+        assert str(queried_release_run_id) == release_run_id
+
+        return SimpleNamespace(
+            id="slack-alert-123",
+            delivery_status="sent",
+            slack_channel="C1234567890",
+            slack_timestamp="12345.6789",
+            risk_level="critical",
+            risk_score=0.9475,
+            recommended_action="block_release",
+            created_at="2026-07-15T19:00:00Z",
+        )
+
+    monkeypatch.setattr(
+        ReleaseRunSlackAlertRepository,
+        "get_by_release_run_id",
+        fake_get_by_release_run_id,
+    )
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    status_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Was the Slack alert sent?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert status_response.status_code == 200, status_response.json()
+
+    status_payload = status_response.json()
+
+    assert status_payload["plan"]["intent"] == "slack_status_question"
+    assert "Slack alert status: sent." in status_payload["answer"]
+    assert "Channel: C1234567890." in status_payload["answer"]
+    assert "Risk level: critical." in status_payload["answer"]
+    assert "Risk score: 95%." in status_payload["answer"]
+    assert "Recommended action: block release." in status_payload["answer"]
+    assert status_payload["citations"] == []
+
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls

@@ -35,6 +35,10 @@ from app.repositories.release_run_risk_snapshot_repository import (
     ReleaseRunRiskSnapshotRepository,
     ReleaseRunRiskSnapshotRepositoryError,
 )
+from app.repositories.release_run_slack_alert_repository import (
+    ReleaseRunSlackAlertRepository,
+    ReleaseRunSlackAlertRepositoryError,
+)
 from app.schemas.agent_query import (
     AgentIntent,
     AgentQueryPlan,
@@ -121,6 +125,7 @@ async def get_executable_agent_query_plan(
         AgentIntent.JIRA_TICKET_QUESTION,
         AgentIntent.WORKFLOW_STATUS_QUESTION,
         AgentIntent.APPROVAL_STATUS_QUESTION,
+        AgentIntent.SLACK_STATUS_QUESTION,
         AgentIntent.HISTORICAL_RISK_LOOKUP,
         AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
     }:
@@ -276,6 +281,10 @@ async def execute_agent_query(
         session=session,
         request_id=request_id,
     )
+    slack_alert_repository = ReleaseRunSlackAlertRepository(
+        session=session,
+        request_id=request_id,
+    )
     response_composer = AgentResponseComposer(request_id=request_id)
 
     try:
@@ -287,6 +296,7 @@ async def execute_agent_query(
             AgentIntent.JIRA_TICKET_QUESTION,
             AgentIntent.WORKFLOW_STATUS_QUESTION,
             AgentIntent.APPROVAL_STATUS_QUESTION,
+            AgentIntent.SLACK_STATUS_QUESTION,
             AgentIntent.HISTORICAL_RISK_LOOKUP,
             AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
         }:
@@ -364,6 +374,17 @@ async def execute_agent_query(
                     plan=plan,
                     release_risk=context.release_risk,
                     latest_approval=latest_approval,
+                )
+            elif plan.intent is AgentIntent.SLACK_STATUS_QUESTION:
+                slack_alert = (
+                    await slack_alert_repository.get_by_release_run_id(
+                        context.release_run_id,
+                    )
+                )
+                agent_response = response_composer.compose_slack_status(
+                    plan=plan,
+                    release_risk=context.release_risk,
+                    slack_alert=slack_alert,
                 )
             elif plan.intent is AgentIntent.HISTORICAL_RISK_LOOKUP:
                 historical_release_risks = (
@@ -554,6 +575,7 @@ async def execute_agent_query(
         ReleaseRunEventRepositoryError,
         ReleaseRunApprovalRepositoryError,
         ReleaseRunRiskSnapshotRepositoryError,
+        ReleaseRunSlackAlertRepositoryError,
         SQLAlchemyError,
     ) as exc:
         await session.rollback()

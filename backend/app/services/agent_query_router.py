@@ -95,6 +95,7 @@ class AgentQueryRouter:
             response_depth=ResponseDepth.BRIEF,
             phrases=(
                 "was slack sent",
+                "was the slack alert sent",
                 "slack already sent",
                 "was it sent to slack",
                 "slack status",

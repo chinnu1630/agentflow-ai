@@ -619,3 +619,64 @@ def test_composes_previous_release_comparison_without_history() -> None:
     assert response.release_risk is release_risk
     assert response.approval_required is True
     assert response.citations == []
+
+def test_composes_sent_slack_alert_status() -> None:
+    """Slack status should describe the persisted successful delivery."""
+    release_risk = build_release_risk_response()
+    plan = build_plan(ResponseDepth.BRIEF).model_copy(
+        update={
+            "intent": AgentIntent.SLACK_STATUS_QUESTION,
+            "routing_reason_code": "test_slack_status",
+        }
+    )
+    slack_alert = SimpleNamespace(
+        id=uuid4(),
+        delivery_status="sent",
+        slack_channel="#release-alerts",
+        slack_timestamp="1721070000.123456",
+        risk_level="high",
+        risk_score=0.78,
+        recommended_action="review_required",
+        created_at="2026-07-15T19:00:00Z",
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_slack_status(
+        plan=plan,
+        release_risk=release_risk,
+        slack_alert=slack_alert,
+    )
+
+    assert "Slack alert status: sent." in response.answer
+    assert "Channel: #release-alerts." in response.answer
+    assert "Risk level: high." in response.answer
+    assert "Risk score: 78%." in response.answer
+    assert "Recommended action: review required." in response.answer
+    assert response.release_risk is release_risk
+    assert response.approval_required is True
+    assert response.citations == []
+
+
+def test_composes_slack_alert_status_when_not_sent() -> None:
+    """Slack status should clearly report when no delivery record exists."""
+    release_risk = build_release_risk_response()
+    plan = build_plan(ResponseDepth.BRIEF).model_copy(
+        update={
+            "intent": AgentIntent.SLACK_STATUS_QUESTION,
+            "routing_reason_code": "test_slack_status",
+        }
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_slack_status(
+        plan=plan,
+        release_risk=release_risk,
+        slack_alert=None,
+    )
+
+    assert response.answer == (
+        "No Slack alert has been sent for this release run."
+    )
+    assert response.release_risk is release_risk
+    assert response.approval_required is True
+    assert response.citations == []

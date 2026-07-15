@@ -35,6 +35,19 @@ class ApprovalStatusRecordProtocol(Protocol):
     decided_at: object
 
 
+class SlackAlertStatusRecordProtocol(Protocol):
+    """Slack delivery fields required to compose a status response."""
+
+    id: object
+    delivery_status: str
+    slack_channel: str
+    slack_timestamp: str
+    risk_level: str
+    risk_score: float
+    recommended_action: str
+    created_at: object
+
+
 class AgentResponseComposer:
     """Create deterministic conversational answers from trusted risk data."""
 
@@ -759,6 +772,65 @@ class AgentResponseComposer:
             plan=plan,
             release_risk=release_risk,
             citations=citations,
+            approval_required=release_risk.approval_required is True,
+        )
+
+    def compose_slack_status(
+        self,
+        *,
+        plan: AgentQueryPlan,
+        release_risk: ReleaseRunRiskResponse,
+        slack_alert: SlackAlertStatusRecordProtocol | None,
+    ) -> AgentQueryResponse:
+        """Compose Slack delivery status from durable persisted state.
+
+        Args:
+            plan: Validated Slack-status query plan.
+            release_risk: Trusted persisted release-risk snapshot.
+            slack_alert: Persisted successful Slack delivery record, if present.
+
+        Returns:
+            Slack delivery response without evidence citations.
+        """
+        if slack_alert is None:
+            answer = "No Slack alert has been sent for this release run."
+            delivery_status = "not_sent"
+        else:
+            delivery_status = slack_alert.delivery_status
+            readable_action = slack_alert.recommended_action.replace("_", " ")
+            risk_percentage = round(slack_alert.risk_score * 100)
+
+            answer = (
+                f"Slack alert status: {delivery_status.replace('_', ' ')}. "
+                f"Channel: {slack_alert.slack_channel}. "
+                f"Risk level: {slack_alert.risk_level.replace('_', ' ')}. "
+                f"Risk score: {risk_percentage}%. "
+                f"Recommended action: {readable_action}."
+            )
+
+        logger.info(
+            "agent_slack_status_response_composed",
+            extra={
+                "run_id": self._request_id,
+                "release_run_id": str(release_risk.release_run.id),
+                "intent": plan.intent.value,
+                "delivery_status": delivery_status,
+                "slack_alert_found": slack_alert is not None,
+                "slack_channel": (
+                    slack_alert.slack_channel
+                    if slack_alert is not None
+                    else None
+                ),
+                "citation_count": 0,
+                "approval_required": release_risk.approval_required is True,
+            },
+        )
+
+        return AgentQueryResponse(
+            answer=answer,
+            plan=plan,
+            release_risk=release_risk,
+            citations=[],
             approval_required=release_risk.approval_required is True,
         )
 
