@@ -19,18 +19,18 @@ from app.api.routes.release_runs import (
 )
 from app.db.base import Base
 from app.db.session import get_db_session
+from app.integrations.slack_client import SlackPostMessageResult
 from app.main import app
 from app.repositories.release_run_risk_snapshot_repository import (
     CreateReleaseRunRiskSnapshotCommand,
     ReleaseRunRiskSnapshotRepository,
 )
+from app.services.engineering_document_retrieval_service import EngineeringDocumentRetrievalService
 from app.services.github_risk_collector import GitHubRiskCollectionResult, RiskCollectionStatus
 from app.services.jira_risk_collector import (
     JiraRiskCollectionResult,
     JiraRiskCollectionStatus,
 )
-from app.services.engineering_document_retrieval_service import EngineeringDocumentRetrievalService
-from app.integrations.slack_client import SlackPostMessageResult
 from app.services.release_run_service import ReleaseRunService
 from app.services.slack_alert_payload_service import SlackReleaseRiskAlertPayload
 

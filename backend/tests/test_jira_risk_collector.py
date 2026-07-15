@@ -28,7 +28,12 @@ class FakeSuccessfulJiraClient:
         self._issues = issues
         self.was_called = False
 
-    async def list_open_issues(self) -> list[JiraIssue]:
+    async def search_release_risk_issues(
+        self,
+        *,
+        run_id: str,
+        max_results: int = 50,
+    ) -> list[JiraIssue]:
         """Return fake open Jira issues."""
 
         self.was_called = True
@@ -38,7 +43,12 @@ class FakeSuccessfulJiraClient:
 class FakeFailingJiraClient:
     """Fake Jira client that simulates Jira API failure."""
 
-    async def list_open_issues(self) -> list[JiraIssue]:
+    async def search_release_risk_issues(
+        self,
+        *,
+        run_id: str,
+        max_results: int = 50,
+    ) -> list[JiraIssue]:
         """Raise a Jira client error."""
 
         raise JiraClientError("Jira API unavailable")

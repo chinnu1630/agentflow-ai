@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Sequence
+
+import pytest
 
 from app.schemas.github import GitHubPullRequest
 from app.services.github_risk_collector import RiskCollectionStatus, RiskCollector
@@ -28,7 +29,7 @@ class FakeGitHubClient:
         self._error = error
         self.was_called = False
 
-    def list_open_pull_requests(self) -> list[GitHubPullRequest]:
+    async def list_open_pull_requests(self) -> list[GitHubPullRequest]:
         """Return fake pull requests or raise a configured error."""
         self.was_called = True
 
@@ -92,7 +93,8 @@ def _risk_result(
     )
 
 
-def test_collect_github_risks_fetches_and_evaluates_pull_requests() -> None:
+@pytest.mark.anyio
+async def test_collect_github_risks_fetches_and_evaluates_pull_requests() -> None:
     pull_requests = [_pull_request(1), _pull_request(2)]
     risk_results = [
         _risk_result(1, RiskSeverity.HIGH),
@@ -106,7 +108,7 @@ def test_collect_github_risks_fetches_and_evaluates_pull_requests() -> None:
         risk_rule_engine=risk_rule_engine,
     )
 
-    result = asyncio.run(collector.collect_github_risks(run_id="test-run-001"))
+    result = await collector.collect_github_risks(run_id="test-run-001")
 
     assert result.status == RiskCollectionStatus.SUCCESS
     assert result.pull_request_count == 2
@@ -123,7 +125,8 @@ def test_collect_github_risks_fetches_and_evaluates_pull_requests() -> None:
     assert risk_rule_engine.received_run_id == "test-run-001"
 
 
-def test_collect_github_risks_handles_empty_pull_request_list() -> None:
+@pytest.mark.anyio
+async def test_collect_github_risks_handles_empty_pull_request_list() -> None:
     github_client = FakeGitHubClient(pull_requests=[])
     risk_rule_engine = FakeRiskRuleEngine(risk_results=[])
     collector = RiskCollector(
@@ -131,7 +134,7 @@ def test_collect_github_risks_handles_empty_pull_request_list() -> None:
         risk_rule_engine=risk_rule_engine,
     )
 
-    result = asyncio.run(collector.collect_github_risks(run_id="test-run-002"))
+    result = await collector.collect_github_risks(run_id="test-run-002")
 
     assert result.status == RiskCollectionStatus.SUCCESS
     assert result.pull_request_count == 0
@@ -144,7 +147,8 @@ def test_collect_github_risks_handles_empty_pull_request_list() -> None:
     assert risk_rule_engine.was_called is True
 
 
-def test_collect_github_risks_degrades_when_github_fails() -> None:
+@pytest.mark.anyio
+async def test_collect_github_risks_degrades_when_github_fails() -> None:
     github_client = FakeGitHubClient(error=ConnectionError("GitHub unavailable"))
     risk_rule_engine = FakeRiskRuleEngine(risk_results=[])
     collector = RiskCollector(
@@ -152,7 +156,7 @@ def test_collect_github_risks_degrades_when_github_fails() -> None:
         risk_rule_engine=risk_rule_engine,
     )
 
-    result = asyncio.run(collector.collect_github_risks(run_id="test-run-003"))
+    result = await collector.collect_github_risks(run_id="test-run-003")
 
     assert result.status == RiskCollectionStatus.DEGRADED
     assert result.pull_request_count == 0

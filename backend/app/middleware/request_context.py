@@ -8,7 +8,6 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from app.core.logging import get_logger
 from app.observability.tracing import set_safe_span_attributes
 
-
 logger = get_logger(__name__)
 
 

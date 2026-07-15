@@ -18,10 +18,10 @@ from typing import Protocol
 from uuid import UUID
 
 from app.core.logging import get_logger
-from app.integrations.jira_client import JiraClient, JiraClientError
+from app.integrations.jira_client import JiraClientError
 from app.schemas.jira import JiraIssue
-from app.services.jira_risk_rules import JiraIssueRiskResult, JiraRiskRuleEngine
 from app.services.github_risk_rules import RiskSignal
+from app.services.jira_risk_rules import JiraIssueRiskResult, JiraRiskRuleEngine
 
 logger = get_logger(__name__)
 
@@ -73,8 +73,13 @@ class JiraIssueClient(Protocol):
     without calling the real Jira API.
     """
 
-    async def list_open_issues(self) -> list[JiraIssue]:
-        """Fetch normalized open Jira issues."""
+    async def search_release_risk_issues(
+        self,
+        *,
+        run_id: str,
+        max_results: int = 50,
+    ) -> list[JiraIssue]:
+        """Fetch normalized open Jira issues relevant to release risk."""
 
         ...
 
@@ -113,7 +118,10 @@ class JiraRiskCollector:
             rule_engine: Rule engine used to evaluate each issue.
         """
 
-        self._jira_client = jira_client or JiraClient()
+        if jira_client is None:
+            raise ValueError("jira_client is required")
+
+        self._jira_client = jira_client
         self._rule_engine = rule_engine or JiraRiskRuleEngine()
 
     async def collect(
@@ -136,7 +144,7 @@ class JiraRiskCollector:
         """
 
         started_at = perf_counter()
-        safe_run_id = str(run_id) if run_id is not None else None
+        safe_run_id = str(run_id) if run_id is not None else "unknown-run-id"
 
         logger.info(
             "jira_risk_collection_started",
@@ -144,7 +152,9 @@ class JiraRiskCollector:
         )
 
         try:
-            issues = await self._jira_client.list_open_issues()
+            issues = await self._jira_client.search_release_risk_issues(
+                run_id=safe_run_id,
+            )
         except JiraClientError as exc:
             duration_ms = self._elapsed_ms(started_at)
 

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.release_run import ReleaseRun
 from app.repositories.release_run_repository import ReleaseRunRepository
 
+
 @pytest.mark.anyio
 async def test_create_release_run_persists_record(
     db_session: AsyncSession,

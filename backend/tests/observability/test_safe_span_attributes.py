@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 APP_SOURCE_ROOT = Path("app")
 
 FORBIDDEN_SPAN_ATTRIBUTE_TERMS = {

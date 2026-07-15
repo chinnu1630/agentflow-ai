@@ -6,12 +6,12 @@ raw integration data into structured release-risk results.
 
 from __future__ import annotations
 
-import asyncio
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from time import perf_counter
-from typing import Literal, Protocol, Sequence
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -36,7 +36,7 @@ class RiskCollectionStatus(StrEnum):
 class GitHubPullRequestClient(Protocol):
     """Protocol for a client that can fetch open GitHub pull requests."""
 
-    def list_open_pull_requests(self) -> list[GitHubPullRequest]:
+    async def list_open_pull_requests(self) -> list[GitHubPullRequest]:
         """Return open GitHub pull requests from a repository."""
         ...
 
@@ -89,8 +89,8 @@ class RiskCollector:
     async def collect_github_risks(self, *, run_id: str) -> GitHubRiskCollectionResult:
         """Collect GitHub pull request risks for a release run.
 
-        The GitHub client is currently synchronous, so this method runs it in a
-        worker thread to avoid blocking the async FastAPI event loop.
+        The GitHub client is asynchronous so network I/O does not block the
+        FastAPI event loop.
         """
         started_at = perf_counter()
 
@@ -100,9 +100,7 @@ class RiskCollector:
         )
 
         try:
-            pull_requests = await asyncio.to_thread(
-                self._github_client.list_open_pull_requests,
-            )
+            pull_requests = await self._github_client.list_open_pull_requests()
 
             risk_results = self._risk_rule_engine.evaluate_pull_requests(
                 pull_requests,

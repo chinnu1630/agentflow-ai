@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +23,20 @@ class Settings(BaseSettings):
         default="/api/v1",
         description="Base prefix for version 1 API routes.",
     )
+    database_url: str | None = Field(
+        default=None,
+        description="Async SQLAlchemy database connection URL.",
+    )
+    github_repository_owner: str | None = None
+    github_repository_name: str | None = None
+    github_default_branch: str = "main"
+    github_token: SecretStr | None = None
+    jira_base_url: str | None = None
+    jira_email: str | None = None
+    jira_api_token: SecretStr | None = None
+    jira_project_key: str | None = None
+    slack_bot_token: SecretStr | None = None
+    slack_channel_id: str | None = None
     otel_enabled: bool = Field(
         default=False,
         description="Enable OpenTelemetry tracing instrumentation.",

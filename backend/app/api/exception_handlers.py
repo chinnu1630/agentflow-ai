@@ -7,7 +7,6 @@ from app.core.exceptions import AppError
 from app.core.logging import get_logger
 from app.schemas.error import ErrorDetail, ErrorResponse
 
-
 logger = get_logger(__name__)
 
 

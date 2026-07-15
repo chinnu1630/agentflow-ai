@@ -14,17 +14,15 @@ from collections.abc import Sequence
 from typing import Literal, Protocol
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.logging import get_logger
 from app.models.engineering_document import EngineeringDocumentSourceType
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalRequest,
     EngineeringDocumentRetrievalService,
 )
-
-from pydantic import BaseModel, ConfigDict, Field
-
-from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 

@@ -20,9 +20,9 @@ from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalService,
 )
 from app.services.knowledge_retrieval_evaluation_service import (
+    EngineeringDocumentRetrievalEvaluationAdapter,
     KnowledgeRetrievalEvalFailureDetail,
     KnowledgeRetrievalEvalRetrievedDocument,
-    EngineeringDocumentRetrievalEvaluationAdapter,
     KnowledgeRetrievalEvaluationReport,
     KnowledgeRetrievalEvaluationService,
 )
@@ -30,7 +30,6 @@ from tests.fixtures.knowledge_retrieval_eval_cases import (
     build_knowledge_retrieval_eval_cases,
     seed_knowledge_retrieval_eval_documents,
 )
-
 
 MIN_TOP_1_ACCURACY = 1.0
 MIN_TOP_K_ACCURACY = 1.0

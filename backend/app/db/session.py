@@ -1,7 +1,9 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from functools import lru_cache
+from typing import Any
 
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -21,12 +23,12 @@ def create_database_engine(database_url: str | None) -> AsyncEngine:
     if not database_url:
         raise ValueError("DATABASE_URL is required to create the database engine.")
 
-    return create_async_engine(
-        database_url,
-        pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
-    )
+    engine_options: dict[str, Any] = {"pool_pre_ping": True}
+
+    if make_url(database_url).get_backend_name() != "sqlite":
+        engine_options.update(pool_size=5, max_overflow=10)
+
+    return create_async_engine(database_url, **engine_options)
 
 
 def create_session_factory(
