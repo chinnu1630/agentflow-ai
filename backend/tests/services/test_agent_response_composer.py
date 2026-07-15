@@ -365,3 +365,70 @@ def test_composes_github_pr_response_from_persisted_signals() -> None:
     assert response.citations[0].source_type == "github_pull_request"
     assert response.citations[0].source_id == "PR-42"
     assert response.release_risk is release_risk
+
+
+def test_composes_jira_ticket_response_from_persisted_signals() -> None:
+    """Jira responses should explain only the requested persisted ticket."""
+
+    payload = build_snapshot_payload(
+        release_run_id=uuid4(),
+        approval_request_id=uuid4(),
+    )
+    payload["jira"]["issues"] = [
+        {
+            "issue_key": "PAY-102",
+            "title": "Payment release blocker",
+            "issue_url": "https://jira.example/browse/PAY-102",
+            "signals": [
+                {
+                    "source_type": "jira_issue",
+                    "source_id": "PAY-102",
+                    "source_url": "https://jira.example/browse/PAY-102",
+                    "rule_id": "jira_release_blocker",
+                    "category": "release_blocker_issue",
+                    "severity": "critical",
+                    "score": 0.95,
+                    "title": "Jira issue is marked as a release blocker",
+                    "description": "The issue explicitly blocks the release.",
+                    "evidence": {
+                        "status": "blocked",
+                        "priority": "P1",
+                        "is_blocking_release": True,
+                    },
+                }
+            ],
+        }
+    ]
+    payload["jira"]["total_issues_analyzed"] = 1
+    payload["jira"]["total_signals"] = 1
+    payload["jira"]["signals"] = payload["jira"]["issues"][0]["signals"]
+
+    release_risk = ReleaseRunRiskResponse.model_validate(payload)
+    jira_issue = release_risk.jira.issues[0]
+    plan = build_plan(ResponseDepth.STANDARD).model_copy(
+        update={
+            "intent": AgentIntent.JIRA_TICKET_QUESTION,
+            "routing_reason_code": "test_jira_ticket_question",
+        }
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_jira_ticket(
+        plan=plan,
+        release_risk=release_risk,
+        jira_issue=jira_issue,
+    )
+
+    assert "PAY-102" in response.answer
+    assert "Payment release blocker" in response.answer
+    assert "critical severity" in response.answer
+    assert "95%" in response.answer
+    assert "Jira issue is marked as a release blocker" in response.answer
+    assert "The issue explicitly blocks the release." in response.answer
+    assert "status: blocked" in response.answer.lower()
+    assert "priority: P1" in response.answer
+
+    assert len(response.citations) == 1
+    assert response.citations[0].source_type == "jira_issue"
+    assert response.citations[0].source_id == "PAY-102"
+    assert response.release_risk is release_risk

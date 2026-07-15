@@ -315,3 +315,22 @@ async def test_routes_pr_number_as_github_question(
     assert plan.entity_references.pull_request_numbers == [42]
     assert plan.filters.sources == [RiskSourceFilter.GITHUB]
     assert plan.requires_current_snapshot is True
+
+
+@pytest.mark.anyio
+async def test_routes_jira_key_as_jira_ticket_question(
+    router: AgentQueryRouter,
+) -> None:
+    """An explicit Jira key should route to the Jira ticket intent."""
+
+    request = AgentQueryRequest(
+        query="What is happening with PAY-102?",
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.JIRA_TICKET_QUESTION
+    assert plan.entity_references.jira_issue_keys == ["PAY-102"]
+    assert plan.filters.sources == [RiskSourceFilter.JIRA]
+    assert plan.requires_current_snapshot is True

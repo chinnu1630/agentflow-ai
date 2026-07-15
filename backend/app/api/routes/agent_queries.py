@@ -46,6 +46,10 @@ from app.services.agent_github_pr_resolver import (
     AgentGitHubPRNotFoundError,
     AgentGitHubPRResolver,
 )
+from app.services.agent_jira_ticket_resolver import (
+    AgentJiraTicketNotFoundError,
+    AgentJiraTicketResolver,
+)
 from app.services.agent_query_context_resolver import (
     AgentQueryContextConflictError,
     AgentQueryContextRequiredError,
@@ -114,6 +118,7 @@ async def get_executable_agent_query_plan(
         AgentIntent.EXPLAIN_SPECIFIC_RISK,
         AgentIntent.FILTER_RISKS,
         AgentIntent.GITHUB_PR_QUESTION,
+        AgentIntent.JIRA_TICKET_QUESTION,
     }:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -271,6 +276,7 @@ async def execute_agent_query(
             AgentIntent.EXPLAIN_SPECIFIC_RISK,
             AgentIntent.FILTER_RISKS,
             AgentIntent.GITHUB_PR_QUESTION,
+            AgentIntent.JIRA_TICKET_QUESTION,
         }:
             context_resolver = AgentQueryContextResolver(
                 snapshot_repository=risk_snapshot_repository,
@@ -317,6 +323,19 @@ async def execute_agent_query(
                     plan=plan,
                     release_risk=context.release_risk,
                     pull_request=pull_request,
+                )
+            elif plan.intent is AgentIntent.JIRA_TICKET_QUESTION:
+                jira_ticket_resolver = AgentJiraTicketResolver(
+                    request_id=request_id,
+                )
+                jira_issue = jira_ticket_resolver.resolve(
+                    plan=plan,
+                    release_risk=context.release_risk,
+                )
+                agent_response = response_composer.compose_jira_ticket(
+                    plan=plan,
+                    release_risk=context.release_risk,
+                    jira_issue=jira_issue,
                 )
             else:
                 agent_response = response_composer.compose(
@@ -389,6 +408,13 @@ async def execute_agent_query(
 
         await session.commit()
         return agent_response
+
+    except AgentJiraTicketNotFoundError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No persisted Jira issue matched the question.",
+        ) from exc
 
     except AgentGitHubPRNotFoundError as exc:
         await session.rollback()

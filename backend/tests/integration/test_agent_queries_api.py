@@ -21,6 +21,12 @@ from app.api.routes.agent_queries import (
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
+from app.schemas.jira import (
+    JiraIssue,
+    JiraIssuePriority,
+    JiraIssueStatus,
+    JiraIssueType,
+)
 from app.services.github_risk_collector import (
     GitHubRiskCollectionResult,
     RiskCollectionStatus,
@@ -35,6 +41,7 @@ from app.services.jira_risk_collector import (
     JiraRiskCollectionResult,
     JiraRiskCollectionStatus,
 )
+from app.services.jira_risk_rules import JiraRiskRuleEngine
 
 
 class FakeAgentGitHubRiskCollector:
@@ -101,13 +108,37 @@ class FakeAgentJiraRiskCollector:
 
         type(self).call_count += 1
 
+        now = datetime.now(UTC)
+        issue = JiraIssue(
+            issue_key="PAY-102",
+            title="Payment release blocker",
+            description="A critical payment defect blocks the release.",
+            issue_type=JiraIssueType.BUG,
+            status=JiraIssueStatus.BLOCKED,
+            priority=JiraIssuePriority.P1,
+            assignee="payments-team@example.com",
+            reporter="release-manager@example.com",
+            labels=["release-blocker"],
+            components=["payments"],
+            affected_services=["payment-service"],
+            issue_url="https://jira.example/browse/PAY-102",
+            created_at=now,
+            updated_at=now,
+            is_blocking_release=True,
+        )
+        issue_result = JiraRiskRuleEngine().evaluate_issue(
+            issue,
+            run_id=run_id,
+            evaluated_at=now,
+        )
+
         return JiraRiskCollectionResult(
             status=JiraRiskCollectionStatus.SUCCESS,
-            issues=[],
-            issue_results=[],
-            signals=[],
+            issues=[issue],
+            issue_results=[issue_result],
+            signals=list(issue_result.signals),
             error_message=None,
-            duration_ms=0.0,
+            duration_ms=10.0,
         )
 
 
@@ -551,6 +582,60 @@ async def test_github_pr_question_uses_persisted_snapshot(
         "github_pull_request"
     )
     assert follow_up_payload["citations"][0]["source_id"] == "PR-42"
+
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+
+@pytest.mark.anyio
+async def test_jira_ticket_question_uses_persisted_snapshot(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """A Jira question should use persisted evidence without recollection."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert initial_response.status_code == 200
+
+    initial_payload = initial_response.json()
+    release_run_id = initial_payload["release_risk"]["release_run"]["id"]
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What is happening with PAY-102?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert follow_up_response.status_code == 200, follow_up_response.json()
+
+    follow_up_payload = follow_up_response.json()
+
+    assert follow_up_payload["plan"]["intent"] == "jira_ticket_question"
+    assert follow_up_payload["plan"]["entity_references"][
+        "jira_issue_keys"
+    ] == ["PAY-102"]
+    assert follow_up_payload["release_risk"]["release_run"]["id"] == (
+        release_run_id
+    )
+
+    assert "PAY-102" in follow_up_payload["answer"]
+    assert "Payment release blocker" in follow_up_payload["answer"]
+    assert "release blocker" in follow_up_payload["answer"].lower()
+    assert "status: blocked" in follow_up_payload["answer"].lower()
+
+    assert len(follow_up_payload["citations"]) == 1
+    assert follow_up_payload["citations"][0]["source_type"] == "jira_issue"
+    assert follow_up_payload["citations"][0]["source_id"] == "PAY-102"
 
     assert FakeAgentGitHubRiskCollector.call_count == github_calls
     assert FakeAgentJiraRiskCollector.call_count == jira_calls

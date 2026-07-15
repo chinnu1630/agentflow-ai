@@ -287,6 +287,19 @@ class AgentQueryRouter:
                 requires_current_snapshot=True,
             )
 
+        if (
+            matched_rule is None
+            and self._JIRA_KEY_PATTERN.search(request.query) is not None
+        ):
+            matched_rule = IntentRule(
+                intent=AgentIntent.JIRA_TICKET_QUESTION,
+                response_depth=ResponseDepth.STANDARD,
+                phrases=("explicit_jira_reference",),
+                routing_reason_code="matched_jira_issue_reference",
+                priority=45,
+                requires_current_snapshot=True,
+            )
+
         if matched_rule is None:
             if not self._contains_release_context(normalized_query):
                 return self._create_out_of_scope_plan(request)
@@ -359,7 +372,11 @@ class AgentQueryRouter:
         ):
             sources.append(RiskSourceFilter.GITHUB)
 
-        if "jira" in normalized_query or "ticket" in normalized_query:
+        if (
+            "jira" in normalized_query
+            or "ticket" in normalized_query
+            or self._JIRA_KEY_PATTERN.search(normalized_query) is not None
+        ):
             sources.append(RiskSourceFilter.JIRA)
 
         if (

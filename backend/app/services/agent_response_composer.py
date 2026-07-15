@@ -11,6 +11,7 @@ from app.schemas.agent_query import (
     ResponseDepth,
 )
 from app.schemas.risk import (
+    JiraIssueRiskResponse,
     PullRequestRiskResponse,
     ReleaseRiskSummaryItemResponse,
     ReleaseRunRiskResponse,
@@ -293,6 +294,109 @@ class AgentResponseComposer:
                 "pull_request_number": pull_request.pull_request_number,
                 "source_id": pull_request.source_id,
                 "signal_count": len(pull_request.signals),
+                "citation_count": 1,
+                "approval_required": release_risk.approval_required is True,
+            },
+        )
+
+        return AgentQueryResponse(
+            answer=answer,
+            plan=plan,
+            release_risk=release_risk,
+            citations=[citation],
+            approval_required=release_risk.approval_required is True,
+        )
+
+    def compose_jira_ticket(
+        self,
+        *,
+        plan: AgentQueryPlan,
+        release_risk: ReleaseRunRiskResponse,
+        jira_issue: JiraIssueRiskResponse,
+    ) -> AgentQueryResponse:
+        """Compose a focused response for one persisted Jira issue.
+
+        Args:
+            plan: Validated Jira ticket query plan.
+            release_risk: Trusted persisted release-risk snapshot.
+            jira_issue: Persisted risk result for the requested Jira issue.
+
+        Returns:
+            Focused Jira response with a single trusted citation.
+        """
+
+        severity_rank = {
+            "low": 1,
+            "medium": 2,
+            "high": 3,
+            "critical": 4,
+        }
+
+        highest_signal = max(
+            jira_issue.signals,
+            key=lambda signal: (
+                severity_rank[signal.severity.value],
+                signal.score,
+            ),
+            default=None,
+        )
+
+        if highest_signal is None:
+            answer = (
+                f"{jira_issue.issue_key}: {jira_issue.title}. "
+                "No persisted risk signals were detected for this Jira issue."
+            )
+        else:
+            severity = highest_signal.severity.value.replace("_", " ")
+            score_percentage = round(highest_signal.score * 100)
+
+            answer = (
+                f"{jira_issue.issue_key}: {jira_issue.title} has "
+                f"{severity} severity with a {score_percentage}% risk score."
+            )
+
+            signal_lines: list[str] = []
+
+            for index, signal in enumerate(jira_issue.signals, start=1):
+                signal_text = (
+                    f"{index}. {signal.title}: {signal.description}"
+                )
+
+                if signal.evidence:
+                    evidence_items = [
+                        f"{key.replace('_', ' ')}: {value}"
+                        for key, value in sorted(signal.evidence.items())
+                    ]
+                    signal_text += (
+                        f" Evidence: {'; '.join(evidence_items)}."
+                    )
+
+                signal_lines.append(signal_text)
+
+            answer += " Detected signals: " + " ".join(signal_lines)
+
+        if release_risk.approval_required is True:
+            answer += (
+                " Human approval is required before any downstream "
+                "release notification or Slack action."
+            )
+
+        citation = AgentCitation(
+            source="jira",
+            source_type="jira_issue",
+            source_id=jira_issue.issue_key,
+            title=jira_issue.title,
+            source_url=jira_issue.issue_url,
+        )
+
+        logger.info(
+            "agent_jira_ticket_response_composed",
+            extra={
+                "run_id": self._request_id,
+                "release_run_id": str(release_risk.release_run.id),
+                "intent": plan.intent.value,
+                "jira_issue_key": jira_issue.issue_key,
+                "signal_count": len(jira_issue.signals),
                 "citation_count": 1,
                 "approval_required": release_risk.approval_required is True,
             },
