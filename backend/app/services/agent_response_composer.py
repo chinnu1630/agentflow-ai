@@ -10,7 +10,10 @@ from app.schemas.agent_query import (
     AgentQueryResponse,
     ResponseDepth,
 )
-from app.schemas.risk import ReleaseRunRiskResponse
+from app.schemas.risk import (
+    ReleaseRiskSummaryItemResponse,
+    ReleaseRunRiskResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +69,74 @@ class AgentResponseComposer:
             plan=plan,
             release_risk=release_risk,
             citations=citations,
+            approval_required=release_risk.approval_required is True,
+        )
+
+    def compose_specific_risk(
+        self,
+        *,
+        plan: AgentQueryPlan,
+        release_risk: ReleaseRunRiskResponse,
+        selected_risk: ReleaseRiskSummaryItemResponse,
+    ) -> AgentQueryResponse:
+        """Compose a focused explanation for one persisted release risk.
+
+        Args:
+            plan: Validated specific-risk query plan.
+            release_risk: Trusted persisted release-risk snapshot.
+            selected_risk: Risk selected from the persisted ranked risks.
+
+        Returns:
+            Focused response containing only the selected risk citation.
+        """
+
+        severity = selected_risk.severity.value.replace("_", " ")
+        score_percentage = round(selected_risk.score * 100)
+
+        answer = (
+            f"{selected_risk.title} is a {severity} severity risk with a "
+            f"{score_percentage}% item score. Reason: {selected_risk.reason}"
+        )
+
+        if selected_risk.evidence:
+            evidence_items = [
+                f"{key.replace('_', ' ')}: {value}"
+                for key, value in sorted(selected_risk.evidence.items())
+            ]
+            answer += f" Evidence: {'; '.join(evidence_items)}."
+
+        if release_risk.approval_required is True:
+            answer += (
+                " Human approval is required before any downstream "
+                "release notification or Slack action."
+            )
+
+        citation = AgentCitation(
+            source=selected_risk.source,
+            source_type=selected_risk.source_type,
+            source_id=selected_risk.source_id,
+            title=selected_risk.title,
+            source_url=selected_risk.source_url,
+        )
+
+        logger.info(
+            "agent_specific_risk_response_composed",
+            extra={
+                "run_id": self._request_id,
+                "release_run_id": str(release_risk.release_run.id),
+                "intent": plan.intent.value,
+                "source_type": selected_risk.source_type,
+                "source_id": selected_risk.source_id,
+                "citation_count": 1,
+                "approval_required": release_risk.approval_required is True,
+            },
+        )
+
+        return AgentQueryResponse(
+            answer=answer,
+            plan=plan,
+            release_risk=release_risk,
+            citations=[citation],
             approval_required=release_risk.approval_required is True,
         )
 

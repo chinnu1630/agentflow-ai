@@ -58,6 +58,10 @@ from app.services.agent_query_executor import (
 )
 from app.services.agent_query_router import AgentQueryRouter
 from app.services.agent_response_composer import AgentResponseComposer
+from app.services.agent_specific_risk_matcher import (
+    AgentSpecificRiskMatcher,
+    AgentSpecificRiskNotFoundError,
+)
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalService,
 )
@@ -102,6 +106,7 @@ async def get_executable_agent_query_plan(
     if plan.intent not in {
         AgentIntent.RELEASE_RISK_SUMMARY,
         AgentIntent.EXPLAIN_RISK_SCORE,
+        AgentIntent.EXPLAIN_SPECIFIC_RISK,
     }:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -254,17 +259,35 @@ async def execute_agent_query(
     response_composer = AgentResponseComposer(request_id=request_id)
 
     try:
-        if plan.intent is AgentIntent.EXPLAIN_RISK_SCORE:
+        if plan.intent in {
+            AgentIntent.EXPLAIN_RISK_SCORE,
+            AgentIntent.EXPLAIN_SPECIFIC_RISK,
+        }:
             context_resolver = AgentQueryContextResolver(
                 snapshot_repository=risk_snapshot_repository,
                 request_id=request_id,
             )
             context = await context_resolver.resolve(payload, plan)
 
-            agent_response = response_composer.compose(
-                plan=plan,
-                release_risk=context.release_risk,
-            )
+            if plan.intent is AgentIntent.EXPLAIN_SPECIFIC_RISK:
+                risk_matcher = AgentSpecificRiskMatcher(
+                    request_id=request_id,
+                )
+                selected_risk = risk_matcher.match(
+                    query=payload.query,
+                    plan=plan,
+                    release_risk=context.release_risk,
+                )
+                agent_response = response_composer.compose_specific_risk(
+                    plan=plan,
+                    release_risk=context.release_risk,
+                    selected_risk=selected_risk,
+                )
+            else:
+                agent_response = response_composer.compose(
+                    plan=plan,
+                    release_risk=context.release_risk,
+                )
 
             await session.commit()
             return agent_response
@@ -331,6 +354,13 @@ async def execute_agent_query(
 
         await session.commit()
         return agent_response
+
+    except AgentSpecificRiskNotFoundError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No persisted risk matched the follow-up question.",
+        ) from exc
 
     except AgentQueryContextRequiredError as exc:
         await session.rollback()

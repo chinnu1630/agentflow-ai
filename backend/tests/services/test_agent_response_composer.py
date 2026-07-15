@@ -204,3 +204,43 @@ def test_includes_human_approval_warning() -> None:
         "Human approval is required before any downstream "
         "release notification or Slack action." in response.answer
     )
+
+
+def test_composes_focused_specific_risk_explanation() -> None:
+    """Specific-risk responses should explain only the matched persisted risk."""
+
+    payload = build_snapshot_payload(
+        release_run_id=uuid4(),
+        approval_request_id=uuid4(),
+    )
+    payload["release_summary"]["top_risks"][0]["evidence"] = {
+        "ci_status": "failed",
+        "service": "payment-api",
+    }
+
+    release_risk = ReleaseRunRiskResponse.model_validate(payload)
+    selected_risk = release_risk.release_summary.top_risks[0]
+    plan = build_plan(ResponseDepth.DEEP).model_copy(
+        update={
+            "intent": AgentIntent.EXPLAIN_SPECIFIC_RISK,
+            "routing_reason_code": "test_specific_risk_explanation",
+        }
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_specific_risk(
+        plan=plan,
+        release_risk=release_risk,
+        selected_risk=selected_risk,
+    )
+
+    assert "Payment API has failing CI" in response.answer
+    assert "CI failed on a release-critical service." in response.answer
+    assert "high severity" in response.answer
+    assert "78%" in response.answer
+    assert "ci status: failed" in response.answer.lower()
+    assert "service: payment-api" in response.answer.lower()
+    assert len(response.citations) == 1
+    assert response.citations[0].source_id == "1"
+    assert response.release_risk is release_risk
+    assert response.approval_required is True

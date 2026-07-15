@@ -25,6 +25,12 @@ from app.services.github_risk_collector import (
     GitHubRiskCollectionResult,
     RiskCollectionStatus,
 )
+from app.services.github_risk_rules import (
+    PullRequestRiskResult,
+    RiskCategory,
+    RiskSeverity,
+    RiskSignal,
+)
 from app.services.jira_risk_collector import (
     JiraRiskCollectionResult,
     JiraRiskCollectionStatus,
@@ -45,13 +51,37 @@ class FakeAgentGitHubRiskCollector:
 
         type(self).call_count += 1
 
+        signal = RiskSignal(
+            source_id="PR-42",
+            source_url="https://github.example/pulls/42",
+            rule_id="integration_ci_failure",
+            category=RiskCategory.CI_FAILURE,
+            severity=RiskSeverity.HIGH,
+            score=0.85,
+            title="Payment API has failing CI",
+            description="CI failed on a release-critical payment service.",
+            evidence={
+                "ci_status": "failed",
+                "service": "payment-api",
+            },
+        )
+        risk_result = PullRequestRiskResult(
+            source_id="PR-42",
+            source_url="https://github.example/pulls/42",
+            pull_request_number=42,
+            total_score=0.85,
+            max_severity=RiskSeverity.HIGH,
+            signals=[signal],
+            evaluated_at=datetime.now(UTC),
+        )
+
         return GitHubRiskCollectionResult(
             status=RiskCollectionStatus.SUCCESS,
-            pull_request_count=2,
-            risk_result_count=2,
-            total_signal_count=3,
+            pull_request_count=1,
+            risk_result_count=1,
+            total_signal_count=1,
             high_risk_count=1,
-            risk_results=[],
+            risk_results=[risk_result],
             collected_at=datetime.now(UTC),
             duration_ms=10.0,
         )
@@ -365,3 +395,55 @@ async def test_empty_agent_query_is_rejected(
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_specific_risk_follow_up_uses_persisted_snapshot(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """A PR-specific follow-up should explain one persisted risk without recollection."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert initial_response.status_code == 200
+
+    initial_payload = initial_response.json()
+    release_run_id = initial_payload["release_risk"]["release_run"]["id"]
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Why is PR 42 dangerous?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert follow_up_response.status_code == 200, follow_up_response.json()
+
+    follow_up_payload = follow_up_response.json()
+
+    assert follow_up_payload["plan"]["intent"] == "explain_specific_risk"
+    assert follow_up_payload["plan"]["response_depth"] == "deep"
+    assert follow_up_payload["release_risk"]["release_run"]["id"] == release_run_id
+
+    assert "Payment API has failing CI" in follow_up_payload["answer"]
+    assert "CI failed on a release-critical payment service." in (
+        follow_up_payload["answer"]
+    )
+
+    assert len(follow_up_payload["citations"]) == 1
+    assert follow_up_payload["citations"][0]["source_type"] == (
+        "github_pull_request"
+    )
+    assert follow_up_payload["citations"][0]["source_id"] == "PR-42"
+
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls
