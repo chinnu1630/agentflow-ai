@@ -503,6 +503,99 @@ class AgentResponseComposer:
             approval_required=release_risk.approval_required is True,
         )
 
+    def compose_historical_risks(
+        self,
+        *,
+        plan: AgentQueryPlan,
+        release_risk: ReleaseRunRiskResponse,
+        historical_release_risks: list[ReleaseRunRiskResponse],
+    ) -> AgentQueryResponse:
+        """Compose persisted risk history from previous release runs.
+
+        Args:
+            plan: Validated historical-risk query plan.
+            release_risk: Trusted current release-risk snapshot.
+            historical_release_risks: Trusted previous release snapshots.
+
+        Returns:
+            Historical summary with citations from previous persisted risks.
+        """
+        historical_count = len(historical_release_risks)
+        release_label = "release" if historical_count == 1 else "releases"
+
+        if not historical_release_risks:
+            answer = "No previous releases with persisted risk history were found."
+            citations: list[AgentCitation] = []
+        else:
+            history_lines: list[str] = []
+            citations = []
+
+            for index, historical_risk in enumerate(
+                historical_release_risks,
+                start=1,
+            ):
+                severity = (
+                    historical_risk.release_summary.overall_severity.value
+                    .replace("_", " ")
+                )
+                risk_score_text = (
+                    f"{round(historical_risk.risk_score.score * 100)}% risk score"
+                    if historical_risk.risk_score is not None
+                    else "no persisted risk score"
+                )
+                top_risk_titles = [
+                    risk.title
+                    for risk in historical_risk.release_summary.top_risks[:3]
+                ]
+                top_risks_text = (
+                    ", ".join(top_risk_titles)
+                    if top_risk_titles
+                    else "no ranked top risks"
+                )
+
+                history_lines.append(
+                    f"{index}. {historical_risk.release_run.run_id}: "
+                    f"{severity} severity, {risk_score_text}. "
+                    f"Top risks: {top_risks_text}."
+                )
+                for citation in self._build_citations(historical_risk):
+                    citations.append(
+                        citation.model_copy(
+                            update={
+                                "title": (
+                                    f"[{historical_risk.release_run.run_id}] "
+                                    f"{citation.title}"
+                                ),
+                            }
+                        )
+                    )
+
+            answer = (
+                f"Found {historical_count} previous {release_label} "
+                "with persisted risk history. "
+                + " ".join(history_lines)
+            )
+
+        logger.info(
+            "agent_historical_risk_response_composed",
+            extra={
+                "run_id": self._request_id,
+                "release_run_id": str(release_risk.release_run.id),
+                "intent": plan.intent.value,
+                "historical_release_count": historical_count,
+                "citation_count": len(citations),
+                "approval_required": release_risk.approval_required is True,
+            },
+        )
+
+        return AgentQueryResponse(
+            answer=answer,
+            plan=plan,
+            release_risk=release_risk,
+            citations=citations,
+            approval_required=release_risk.approval_required is True,
+        )
+
     def compose_workflow_status(
         self,
         *,

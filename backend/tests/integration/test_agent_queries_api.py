@@ -758,3 +758,63 @@ async def test_approval_status_question_uses_latest_durable_decision(
 
     assert FakeAgentGitHubRiskCollector.call_count == github_calls
     assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+@pytest.mark.anyio
+async def test_historical_risk_question_uses_previous_persisted_releases(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Historical questions should use previous snapshots without recollection."""
+
+    previous_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert previous_response.status_code == 200
+    previous_payload = previous_response.json()
+    previous_run_id = previous_payload["release_risk"]["release_run"]["run_id"]
+
+    current_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert current_response.status_code == 200
+    current_payload = current_response.json()
+    current_release_run_id = current_payload["release_risk"]["release_run"]["id"]
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    historical_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Did this happen before?",
+            "release_run_id": current_release_run_id,
+        },
+    )
+
+    assert historical_response.status_code == 200, historical_response.json()
+
+    historical_payload = historical_response.json()
+
+    assert historical_payload["plan"]["intent"] == "historical_risk_lookup"
+    assert historical_payload["plan"]["response_depth"] == "deep"
+    assert historical_payload["release_risk"]["release_run"]["id"] == (
+        current_release_run_id
+    )
+
+    assert (
+        "Found 1 previous release with persisted risk history."
+        in historical_payload["answer"]
+    )
+    assert previous_run_id in historical_payload["answer"]
+    assert "Payment API has failing CI" in historical_payload["answer"]
+    assert len(historical_payload["citations"]) >= 1
+
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls

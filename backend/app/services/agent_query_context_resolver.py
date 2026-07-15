@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
 
@@ -39,6 +40,16 @@ class RiskSnapshotRepositoryProtocol(Protocol):
         release_run_id: UUID,
     ) -> RiskSnapshotRecordProtocol | None:
         """Return the latest persisted snapshot for a release run."""
+
+        ...
+
+    async def list_latest_previous_release_snapshots(
+        self,
+        *,
+        exclude_release_run_id: UUID,
+        limit: int = 10,
+    ) -> Sequence[RiskSnapshotRecordProtocol]:
+        """Return the latest snapshot from each previous release run."""
 
         ...
 
@@ -115,27 +126,10 @@ class AgentQueryContextResolver:
         if snapshot is None:
             raise AgentQuerySnapshotNotFoundError("No persisted release-risk snapshot was found.")
 
-        if snapshot.release_run_id != release_run_id:
-            raise AgentQuerySnapshotValidationError("Snapshot release-run context is inconsistent.")
-
-        try:
-            payload = json.loads(snapshot.risk_payload_json)
-        except json.JSONDecodeError as exc:
-            raise AgentQuerySnapshotValidationError(
-                "Persisted release-risk snapshot contains invalid JSON."
-            ) from exc
-
-        try:
-            release_risk = ReleaseRunRiskResponse.model_validate(payload)
-        except ValidationError as exc:
-            raise AgentQuerySnapshotValidationError(
-                "Persisted release-risk snapshot failed validation."
-            ) from exc
-
-        if release_risk.release_run.id != release_run_id:
-            raise AgentQuerySnapshotValidationError(
-                "Snapshot payload belongs to a different release run."
-            )
+        release_risk = self._validate_snapshot(
+            snapshot,
+            expected_release_run_id=release_run_id,
+        )
 
         logger.info(
             "agent_query_context_resolved",
@@ -154,6 +148,101 @@ class AgentQueryContextResolver:
             snapshot_version=snapshot.snapshot_version,
             release_risk=release_risk,
         )
+
+    async def resolve_historical_release_risks(
+        self,
+        *,
+        exclude_release_run_id: UUID,
+        limit: int = 10,
+    ) -> list[ReleaseRunRiskResponse]:
+        """Load and validate previous persisted release-risk snapshots.
+
+        Args:
+            exclude_release_run_id: Current release run to exclude.
+            limit: Maximum number of previous releases to load.
+
+        Returns:
+            Validated previous release-risk responses ordered newest first.
+
+        Raises:
+            AgentQueryContextResolverError: When repository access fails.
+            AgentQuerySnapshotValidationError: When persisted data is invalid.
+        """
+        try:
+            snapshots = (
+                await self._snapshot_repository
+                .list_latest_previous_release_snapshots(
+                    exclude_release_run_id=exclude_release_run_id,
+                    limit=limit,
+                )
+            )
+        except ReleaseRunRiskSnapshotRepositoryError as exc:
+            raise AgentQueryContextResolverError(
+                "Failed to load persisted historical risk context."
+            ) from exc
+
+        historical_release_risks: list[ReleaseRunRiskResponse] = []
+
+        for snapshot in snapshots:
+            if snapshot.release_run_id == exclude_release_run_id:
+                raise AgentQuerySnapshotValidationError(
+                    "Historical snapshot unexpectedly belongs to the "
+                    "current release run."
+                )
+
+            historical_release_risks.append(
+                self._validate_snapshot(
+                    snapshot,
+                    expected_release_run_id=snapshot.release_run_id,
+                )
+            )
+
+        logger.info(
+            "agent_query_historical_context_resolved",
+            extra={
+                "run_id": self._request_id,
+                "exclude_release_run_id": str(exclude_release_run_id),
+                "limit": limit,
+                "historical_release_count": len(
+                    historical_release_risks
+                ),
+            },
+        )
+
+        return historical_release_risks
+
+    @staticmethod
+    def _validate_snapshot(
+        snapshot: RiskSnapshotRecordProtocol,
+        *,
+        expected_release_run_id: UUID,
+    ) -> ReleaseRunRiskResponse:
+        """Validate one persisted snapshot against its database ownership."""
+        if snapshot.release_run_id != expected_release_run_id:
+            raise AgentQuerySnapshotValidationError(
+                "Snapshot release-run context is inconsistent."
+            )
+
+        try:
+            payload = json.loads(snapshot.risk_payload_json)
+        except json.JSONDecodeError as exc:
+            raise AgentQuerySnapshotValidationError(
+                "Persisted release-risk snapshot contains invalid JSON."
+            ) from exc
+
+        try:
+            release_risk = ReleaseRunRiskResponse.model_validate(payload)
+        except ValidationError as exc:
+            raise AgentQuerySnapshotValidationError(
+                "Persisted release-risk snapshot failed validation."
+            ) from exc
+
+        if release_risk.release_run.id != expected_release_run_id:
+            raise AgentQuerySnapshotValidationError(
+                "Snapshot payload belongs to a different release run."
+            )
+
+        return release_risk
 
     @staticmethod
     def _resolve_release_run_id(

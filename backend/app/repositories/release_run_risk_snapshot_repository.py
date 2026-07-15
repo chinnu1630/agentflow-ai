@@ -183,6 +183,92 @@ class ReleaseRunRiskSnapshotRepository:
                 "Failed to fetch latest release-risk snapshot."
             ) from exc
 
+    async def list_latest_previous_release_snapshots(
+        self,
+        *,
+        exclude_release_run_id: UUID,
+        limit: int = 10,
+    ) -> Sequence[ReleaseRunRiskSnapshot]:
+        """List the latest snapshot from each previous release run.
+
+        Args:
+            exclude_release_run_id: Current release run to exclude.
+            limit: Maximum number of previous release snapshots to return.
+
+        Returns:
+            Latest snapshot per previous release run, newest first.
+
+        Raises:
+            ValueError: If limit is outside the supported range.
+            ReleaseRunRiskSnapshotRepositoryError: If the query fails.
+        """
+        if limit <= 0:
+            raise ValueError("limit must be greater than 0.")
+
+        if limit > 100:
+            raise ValueError("limit cannot exceed 100.")
+
+        try:
+            ranked_snapshots = (
+                select(
+                    ReleaseRunRiskSnapshot.id.label("snapshot_id"),
+                    func.row_number()
+                    .over(
+                        partition_by=ReleaseRunRiskSnapshot.release_run_id,
+                        order_by=ReleaseRunRiskSnapshot.snapshot_version.desc(),
+                    )
+                    .label("snapshot_rank"),
+                )
+                .where(
+                    ReleaseRunRiskSnapshot.release_run_id
+                    != exclude_release_run_id
+                )
+                .subquery()
+            )
+
+            statement = (
+                select(ReleaseRunRiskSnapshot)
+                .join(
+                    ranked_snapshots,
+                    ReleaseRunRiskSnapshot.id
+                    == ranked_snapshots.c.snapshot_id,
+                )
+                .where(ranked_snapshots.c.snapshot_rank == 1)
+                .order_by(
+                    ReleaseRunRiskSnapshot.created_at.desc(),
+                    ReleaseRunRiskSnapshot.release_run_id.asc(),
+                )
+                .limit(limit)
+            )
+
+            result = await self._session.execute(statement)
+            snapshots = result.scalars().all()
+
+            logger.info(
+                "latest_previous_release_risk_snapshots_listed",
+                extra={
+                    "request_id": self._request_id,
+                    "exclude_release_run_id": str(exclude_release_run_id),
+                    "limit": limit,
+                    "count": len(snapshots),
+                },
+            )
+
+            return snapshots
+
+        except SQLAlchemyError as exc:
+            logger.exception(
+                "latest_previous_release_risk_snapshots_list_failed",
+                extra={
+                    "request_id": self._request_id,
+                    "exclude_release_run_id": str(exclude_release_run_id),
+                    "limit": limit,
+                },
+            )
+            raise ReleaseRunRiskSnapshotRepositoryError(
+                "Failed to list previous release-risk snapshots."
+            ) from exc
+
     async def list_by_release_run_id(
         self,
         release_run_id: UUID,

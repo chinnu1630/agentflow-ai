@@ -46,13 +46,17 @@ class FakeSnapshotRepository:
     def __init__(
         self,
         snapshot: FakeSnapshot | None = None,
+        historical_snapshots: list[FakeSnapshot] | None = None,
         error: Exception | None = None,
     ) -> None:
         """Initialize the fake repository."""
 
         self.snapshot = snapshot
+        self.historical_snapshots = historical_snapshots or []
         self.error = error
         self.requested_release_run_id: UUID | None = None
+        self.excluded_release_run_id: UUID | None = None
+        self.historical_limit: int | None = None
 
     async def get_latest_by_release_run_id(
         self,
@@ -66,6 +70,22 @@ class FakeSnapshotRepository:
             raise self.error
 
         return self.snapshot
+
+    async def list_latest_previous_release_snapshots(
+        self,
+        *,
+        exclude_release_run_id: UUID,
+        limit: int = 10,
+    ) -> list[FakeSnapshot]:
+        """Return configured historical snapshots."""
+
+        self.excluded_release_run_id = exclude_release_run_id
+        self.historical_limit = limit
+
+        if self.error is not None:
+            raise self.error
+
+        return self.historical_snapshots
 
 
 @pytest.fixture
@@ -337,3 +357,31 @@ async def test_wraps_snapshot_repository_failure() -> None:
             ),
             build_plan(release_run_id),
         )
+
+@pytest.mark.anyio
+async def test_resolves_validated_historical_snapshots() -> None:
+    """Resolver should validate previous persisted release snapshots."""
+
+    current_release_run_id = uuid4()
+    previous_release_run_id = uuid4()
+    previous_snapshot = build_snapshot(previous_release_run_id)
+    repository = FakeSnapshotRepository(
+        historical_snapshots=[previous_snapshot],
+    )
+    resolver = AgentQueryContextResolver(
+        snapshot_repository=repository,
+        request_id="request-123",
+    )
+
+    historical_release_risks = await resolver.resolve_historical_release_risks(
+        exclude_release_run_id=current_release_run_id,
+        limit=5,
+    )
+
+    assert repository.excluded_release_run_id == current_release_run_id
+    assert repository.historical_limit == 5
+    assert len(historical_release_risks) == 1
+    assert (
+        historical_release_risks[0].release_run.id
+        == previous_release_run_id
+    )

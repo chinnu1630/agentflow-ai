@@ -501,3 +501,44 @@ def test_composes_latest_approval_status_instead_of_snapshot_status() -> None:
     assert response.citations == []
     assert response.release_risk is release_risk
     assert response.approval_required is True
+
+def test_composes_historical_risk_lookup_from_previous_snapshots() -> None:
+    """Historical responses should summarize trusted previous release snapshots."""
+    current_release_risk = build_release_risk_response()
+    previous_release_risk = build_release_risk_response().model_copy(
+        update={
+            "release_run": build_release_risk_response().release_run.model_copy(
+                update={
+                    "id": uuid4(),
+                    "run_id": "release-run-previous",
+                }
+            ),
+        }
+    )
+    plan = build_plan(ResponseDepth.DEEP).model_copy(
+        update={
+            "intent": AgentIntent.HISTORICAL_RISK_LOOKUP,
+            "requires_historical_lookup": True,
+            "routing_reason_code": "test_historical_risk_lookup",
+        }
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_historical_risks(
+        plan=plan,
+        release_risk=current_release_risk,
+        historical_release_risks=[previous_release_risk],
+    )
+
+    assert "Found 1 previous release with persisted risk history." in response.answer
+    assert "release-run-previous" in response.answer
+    assert "high severity" in response.answer
+    assert "78% risk score" in response.answer
+    assert "Payment API has failing CI" in response.answer
+    assert response.release_risk is current_release_risk
+    assert response.approval_required is True
+    assert len(response.citations) == 1
+    assert response.citations[0].source_type == "github_pull_request"
+    assert response.citations[0].title.startswith(
+        "[release-run-previous] "
+    )

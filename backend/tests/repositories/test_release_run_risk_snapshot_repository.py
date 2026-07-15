@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -329,3 +330,107 @@ def test_create_snapshot_command_normalizes_text_fields() -> None:
 
     assert command.overall_severity == "high"
     assert command.approval_status_at_snapshot == "pending"
+
+@pytest.mark.anyio
+async def test_list_latest_previous_release_snapshots_returns_latest_per_run(
+    session: AsyncSession,
+) -> None:
+    """Repository should return the newest snapshot from each previous run."""
+    current_release_run = await create_test_release_run(session)
+    older_release_run = await create_test_release_run(session)
+    newer_release_run = await create_test_release_run(session)
+    oldest_release_run = await create_test_release_run(session)
+
+    repository = ReleaseRunRiskSnapshotRepository(
+        session=session,
+        request_id="test-request-id",
+    )
+    reference_time = datetime(2026, 7, 15, 12, 0, tzinfo=UTC)
+
+    current_snapshot = await repository.create_snapshot(
+        CreateReleaseRunRiskSnapshotCommand(
+            release_run_id=current_release_run.id,
+            risk_payload={"release": "current"},
+            overall_severity="critical",
+            approval_required=True,
+            approval_status_at_snapshot="pending",
+        )
+    )
+    older_version_one = await repository.create_snapshot(
+        CreateReleaseRunRiskSnapshotCommand(
+            release_run_id=older_release_run.id,
+            risk_payload={"release": "older", "version": 1},
+            overall_severity="medium",
+            approval_required=False,
+            approval_status_at_snapshot="not_required",
+        )
+    )
+    older_version_two = await repository.create_snapshot(
+        CreateReleaseRunRiskSnapshotCommand(
+            release_run_id=older_release_run.id,
+            risk_payload={"release": "older", "version": 2},
+            overall_severity="high",
+            approval_required=True,
+            approval_status_at_snapshot="pending",
+        )
+    )
+    newer_snapshot = await repository.create_snapshot(
+        CreateReleaseRunRiskSnapshotCommand(
+            release_run_id=newer_release_run.id,
+            risk_payload={"release": "newer"},
+            overall_severity="critical",
+            approval_required=True,
+            approval_status_at_snapshot="pending",
+        )
+    )
+    oldest_snapshot = await repository.create_snapshot(
+        CreateReleaseRunRiskSnapshotCommand(
+            release_run_id=oldest_release_run.id,
+            risk_payload={"release": "oldest"},
+            overall_severity="low",
+            approval_required=False,
+            approval_status_at_snapshot="not_required",
+        )
+    )
+
+    current_snapshot.created_at = reference_time
+    older_version_one.created_at = reference_time - timedelta(hours=4)
+    older_version_two.created_at = reference_time - timedelta(hours=3)
+    newer_snapshot.created_at = reference_time - timedelta(hours=1)
+    oldest_snapshot.created_at = reference_time - timedelta(hours=5)
+
+    await session.commit()
+
+    snapshots = await repository.list_latest_previous_release_snapshots(
+        exclude_release_run_id=current_release_run.id,
+        limit=2,
+    )
+
+    assert [snapshot.id for snapshot in snapshots] == [
+        newer_snapshot.id,
+        older_version_two.id,
+    ]
+    assert older_version_one.id not in {snapshot.id for snapshot in snapshots}
+    assert current_snapshot.id not in {snapshot.id for snapshot in snapshots}
+
+@pytest.mark.anyio
+async def test_list_latest_previous_release_snapshots_validates_limit(
+    session: AsyncSession,
+) -> None:
+    """Repository should reject unsafe historical lookup limits."""
+    repository = ReleaseRunRiskSnapshotRepository(
+        session=session,
+        request_id="test-request-id",
+    )
+
+    with pytest.raises(ValueError, match="limit must be greater than 0"):
+        await repository.list_latest_previous_release_snapshots(
+            exclude_release_run_id=uuid4(),
+            limit=0,
+        )
+
+    with pytest.raises(ValueError, match="limit cannot exceed 100"):
+        await repository.list_latest_previous_release_snapshots(
+            exclude_release_run_id=uuid4(),
+            limit=101,
+        )
