@@ -596,6 +596,172 @@ class AgentResponseComposer:
             approval_required=release_risk.approval_required is True,
         )
 
+    def compose_previous_release_comparison(
+        self,
+        *,
+        plan: AgentQueryPlan,
+        release_risk: ReleaseRunRiskResponse,
+        previous_release_risk: ReleaseRunRiskResponse | None,
+    ) -> AgentQueryResponse:
+        """Compare the current persisted risk snapshot with the previous release.
+
+        Args:
+            plan: Validated previous-release comparison plan.
+            release_risk: Trusted current release-risk snapshot.
+            previous_release_risk: Immediately previous persisted release snapshot.
+
+        Returns:
+            Deterministic comparison with release-qualified citations.
+        """
+        if previous_release_risk is None:
+            answer = (
+                "No previous release with persisted risk history was found "
+                "for comparison."
+            )
+            citations: list[AgentCitation] = []
+        else:
+            current_severity = (
+                release_risk.release_summary.overall_severity.value
+            )
+            previous_severity = (
+                previous_release_risk.release_summary.overall_severity.value
+            )
+            severity_rank = {
+                "low": 1,
+                "medium": 2,
+                "high": 3,
+                "critical": 4,
+            }
+
+            if severity_rank[current_severity] > severity_rank[previous_severity]:
+                severity_change = (
+                    f"severity increased from {previous_severity} "
+                    f"to {current_severity}"
+                )
+            elif severity_rank[current_severity] < severity_rank[previous_severity]:
+                severity_change = (
+                    f"severity decreased from {previous_severity} "
+                    f"to {current_severity}"
+                )
+            else:
+                severity_change = f"severity remained {current_severity}"
+
+            current_score = (
+                release_risk.risk_score.score
+                if release_risk.risk_score is not None
+                else None
+            )
+            previous_score = (
+                previous_release_risk.risk_score.score
+                if previous_release_risk.risk_score is not None
+                else None
+            )
+
+            if current_score is not None and previous_score is not None:
+                score_delta = round((current_score - previous_score) * 100)
+
+                if score_delta > 0:
+                    score_change = (
+                        f"risk score increased by {score_delta} "
+                        "percentage points"
+                    )
+                elif score_delta < 0:
+                    score_change = (
+                        f"risk score decreased by {abs(score_delta)} "
+                        "percentage points"
+                    )
+                else:
+                    score_change = "risk score did not change"
+            else:
+                score_change = "risk score comparison is unavailable"
+
+            current_signal_count = (
+                release_risk.release_summary.total_signal_count
+            )
+            previous_signal_count = (
+                previous_release_risk.release_summary.total_signal_count
+            )
+
+            if current_signal_count > previous_signal_count:
+                signal_change = (
+                    f"signal count increased from {previous_signal_count} "
+                    f"to {current_signal_count}"
+                )
+            elif current_signal_count < previous_signal_count:
+                signal_change = (
+                    f"signal count decreased from {previous_signal_count} "
+                    f"to {current_signal_count}"
+                )
+            else:
+                signal_change = (
+                    f"signal count remained {current_signal_count}"
+                )
+
+            previous_titles = {
+                risk.title
+                for risk in previous_release_risk.release_summary.top_risks
+            }
+            new_top_risk_titles = [
+                risk.title
+                for risk in release_risk.release_summary.top_risks
+                if risk.title not in previous_titles
+            ]
+            new_risks_text = (
+                ", ".join(new_top_risk_titles[:3])
+                if new_top_risk_titles
+                else "no newly ranked top risks"
+            )
+
+            answer = (
+                f"Compared with "
+                f"{previous_release_risk.release_run.run_id}, "
+                f"{severity_change}; {score_change}; and {signal_change}. "
+                f"New top risks: {new_risks_text}."
+            )
+
+            citations = []
+
+            for compared_risk in (
+                previous_release_risk,
+                release_risk,
+            ):
+                for citation in self._build_citations(compared_risk):
+                    citations.append(
+                        citation.model_copy(
+                            update={
+                                "title": (
+                                    f"[{compared_risk.release_run.run_id}] "
+                                    f"{citation.title}"
+                                ),
+                            }
+                        )
+                    )
+
+        logger.info(
+            "agent_previous_release_comparison_composed",
+            extra={
+                "run_id": self._request_id,
+                "release_run_id": str(release_risk.release_run.id),
+                "previous_release_run_id": (
+                    str(previous_release_risk.release_run.id)
+                    if previous_release_risk is not None
+                    else None
+                ),
+                "intent": plan.intent.value,
+                "previous_release_found": previous_release_risk is not None,
+                "citation_count": len(citations),
+                "approval_required": release_risk.approval_required is True,
+            },
+        )
+
+        return AgentQueryResponse(
+            answer=answer,
+            plan=plan,
+            release_risk=release_risk,
+            citations=citations,
+            approval_required=release_risk.approval_required is True,
+        )
+
     def compose_workflow_status(
         self,
         *,

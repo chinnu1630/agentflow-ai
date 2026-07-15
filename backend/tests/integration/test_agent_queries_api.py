@@ -818,3 +818,64 @@ async def test_historical_risk_question_uses_previous_persisted_releases(
 
     assert FakeAgentGitHubRiskCollector.call_count == github_calls
     assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+@pytest.mark.anyio
+async def test_previous_release_comparison_uses_persisted_snapshots(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Comparison questions should use current and previous persisted snapshots."""
+
+    previous_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert previous_response.status_code == 200
+    previous_payload = previous_response.json()
+    previous_run_id = previous_payload["release_risk"]["release_run"]["run_id"]
+
+    current_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert current_response.status_code == 200
+    current_payload = current_response.json()
+    current_release_run_id = current_payload["release_risk"]["release_run"]["id"]
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    comparison_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Compare this with the previous release.",
+            "release_run_id": current_release_run_id,
+        },
+    )
+
+    assert comparison_response.status_code == 200, comparison_response.json()
+
+    comparison_payload = comparison_response.json()
+
+    assert (
+        comparison_payload["plan"]["intent"]
+        == "compare_with_previous_release"
+    )
+    assert comparison_payload["plan"]["response_depth"] == "deep"
+    assert comparison_payload["release_risk"]["release_run"]["id"] == (
+        current_release_run_id
+    )
+
+    assert f"Compared with {previous_run_id}" in comparison_payload["answer"]
+    assert "severity remained critical" in comparison_payload["answer"]
+    assert "risk score did not change" in comparison_payload["answer"]
+    assert "signal count remained 5" in comparison_payload["answer"]
+    assert len(comparison_payload["citations"]) >= 1
+
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls

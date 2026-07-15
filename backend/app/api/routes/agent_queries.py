@@ -122,6 +122,7 @@ async def get_executable_agent_query_plan(
         AgentIntent.WORKFLOW_STATUS_QUESTION,
         AgentIntent.APPROVAL_STATUS_QUESTION,
         AgentIntent.HISTORICAL_RISK_LOOKUP,
+        AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
     }:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -287,6 +288,7 @@ async def execute_agent_query(
             AgentIntent.WORKFLOW_STATUS_QUESTION,
             AgentIntent.APPROVAL_STATUS_QUESTION,
             AgentIntent.HISTORICAL_RISK_LOOKUP,
+            AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
         }:
             context_resolver = AgentQueryContextResolver(
                 snapshot_repository=risk_snapshot_repository,
@@ -374,6 +376,25 @@ async def execute_agent_query(
                     plan=plan,
                     release_risk=context.release_risk,
                     historical_release_risks=historical_release_risks,
+                )
+            elif plan.intent is AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE:
+                previous_release_risks = (
+                    await context_resolver.resolve_historical_release_risks(
+                        exclude_release_run_id=context.release_run_id,
+                        limit=1,
+                    )
+                )
+                previous_release_risk = (
+                    previous_release_risks[0]
+                    if previous_release_risks
+                    else None
+                )
+                agent_response = (
+                    response_composer.compose_previous_release_comparison(
+                        plan=plan,
+                        release_risk=context.release_risk,
+                        previous_release_risk=previous_release_risk,
+                    )
                 )
             else:
                 agent_response = response_composer.compose(

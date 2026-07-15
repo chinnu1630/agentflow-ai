@@ -542,3 +542,80 @@ def test_composes_historical_risk_lookup_from_previous_snapshots() -> None:
     assert response.citations[0].title.startswith(
         "[release-run-previous] "
     )
+
+def test_composes_previous_release_comparison() -> None:
+    """Comparison responses should explain changes from the previous release."""
+    current_release_risk = build_release_risk_response()
+
+    previous_payload = build_snapshot_payload(
+        release_run_id=uuid4(),
+        approval_request_id=None,
+    )
+    previous_payload["release_run"]["run_id"] = "release-run-previous"
+    previous_payload["release_summary"]["overall_severity"] = "medium"
+    previous_payload["release_summary"]["total_signal_count"] = 0
+    previous_payload["release_summary"]["high_risk_count"] = 0
+    previous_payload["release_summary"]["top_risks"] = []
+    previous_payload["risk_score"]["score"] = 0.45
+    previous_payload["risk_score"]["risk_level"] = "medium"
+    previous_payload["approval_required"] = False
+    previous_payload["approval_request_id"] = None
+    previous_payload["approval_status"] = "not_required"
+
+    previous_release_risk = ReleaseRunRiskResponse.model_validate(
+        previous_payload
+    )
+    plan = build_plan(ResponseDepth.DEEP).model_copy(
+        update={
+            "intent": AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
+            "requires_current_snapshot": True,
+            "requires_historical_lookup": True,
+            "routing_reason_code": "test_previous_release_comparison",
+        }
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_previous_release_comparison(
+        plan=plan,
+        release_risk=current_release_risk,
+        previous_release_risk=previous_release_risk,
+    )
+
+    assert "Compared with release-run-previous" in response.answer
+    assert "severity increased from medium to high" in response.answer
+    assert "risk score increased by 33 percentage points" in response.answer
+    assert "signal count increased from 0 to 1" in response.answer
+    assert "Payment API has failing CI" in response.answer
+    assert response.release_risk is current_release_risk
+    assert response.approval_required is True
+    assert len(response.citations) == 1
+    assert response.citations[0].title.startswith(
+        f"[{current_release_risk.release_run.run_id}] "
+    )
+
+def test_composes_previous_release_comparison_without_history() -> None:
+    """Comparison responses should degrade gracefully when history is absent."""
+    release_risk = build_release_risk_response()
+    plan = build_plan(ResponseDepth.DEEP).model_copy(
+        update={
+            "intent": AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
+            "requires_current_snapshot": True,
+            "requires_historical_lookup": True,
+            "routing_reason_code": "test_previous_release_comparison",
+        }
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_previous_release_comparison(
+        plan=plan,
+        release_risk=release_risk,
+        previous_release_risk=None,
+    )
+
+    assert response.answer == (
+        "No previous release with persisted risk history was found "
+        "for comparison."
+    )
+    assert response.release_risk is release_risk
+    assert response.approval_required is True
+    assert response.citations == []
