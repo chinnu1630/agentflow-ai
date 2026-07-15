@@ -639,3 +639,52 @@ async def test_jira_ticket_question_uses_persisted_snapshot(
 
     assert FakeAgentGitHubRiskCollector.call_count == github_calls
     assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+
+@pytest.mark.anyio
+async def test_workflow_status_question_uses_persisted_snapshot(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Workflow-status questions should use persisted state without recollection."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert initial_response.status_code == 200
+
+    initial_payload = initial_response.json()
+    release_run_id = initial_payload["release_risk"]["release_run"]["id"]
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What is the workflow status?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert follow_up_response.status_code == 200, follow_up_response.json()
+
+    follow_up_payload = follow_up_response.json()
+
+    assert follow_up_payload["plan"]["intent"] == "workflow_status_question"
+    assert follow_up_payload["plan"]["response_depth"] == "brief"
+    assert follow_up_payload["release_risk"]["release_run"]["id"] == (
+        release_run_id
+    )
+
+    assert "Workflow status:" in follow_up_payload["answer"]
+    assert "GitHub collection: success." in follow_up_payload["answer"]
+    assert "Jira collection: success." in follow_up_payload["answer"]
+    assert "Approval status:" in follow_up_payload["answer"]
+    assert follow_up_payload["citations"] == []
+
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls

@@ -410,6 +410,83 @@ class AgentResponseComposer:
             approval_required=release_risk.approval_required is True,
         )
 
+    def compose_workflow_status(
+        self,
+        *,
+        plan: AgentQueryPlan,
+        release_risk: ReleaseRunRiskResponse,
+    ) -> AgentQueryResponse:
+        """Compose workflow status from a trusted persisted snapshot.
+
+        Args:
+            plan: Validated workflow-status query plan.
+            release_risk: Trusted persisted release-risk snapshot.
+
+        Returns:
+            Brief workflow-status response without evidence citations.
+        """
+
+        workflow_status_value = getattr(
+            release_risk.release_run.status,
+            "value",
+            release_risk.release_run.status,
+        )
+        github_status_value = getattr(
+            release_risk.github.status,
+            "value",
+            release_risk.github.status,
+        )
+        jira_status_value = getattr(
+            release_risk.jira.status,
+            "value",
+            release_risk.jira.status,
+        )
+
+        workflow_status = str(workflow_status_value).replace("_", " ")
+        github_status = str(github_status_value).replace("_", " ")
+        jira_status = str(jira_status_value).replace("_", " ")
+        knowledge_status = (
+            release_risk.knowledge_status.replace("_", " ")
+            if release_risk.knowledge_status
+            else "not available"
+        )
+        approval_status = (
+            release_risk.approval_status.replace("_", " ")
+            if release_risk.approval_status
+            else "not required"
+        )
+
+        answer = (
+            f"Workflow status: {workflow_status}. "
+            f"GitHub collection: {github_status}. "
+            f"Jira collection: {jira_status}. "
+            f"Knowledge retrieval: {knowledge_status}. "
+            f"Approval status: {approval_status}."
+        )
+
+        logger.info(
+            "agent_workflow_status_response_composed",
+            extra={
+                "run_id": self._request_id,
+                "release_run_id": str(release_risk.release_run.id),
+                "intent": plan.intent.value,
+                "workflow_status": str(workflow_status_value),
+                "github_status": str(github_status_value),
+                "jira_status": str(jira_status_value),
+                "knowledge_status": release_risk.knowledge_status,
+                "approval_status": release_risk.approval_status,
+                "citation_count": 0,
+            },
+        )
+
+        return AgentQueryResponse(
+            answer=answer,
+            plan=plan,
+            release_risk=release_risk,
+            citations=[],
+            approval_required=release_risk.approval_required is True,
+        )
+
     def _build_answer(
         self,
         *,

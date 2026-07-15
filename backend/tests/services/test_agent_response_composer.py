@@ -432,3 +432,30 @@ def test_composes_jira_ticket_response_from_persisted_signals() -> None:
     assert response.citations[0].source_type == "jira_issue"
     assert response.citations[0].source_id == "PAY-102"
     assert response.release_risk is release_risk
+
+
+def test_composes_workflow_status_from_persisted_snapshot() -> None:
+    """Workflow-status responses should report trusted persisted state."""
+
+    release_risk = build_release_risk_response()
+    plan = build_plan(ResponseDepth.BRIEF).model_copy(
+        update={
+            "intent": AgentIntent.WORKFLOW_STATUS_QUESTION,
+            "routing_reason_code": "test_workflow_status_question",
+        }
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_workflow_status(
+        plan=plan,
+        release_risk=release_risk,
+    )
+
+    assert "Workflow status: waiting for approval." in response.answer
+    assert "GitHub collection: success." in response.answer
+    assert "Jira collection: success." in response.answer
+    assert "Knowledge retrieval: not available." in response.answer
+    assert "Approval status: pending." in response.answer
+    assert response.citations == []
+    assert response.release_risk is release_risk
+    assert response.approval_required is True
