@@ -680,3 +680,76 @@ def test_composes_slack_alert_status_when_not_sent() -> None:
     assert response.release_risk is release_risk
     assert response.approval_required is True
     assert response.citations == []
+
+def test_composes_similar_past_release() -> None:
+    """Similar-release responses should explain the deterministic match."""
+    from app.services.agent_similar_release_matcher import SimilarReleaseMatch
+
+    current_release_risk = build_release_risk_response()
+
+    similar_payload = build_snapshot_payload(
+        release_run_id=uuid4(),
+        approval_request_id=uuid4(),
+    )
+    similar_payload["release_run"]["run_id"] = "release-run-similar"
+    similar_release_risk = ReleaseRunRiskResponse.model_validate(
+        similar_payload
+    )
+
+    plan = build_plan(ResponseDepth.DEEP).model_copy(
+        update={
+            "intent": AgentIntent.SIMILAR_PAST_RELEASE,
+            "requires_current_snapshot": True,
+            "requires_historical_lookup": True,
+            "routing_reason_code": "test_similar_past_release",
+        }
+    )
+    match = SimilarReleaseMatch(
+        release_risk=similar_release_risk,
+        similarity_score=0.92,
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_similar_release(
+        plan=plan,
+        release_risk=current_release_risk,
+        similar_release_match=match,
+    )
+
+    assert "release-run-similar" in response.answer
+    assert "92% similarity" in response.answer
+    assert "Payment API has failing CI" in response.answer
+    assert response.release_risk is current_release_risk
+    assert response.approval_required is True
+    assert len(response.citations) == 1
+    assert response.citations[0].title.startswith(
+        "[release-run-similar] "
+    )
+
+
+def test_composes_similar_past_release_without_history() -> None:
+    """Similar-release responses should degrade gracefully without history."""
+    release_risk = build_release_risk_response()
+    plan = build_plan(ResponseDepth.DEEP).model_copy(
+        update={
+            "intent": AgentIntent.SIMILAR_PAST_RELEASE,
+            "requires_current_snapshot": True,
+            "requires_historical_lookup": True,
+            "routing_reason_code": "test_similar_past_release",
+        }
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_similar_release(
+        plan=plan,
+        release_risk=release_risk,
+        similar_release_match=None,
+    )
+
+    assert response.answer == (
+        "No previous releases with persisted risk history were found "
+        "for similarity matching."
+    )
+    assert response.release_risk is release_risk
+    assert response.approval_required is True
+    assert response.citations == []

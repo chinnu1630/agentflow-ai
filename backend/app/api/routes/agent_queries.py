@@ -71,6 +71,9 @@ from app.services.agent_query_executor import (
 from app.services.agent_query_router import AgentQueryRouter
 from app.services.agent_response_composer import AgentResponseComposer
 from app.services.agent_risk_filter import AgentRiskFilter
+from app.services.agent_similar_release_matcher import (
+    AgentSimilarReleaseMatcher,
+)
 from app.services.agent_specific_risk_matcher import (
     AgentSpecificRiskMatcher,
     AgentSpecificRiskNotFoundError,
@@ -127,6 +130,7 @@ async def get_executable_agent_query_plan(
         AgentIntent.APPROVAL_STATUS_QUESTION,
         AgentIntent.SLACK_STATUS_QUESTION,
         AgentIntent.HISTORICAL_RISK_LOOKUP,
+        AgentIntent.SIMILAR_PAST_RELEASE,
         AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
     }:
         raise HTTPException(
@@ -298,6 +302,7 @@ async def execute_agent_query(
             AgentIntent.APPROVAL_STATUS_QUESTION,
             AgentIntent.SLACK_STATUS_QUESTION,
             AgentIntent.HISTORICAL_RISK_LOOKUP,
+            AgentIntent.SIMILAR_PAST_RELEASE,
             AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
         }:
             context_resolver = AgentQueryContextResolver(
@@ -397,6 +402,25 @@ async def execute_agent_query(
                     plan=plan,
                     release_risk=context.release_risk,
                     historical_release_risks=historical_release_risks,
+                )
+            elif plan.intent is AgentIntent.SIMILAR_PAST_RELEASE:
+                historical_release_risks = (
+                    await context_resolver.resolve_historical_release_risks(
+                        exclude_release_run_id=context.release_run_id,
+                        limit=100,
+                    )
+                )
+                similar_release_matcher = AgentSimilarReleaseMatcher(
+                    request_id=request_id,
+                )
+                similar_release_match = similar_release_matcher.match(
+                    current_release_risk=context.release_risk,
+                    historical_release_risks=historical_release_risks,
+                )
+                agent_response = response_composer.compose_similar_release(
+                    plan=plan,
+                    release_risk=context.release_risk,
+                    similar_release_match=similar_release_match,
                 )
             elif plan.intent is AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE:
                 previous_release_risks = (

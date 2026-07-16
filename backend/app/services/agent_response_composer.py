@@ -35,6 +35,13 @@ class ApprovalStatusRecordProtocol(Protocol):
     decided_at: object
 
 
+class SimilarReleaseMatchProtocol(Protocol):
+    """Fields required to compose a similar-release response."""
+
+    release_risk: ReleaseRunRiskResponse
+    similarity_score: float
+
+
 class SlackAlertStatusRecordProtocol(Protocol):
     """Slack delivery fields required to compose a status response."""
 
@@ -762,6 +769,96 @@ class AgentResponseComposer:
                 ),
                 "intent": plan.intent.value,
                 "previous_release_found": previous_release_risk is not None,
+                "citation_count": len(citations),
+                "approval_required": release_risk.approval_required is True,
+            },
+        )
+
+        return AgentQueryResponse(
+            answer=answer,
+            plan=plan,
+            release_risk=release_risk,
+            citations=citations,
+            approval_required=release_risk.approval_required is True,
+        )
+
+    def compose_similar_release(
+        self,
+        *,
+        plan: AgentQueryPlan,
+        release_risk: ReleaseRunRiskResponse,
+        similar_release_match: SimilarReleaseMatchProtocol | None,
+    ) -> AgentQueryResponse:
+        """Compose the closest persisted historical release match.
+
+        Args:
+            plan: Validated similar-release query plan.
+            release_risk: Trusted current release-risk snapshot.
+            similar_release_match: Highest-ranked historical match, if present.
+
+        Returns:
+            Similar-release response with historical evidence citations.
+        """
+        if similar_release_match is None:
+            answer = (
+                "No previous releases with persisted risk history were found "
+                "for similarity matching."
+            )
+            citations: list[AgentCitation] = []
+            matched_release_run_id = None
+            similarity_score = None
+        else:
+            matched_release = similar_release_match.release_risk
+            similarity_percentage = round(
+                similar_release_match.similarity_score * 100
+            )
+            severity = (
+                matched_release.release_summary.overall_severity.value
+                .replace("_", " ")
+            )
+            top_risk_titles = [
+                risk.title
+                for risk in matched_release.release_summary.top_risks[:3]
+            ]
+            top_risks_text = (
+                ", ".join(top_risk_titles)
+                if top_risk_titles
+                else "no ranked top risks"
+            )
+
+            answer = (
+                f"The most similar persisted release was "
+                f"{matched_release.release_run.run_id} with "
+                f"{similarity_percentage}% similarity. "
+                f"It had {severity} severity. "
+                f"Top risks: {top_risks_text}."
+            )
+
+            citations = [
+                citation.model_copy(
+                    update={
+                        "title": (
+                            f"[{matched_release.release_run.run_id}] "
+                            f"{citation.title}"
+                        )
+                    }
+                )
+                for citation in self._build_citations(matched_release)
+            ]
+            matched_release_run_id = str(
+                matched_release.release_run.id
+            )
+            similarity_score = similar_release_match.similarity_score
+
+        logger.info(
+            "agent_similar_release_response_composed",
+            extra={
+                "run_id": self._request_id,
+                "release_run_id": str(release_risk.release_run.id),
+                "matched_release_run_id": matched_release_run_id,
+                "intent": plan.intent.value,
+                "similar_release_found": similar_release_match is not None,
+                "similarity_score": similarity_score,
                 "citation_count": len(citations),
                 "approval_required": release_risk.approval_required is True,
             },

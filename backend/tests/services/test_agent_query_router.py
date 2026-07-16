@@ -355,3 +355,20 @@ async def test_routes_release_approval_question_as_approval_status(
     assert plan.release_run_id == release_run_id
     assert plan.requires_current_snapshot is True
     assert plan.may_execute_side_effect is False
+
+@pytest.mark.anyio
+async def test_routes_similar_past_release_question() -> None:
+    """Similar-release questions should require current and historical context."""
+    router = AgentQueryRouter()
+
+    plan = await router.create_plan(
+        AgentQueryRequest(
+            query="Which past release was most similar to this one?",
+        )
+    )
+
+    assert plan.intent is AgentIntent.SIMILAR_PAST_RELEASE
+    assert plan.response_depth is ResponseDepth.DEEP
+    assert plan.requires_current_snapshot is True
+    assert plan.requires_historical_lookup is True
+    assert plan.may_execute_side_effect is False

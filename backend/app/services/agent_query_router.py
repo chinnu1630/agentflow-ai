@@ -136,6 +136,20 @@ class AgentQueryRouter:
             requires_historical_lookup=True,
         ),
         IntentRule(
+            intent=AgentIntent.SIMILAR_PAST_RELEASE,
+            response_depth=ResponseDepth.DEEP,
+            phrases=(
+                "most similar",
+                "similar past release",
+                "similar release",
+                "similar to this one",
+            ),
+            routing_reason_code="matched_similar_past_release",
+            priority=83,
+            requires_current_snapshot=True,
+            requires_historical_lookup=True,
+        ),
+        IntentRule(
             intent=AgentIntent.HISTORICAL_RISK_LOOKUP,
             response_depth=ResponseDepth.DEEP,
             phrases=(
