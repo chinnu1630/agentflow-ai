@@ -19,6 +19,7 @@ from app.integrations.jira_client import JiraClient, JiraClientConfig
 from app.integrations.slack_client import SlackClient, SlackClientConfig
 from app.repositories.engineering_document_repository import (
     EngineeringDocumentRepository,
+    EngineeringDocumentRepositoryError,
 )
 from app.repositories.release_run_approval_repository import (
     ReleaseRunApprovalRepository,
@@ -81,6 +82,7 @@ from app.services.agent_specific_risk_matcher import (
     AgentSpecificRiskNotFoundError,
 )
 from app.services.engineering_document_retrieval_service import (
+    EngineeringDocumentRetrievalRequest,
     EngineeringDocumentRetrievalService,
 )
 from app.services.github_risk_collector import RiskCollector
@@ -142,6 +144,7 @@ async def get_executable_agent_query_plan(
         AgentIntent.SIMILAR_PAST_RELEASE,
         AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
         AgentIntent.ACTION_REQUEST,
+        AgentIntent.KNOWLEDGE_DOC_QUESTION,
     }:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -347,6 +350,28 @@ async def execute_agent_query(
     response_composer = AgentResponseComposer(request_id=request_id)
 
     try:
+        if plan.intent is AgentIntent.KNOWLEDGE_DOC_QUESTION:
+            engineering_document_repository = EngineeringDocumentRepository(
+                session=session,
+            )
+            knowledge_service = EngineeringDocumentRetrievalService(
+                repository=engineering_document_repository,
+            )
+            retrieval = await knowledge_service.retrieve_relevant_chunks(
+                EngineeringDocumentRetrievalRequest(
+                    query=payload.query,
+                    top_k=5,
+                ),
+                run_id=request_id,
+            )
+            agent_response = response_composer.compose_knowledge_document(
+                plan=plan,
+                retrieval=retrieval,
+            )
+
+            await session.commit()
+            return agent_response
+
         if plan.intent in {
             AgentIntent.EXPLAIN_RISK_SCORE,
             AgentIntent.EXPLAIN_SPECIFIC_RISK,
@@ -694,6 +719,7 @@ async def execute_agent_query(
     except (
         ReleaseRunServiceError,
         ReleaseRunRepositoryError,
+        EngineeringDocumentRepositoryError,
         ReleaseRunEventRepositoryError,
         ReleaseRunApprovalRepositoryError,
         ReleaseRunRiskSnapshotRepositoryError,

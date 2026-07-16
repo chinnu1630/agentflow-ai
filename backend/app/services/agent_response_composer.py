@@ -22,6 +22,9 @@ from app.services.agent_current_risk_response_composer import (
 from app.services.agent_historical_response_composer import (
     AgentHistoricalResponseComposerMixin,
 )
+from app.services.agent_knowledge_response_composer import (
+    AgentKnowledgeResponseComposerMixin,
+)
 from app.services.agent_status_response_composer import (
     AgentStatusResponseComposerMixin,
 )
@@ -33,6 +36,7 @@ class AgentResponseComposer(
     AgentActionResponseComposerMixin,
     AgentCurrentRiskResponseComposerMixin,
     AgentHistoricalResponseComposerMixin,
+    AgentKnowledgeResponseComposerMixin,
     AgentStatusResponseComposerMixin,
 ):
     """Create deterministic conversational answers from trusted risk data."""

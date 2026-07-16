@@ -1220,3 +1220,55 @@ async def test_slack_action_blocks_duplicate_delivery(
     assert second_response.status_code == 409
     assert "Slack alert already sent" in second_response.text
     assert FakeAgentSlackAlertSender.call_count == 1
+
+
+@pytest.mark.anyio
+async def test_knowledge_document_question_uses_ingested_documents(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Knowledge questions should retrieve documents without running collectors."""
+    ingestion_response = await agent_query_api_client.post(
+        "/api/v1/engineering-documents/ingest",
+        json={
+            "title": "Payment Service Production Runbook",
+            "source_type": "runbook",
+            "source_uri": "docs/payment-service-runbook.md",
+            "raw_content": (
+                "The payment service must be rolled back when payment failures "
+                "exceed the production threshold. After rollback, validate "
+                "authorization success and confirm the error rate has recovered."
+            ),
+            "metadata_json": {
+                "service": "payment-service",
+                "owner": "Payments Platform Team",
+            },
+        },
+    )
+
+    assert ingestion_response.status_code == 201, ingestion_response.json()
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What does the payment service runbook say about rollback?",
+        },
+    )
+
+    assert response.status_code == 200, response.json()
+
+    payload = response.json()
+
+    assert payload["plan"]["intent"] == "knowledge_doc_question"
+    assert payload["release_risk"] is None
+    assert payload["approval_required"] is False
+    assert "Payment Service Production Runbook" in payload["answer"]
+    assert "rolled back" in payload["answer"]
+    assert len(payload["citations"]) >= 1
+    assert payload["citations"][0]["source"] == "knowledge"
+    assert payload["citations"][0]["source_type"] == "runbook"
+    assert (
+        payload["citations"][0]["source_url"]
+        == "docs/payment-service-runbook.md"
+    )
+    assert FakeAgentGitHubRiskCollector.call_count == 0
+    assert FakeAgentJiraRiskCollector.call_count == 0

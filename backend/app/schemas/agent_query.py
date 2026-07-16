@@ -161,7 +161,7 @@ class AgentQueryResponse(BaseModel):
 
     answer: str = Field(min_length=1)
     plan: AgentQueryPlan
-    release_risk: ReleaseRunRiskResponse
+    release_risk: ReleaseRunRiskResponse | None = None
     citations: list[AgentCitation] = Field(default_factory=list)
     approval_required: bool
 

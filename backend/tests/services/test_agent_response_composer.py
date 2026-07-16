@@ -791,3 +791,86 @@ def test_composes_successful_slack_action_confirmation() -> None:
     assert response.release_risk is release_risk
     assert response.approval_required is True
     assert response.citations == []
+
+
+def test_composes_grounded_knowledge_document_answer() -> None:
+    """Knowledge responses should use retrieved chunks and matching citations."""
+    from app.models.engineering_document import EngineeringDocumentSourceType
+    from app.services.engineering_document_retrieval_service import (
+        EngineeringDocumentRetrievalResponse,
+        EngineeringDocumentRetrievalResult,
+    )
+
+    chunk_id = uuid4()
+    retrieval = EngineeringDocumentRetrievalResponse(
+        query="What does the runbook say about rollback?",
+        total_candidates=1,
+        results=[
+            EngineeringDocumentRetrievalResult(
+                document_id=uuid4(),
+                chunk_id=chunk_id,
+                title="Payment Service Production Runbook",
+                source_type=EngineeringDocumentSourceType.RUNBOOK,
+                source_uri="docs/payment-service-runbook.md",
+                chunk_index=3,
+                score=7.5,
+                content="Rollback the payment service when failure thresholds are exceeded.",
+                token_count=10,
+                metadata_json={"service": "payment-service"},
+            )
+        ],
+    )
+    plan = AgentQueryPlan(
+        intent=AgentIntent.KNOWLEDGE_DOC_QUESTION,
+        response_depth=ResponseDepth.STANDARD,
+        confidence=1.0,
+        routing_reason_code="test_knowledge_question",
+    )
+
+    response = AgentResponseComposer(
+        request_id="request-123",
+    ).compose_knowledge_document(
+        plan=plan,
+        retrieval=retrieval,
+    )
+
+    assert "Payment Service Production Runbook" in response.answer
+    assert "Rollback the payment service" in response.answer
+    assert response.release_risk is None
+    assert response.approval_required is False
+    assert len(response.citations) == 1
+    assert response.citations[0].source_id == str(chunk_id)
+    assert response.citations[0].source_url == "docs/payment-service-runbook.md"
+
+
+def test_composes_safe_answer_when_no_knowledge_matches() -> None:
+    """Empty retrieval should return a transparent answer without citations."""
+    from app.services.engineering_document_retrieval_service import (
+        EngineeringDocumentRetrievalResponse,
+    )
+
+    plan = AgentQueryPlan(
+        intent=AgentIntent.KNOWLEDGE_DOC_QUESTION,
+        response_depth=ResponseDepth.STANDARD,
+        confidence=1.0,
+        routing_reason_code="test_empty_knowledge_question",
+    )
+    retrieval = EngineeringDocumentRetrievalResponse(
+        query="Unknown operational policy",
+        total_candidates=0,
+        results=[],
+    )
+
+    response = AgentResponseComposer(
+        request_id="request-123",
+    ).compose_knowledge_document(
+        plan=plan,
+        retrieval=retrieval,
+    )
+
+    assert response.answer == (
+        "No relevant engineering-document evidence was found for this question."
+    )
+    assert response.release_risk is None
+    assert response.citations == []
+    assert response.approval_required is False
