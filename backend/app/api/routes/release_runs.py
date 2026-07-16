@@ -633,7 +633,7 @@ async def send_release_run_slack_alert(
                 duplicate_found = existing_slack_alert is not None
                 span.set_attribute("slack.duplicate_found", duplicate_found)
 
-                if duplicate_found:
+                if existing_slack_alert is not None:
                     await _record_release_slack_alert_event(
                         event_repository=event_repository,
                         release_run_id=release_run_id,

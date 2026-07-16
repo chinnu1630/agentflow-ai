@@ -17,11 +17,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from app.services.github_risk_rules import RiskSeverity, RiskSignal
+from app.services.github_risk_rules import RiskSeverity
 from app.services.jira_risk_collector import (
     JiraRiskCollectionResult,
     JiraRiskCollectionStatus,
 )
+from app.services.jira_risk_rules import JiraRiskSignal
 
 logger = logging.getLogger(__name__)
 
@@ -162,16 +163,16 @@ class JiraRiskSummaryGenerator:
 
     def _select_top_signals(
         self,
-        signals: list[RiskSignal],
+        signals: list[JiraRiskSignal],
         *,
         limit: int = 5,
-    ) -> list[RiskSignal]:
+    ) -> list[JiraRiskSignal]:
         """Select the highest-risk Jira signals."""
 
         return sorted(
             signals,
             key=lambda signal: (
-                self._SEVERITY_RANK[signal.severity],
+                self._SEVERITY_RANK[RiskSeverity(signal.severity.value)],
                 signal.score,
                 signal.source_id,
             ),
@@ -179,42 +180,42 @@ class JiraRiskSummaryGenerator:
         )[:limit]
 
     @staticmethod
-    def _to_summary_item(signal: RiskSignal) -> JiraRiskSummaryItem:
+    def _to_summary_item(signal: JiraRiskSignal) -> JiraRiskSummaryItem:
         """Convert one risk signal into a manager summary item."""
 
         return JiraRiskSummaryItem(
             source_type="jira_issue",
             source_id=signal.source_id,
             source_url=signal.source_url,
-            severity=signal.severity,
+            severity=RiskSeverity(signal.severity.value),
             score=signal.score,
             title=signal.title,
             reason=signal.description,
             evidence=signal.evidence,
         )
 
-    def _calculate_overall_severity(self, signals: list[RiskSignal]) -> RiskSeverity:
+    def _calculate_overall_severity(self, signals: list[JiraRiskSignal]) -> RiskSeverity:
         """Calculate the highest severity across Jira risk signals."""
 
         if not signals:
             return RiskSeverity.LOW
 
         return max(
-            (signal.severity for signal in signals),
+            (RiskSeverity(signal.severity.value) for signal in signals),
             key=lambda severity: self._SEVERITY_RANK[severity],
         )
 
-    def _count_high_risk_signals(self, signals: list[RiskSignal]) -> int:
+    def _count_high_risk_signals(self, signals: list[JiraRiskSignal]) -> int:
         """Count high and critical Jira risk signals."""
 
         return sum(
             1
             for signal in signals
-            if signal.severity in self._HIGH_RISK_SEVERITIES
+            if RiskSeverity(signal.severity.value) in self._HIGH_RISK_SEVERITIES
         )
 
     @staticmethod
-    def _count_risky_issues(signals: list[RiskSignal]) -> int:
+    def _count_risky_issues(signals: list[JiraRiskSignal]) -> int:
         """Count unique Jira issues that produced at least one signal."""
 
         return len({signal.source_id for signal in signals})

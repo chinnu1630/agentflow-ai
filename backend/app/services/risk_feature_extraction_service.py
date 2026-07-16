@@ -9,7 +9,7 @@ later when real labeled release outcome data exists.
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -294,7 +294,7 @@ class RiskFeatureExtractionService:
         *,
         signals: list[dict[str, Any]],
         source_key: str,
-        output_fields: object,
+        output_fields: Iterable[str],
         value_to_output_field: Mapping[str, str],
     ) -> dict[str, int]:
         """Count normalized signal values into named feature fields."""

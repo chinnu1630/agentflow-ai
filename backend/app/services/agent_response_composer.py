@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Protocol
+from uuid import UUID
 
 from app.schemas.agent_query import (
     AgentCitation,
@@ -24,15 +26,50 @@ logger = logging.getLogger(__name__)
 class ApprovalStatusRecordProtocol(Protocol):
     """Approval fields required to compose an approval-status response."""
 
-    id: object
-    approval_status: str
-    approval_reason: str
-    approval_policy_version: str
-    requested_by: str | None
-    decided_by: str | None
-    decision_note: str | None
-    created_at: object
-    decided_at: object
+    @property
+    def id(self) -> UUID:
+        """Return the durable approval identifier."""
+        ...
+
+    @property
+    def approval_status(self) -> str:
+        """Return the durable approval status."""
+        ...
+
+    @property
+    def approval_reason(self) -> str:
+        """Return the reason approval was required."""
+        ...
+
+    @property
+    def approval_policy_version(self) -> str:
+        """Return the approval policy version."""
+        ...
+
+    @property
+    def requested_by(self) -> str | None:
+        """Return who requested approval."""
+        ...
+
+    @property
+    def decided_by(self) -> str | None:
+        """Return who made the approval decision."""
+        ...
+
+    @property
+    def decision_note(self) -> str | None:
+        """Return the optional approval decision note."""
+        ...
+
+    @property
+    def created_at(self) -> datetime:
+        """Return when the approval request was created."""
+        ...
+
+    @property
+    def decided_at(self) -> datetime | None:
+        """Return when the approval decision was recorded."""
+        ...
 
 
 class SimilarReleaseMatchProtocol(Protocol):
@@ -45,14 +82,45 @@ class SimilarReleaseMatchProtocol(Protocol):
 class SlackAlertStatusRecordProtocol(Protocol):
     """Slack delivery fields required to compose a status response."""
 
-    id: object
-    delivery_status: str
-    slack_channel: str
-    slack_timestamp: str
-    risk_level: str
-    risk_score: float
-    recommended_action: str
-    created_at: object
+    @property
+    def id(self) -> UUID:
+        """Return the durable Slack alert identifier."""
+        ...
+
+    @property
+    def delivery_status(self) -> str:
+        """Return the Slack delivery status."""
+        ...
+
+    @property
+    def slack_channel(self) -> str:
+        """Return the destination Slack channel."""
+        ...
+
+    @property
+    def slack_timestamp(self) -> str:
+        """Return the Slack message timestamp."""
+        ...
+
+    @property
+    def risk_level(self) -> str:
+        """Return the risk level included in the alert."""
+        ...
+
+    @property
+    def risk_score(self) -> float:
+        """Return the risk score included in the alert."""
+        ...
+
+    @property
+    def recommended_action(self) -> str:
+        """Return the recommended release action."""
+        ...
+
+    @property
+    def created_at(self) -> datetime:
+        """Return when the Slack alert was persisted."""
+        ...
 
 
 class AgentResponseComposer:
@@ -462,6 +530,9 @@ class AgentResponseComposer:
         Returns:
             Approval-status response without evidence citations.
         """
+
+        approval_reason: str | None
+        approval_policy_version: str | None
 
         if latest_approval is not None:
             approval_status = latest_approval.approval_status
@@ -1108,12 +1179,12 @@ class AgentResponseComposer:
                 or "knowledge-result"
             )
             source_type = knowledge_result.source_type or "engineering_document"
-            key = (source_type, source_id)
+            knowledge_key = (source_type, source_id)
 
-            if key in seen:
+            if knowledge_key in seen:
                 continue
 
-            seen.add(key)
+            seen.add(knowledge_key)
             citations.append(
                 AgentCitation(
                     source="knowledge",

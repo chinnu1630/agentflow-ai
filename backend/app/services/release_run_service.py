@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -736,7 +736,7 @@ class ReleaseRunService:
             return workflow_state.get(key)
 
         if hasattr(workflow_state, key):
-            return getattr(workflow_state, key)
+            return cast(object | None, getattr(workflow_state, key))
 
         if hasattr(workflow_state, "model_dump"):
             dumped_state = workflow_state.model_dump(mode="python")

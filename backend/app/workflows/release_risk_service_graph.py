@@ -20,6 +20,7 @@ Future scope:
 
 from __future__ import annotations
 
+from langchain_core.runnables import RunnableLambda
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -148,11 +149,17 @@ def build_release_risk_service_graph(
     graph.add_node("start", _start_node)
     graph.add_node(
         "collect_release_risks",
-        create_collect_release_risks_node(service),
+        RunnableLambda(create_collect_release_risks_node(service)),
     )
     graph.add_node("complete", _complete_node)
-    graph.add_node("score_release_risk", create_score_release_risk_node())
-    graph.add_node("determine_approval_requirement", create_determine_approval_requirement_node())
+    graph.add_node(
+        "score_release_risk",
+        RunnableLambda(create_score_release_risk_node()),
+    )
+    graph.add_node(
+        "determine_approval_requirement",
+        RunnableLambda(create_determine_approval_requirement_node()),
+    )
 
     graph.add_edge(START, "start")
     graph.add_edge("start", "collect_release_risks")
@@ -169,7 +176,7 @@ def build_release_risk_service_graph(
     else:
         graph.add_node(
             "retrieve_knowledge_context",
-            create_retrieve_knowledge_context_node(knowledge_service),
+            RunnableLambda(create_retrieve_knowledge_context_node(knowledge_service)),
         )
         graph.add_conditional_edges(
             "collect_release_risks",

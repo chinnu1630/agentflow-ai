@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import cast
 
 from app.schemas.risk import ReleaseRunRiskResponse
 from app.services.hitl_approval_decision_service import (
@@ -105,7 +106,7 @@ def extract_risk_result_from_workflow_state(
 
     for key in result_keys:
         if hasattr(workflow_state, key):
-            result = getattr(workflow_state, key)
+            result = cast(object | None, getattr(workflow_state, key))
 
             if result is not None:
                 return result

@@ -20,8 +20,11 @@ from uuid import UUID
 from app.core.logging import get_logger
 from app.integrations.jira_client import JiraClientError
 from app.schemas.jira import JiraIssue
-from app.services.github_risk_rules import RiskSignal
-from app.services.jira_risk_rules import JiraIssueRiskResult, JiraRiskRuleEngine
+from app.services.jira_risk_rules import (
+    JiraIssueRiskResult,
+    JiraRiskRuleEngine,
+    JiraRiskSignal,
+)
 
 logger = get_logger(__name__)
 
@@ -49,7 +52,7 @@ class JiraRiskCollectionResult:
     status: JiraRiskCollectionStatus
     issues: list[JiraIssue] = field(default_factory=list)
     issue_results: list[JiraIssueRiskResult] = field(default_factory=list)
-    signals: list[RiskSignal] = field(default_factory=list)
+    signals: list[JiraRiskSignal] = field(default_factory=list)
     error_message: str | None = None
     duration_ms: float = 0.0
 
@@ -205,7 +208,7 @@ class JiraRiskCollector:
     @staticmethod
     def _flatten_signals(
         issue_results: list[JiraIssueRiskResult],
-    ) -> list[RiskSignal]:
+    ) -> list[JiraRiskSignal]:
         """Flatten issue-level risk signals into one list.
 
         Args:

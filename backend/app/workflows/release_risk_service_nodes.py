@@ -146,12 +146,12 @@ def _collect_text_values(value: object) -> list[str]:
         return collected
 
     if isinstance(value, list):
-        collected: list[str] = []
+        list_values: list[str] = []
 
         for item in value:
-            collected.extend(_collect_text_values(item))
+            list_values.extend(_collect_text_values(item))
 
-        return collected
+        return list_values
 
     return []
 

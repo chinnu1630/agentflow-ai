@@ -20,8 +20,10 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from inspect import iscoroutinefunction
+from typing import Any, cast
 
+from langchain_core.runnables import Runnable, RunnableLambda
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -34,10 +36,28 @@ from app.workflows.release_risk_nodes import (
 )
 from app.workflows.release_risk_state import ReleaseRiskState
 
-WorkflowStateInput = ReleaseRiskState | dict[str, Any]
+WorkflowStateInput = ReleaseRiskState
 WorkflowStateUpdate = dict[str, Any]
-WorkflowNodeResult = WorkflowStateUpdate | Awaitable[WorkflowStateUpdate]
-WorkflowNode = Callable[[WorkflowStateInput], WorkflowNodeResult]
+SyncWorkflowNode = Callable[[WorkflowStateInput], WorkflowStateUpdate]
+AsyncWorkflowNode = Callable[
+    [WorkflowStateInput],
+    Awaitable[WorkflowStateUpdate],
+]
+WorkflowNode = SyncWorkflowNode | AsyncWorkflowNode
+
+
+def _as_runnable(
+    node: WorkflowNode,
+    *,
+    name: str,
+) -> Runnable[WorkflowStateInput, WorkflowStateUpdate]:
+    """Wrap a sync or async workflow node without changing its execution mode."""
+    if iscoroutinefunction(node):
+        async_node = cast(AsyncWorkflowNode, node)
+        return RunnableLambda(async_node, name=name)
+
+    sync_node = cast(SyncWorkflowNode, node)
+    return RunnableLambda(sync_node, name=name)
 
 
 def _validate_state_input(state: WorkflowStateInput) -> ReleaseRiskState:
@@ -134,11 +154,46 @@ def build_release_risk_graph(
     graph_nodes = nodes or ReleaseRiskGraphNodeSet()
     graph = StateGraph(ReleaseRiskState)
 
-    graph.add_node("start", graph_nodes.start)
-    graph.add_node("prepare_github", graph_nodes.prepare_github)
-    graph.add_node("prepare_jira", graph_nodes.prepare_jira)
-    graph.add_node("prepare_summary", graph_nodes.prepare_summary)
-    graph.add_node("complete", graph_nodes.complete)
+    graph.add_node(
+        "start",
+        _as_runnable(
+            graph_nodes.start,
+            name="start",
+        ),
+        input_schema=ReleaseRiskState,
+    )
+    graph.add_node(
+        "prepare_github",
+        _as_runnable(
+            graph_nodes.prepare_github,
+            name="prepare_github",
+        ),
+        input_schema=ReleaseRiskState,
+    )
+    graph.add_node(
+        "prepare_jira",
+        _as_runnable(
+            graph_nodes.prepare_jira,
+            name="prepare_jira",
+        ),
+        input_schema=ReleaseRiskState,
+    )
+    graph.add_node(
+        "prepare_summary",
+        _as_runnable(
+            graph_nodes.prepare_summary,
+            name="prepare_summary",
+        ),
+        input_schema=ReleaseRiskState,
+    )
+    graph.add_node(
+        "complete",
+        _as_runnable(
+            graph_nodes.complete,
+            name="complete",
+        ),
+        input_schema=ReleaseRiskState,
+    )
 
     graph.add_edge(START, "start")
     graph.add_edge("start", "prepare_github")
