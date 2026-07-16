@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.db.session import get_db_session
 from app.integrations.github_client import GitHubClient, GitHubClientConfig
 from app.integrations.jira_client import JiraClient, JiraClientConfig
+from app.integrations.slack_client import SlackClient, SlackClientConfig
 from app.repositories.engineering_document_repository import (
     EngineeringDocumentRepository,
 )
@@ -36,6 +37,7 @@ from app.repositories.release_run_risk_snapshot_repository import (
     ReleaseRunRiskSnapshotRepositoryError,
 )
 from app.repositories.release_run_slack_alert_repository import (
+    ReleaseRunSlackAlertAlreadySentError,
     ReleaseRunSlackAlertRepository,
     ReleaseRunSlackAlertRepositoryError,
 )
@@ -90,6 +92,13 @@ from app.services.release_run_service import (
     ReleaseRunService,
     ReleaseRunServiceError,
 )
+from app.services.slack_release_alert_action_service import (
+    SlackReleaseAlertActionService,
+)
+from app.services.slack_release_alert_service import (
+    SlackReleaseAlertNotApprovedError,
+    SlackReleaseAlertServiceError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +141,7 @@ async def get_executable_agent_query_plan(
         AgentIntent.HISTORICAL_RISK_LOOKUP,
         AgentIntent.SIMILAR_PAST_RELEASE,
         AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
+        AgentIntent.ACTION_REQUEST,
     }:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -228,6 +238,46 @@ AgentJiraRiskCollectorDependency = Annotated[
 ]
 
 
+async def get_agent_slack_alert_sender(
+    request: Request,
+    plan: ExecutableAgentQueryPlanDependency,
+) -> AsyncIterator[SlackClient | None]:
+    """Create a Slack sender only for approved action requests."""
+
+    if plan.intent is not AgentIntent.ACTION_REQUEST:
+        yield None
+        return
+
+    request_id = str(
+        getattr(request.state, "request_id", "unknown-request-id")
+    )
+    settings = get_settings()
+
+    if not settings.slack_bot_token or not settings.slack_channel_id:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Slack alert delivery is not configured.",
+        )
+
+    slack_config = SlackClientConfig(
+        bot_token=settings.slack_bot_token,
+        channel_id=settings.slack_channel_id,
+    )
+
+    async with httpx.AsyncClient() as http_client:
+        yield SlackClient(
+            http_client=http_client,
+            config=slack_config,
+            request_id=request_id,
+        )
+
+
+AgentSlackAlertSenderDependency = Annotated[
+    SlackClient | None,
+    Depends(get_agent_slack_alert_sender),
+]
+
+
 @router.post(
     "/query-plan",
     response_model=AgentQueryPlan,
@@ -271,6 +321,7 @@ async def execute_agent_query(
     plan: ExecutableAgentQueryPlanDependency,
     risk_collector: AgentGitHubRiskCollectorDependency,
     jira_risk_collector: AgentJiraRiskCollectorDependency,
+    slack_sender: AgentSlackAlertSenderDependency,
     session: AsyncSession = Depends(get_db_session),
 ) -> AgentQueryResponse:
     """Execute a fresh query or answer from trusted persisted context."""
@@ -289,6 +340,10 @@ async def execute_agent_query(
         session=session,
         request_id=request_id,
     )
+    event_repository = ReleaseRunEventRepository(
+        session=session,
+        request_id=request_id,
+    )
     response_composer = AgentResponseComposer(request_id=request_id)
 
     try:
@@ -304,6 +359,7 @@ async def execute_agent_query(
             AgentIntent.HISTORICAL_RISK_LOOKUP,
             AgentIntent.SIMILAR_PAST_RELEASE,
             AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
+            AgentIntent.ACTION_REQUEST,
         }:
             context_resolver = AgentQueryContextResolver(
                 snapshot_repository=risk_snapshot_repository,
@@ -391,6 +447,31 @@ async def execute_agent_query(
                     release_risk=context.release_risk,
                     slack_alert=slack_alert,
                 )
+            elif plan.intent is AgentIntent.ACTION_REQUEST:
+                if slack_sender is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="Slack alert delivery is unavailable.",
+                    )
+
+                action_service = SlackReleaseAlertActionService(
+                    approval_repository=approval_repository,
+                    risk_snapshot_repository=risk_snapshot_repository,
+                    slack_alert_repository=slack_alert_repository,
+                    event_repository=event_repository,
+                    sender=slack_sender,
+                    request_id=request_id,
+                )
+                slack_result = await action_service.execute(
+                    context.release_run_id,
+                )
+                agent_response = (
+                    response_composer.compose_slack_action_confirmation(
+                        plan=plan,
+                        release_risk=context.release_risk,
+                        slack_result=slack_result,
+                    )
+                )
             elif plan.intent is AgentIntent.HISTORICAL_RISK_LOOKUP:
                 historical_release_risks = (
                     await context_resolver.resolve_historical_release_risks(
@@ -460,10 +541,6 @@ async def execute_agent_query(
             session=session,
             request_id=request_id,
         )
-        event_repository = ReleaseRunEventRepository(
-            session=session,
-            request_id=request_id,
-        )
         engineering_document_repository = EngineeringDocumentRepository(
             session=session,
         )
@@ -508,6 +585,27 @@ async def execute_agent_query(
 
         await session.commit()
         return agent_response
+
+    except SlackReleaseAlertNotApprovedError as exc:
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    except ReleaseRunSlackAlertAlreadySentError as exc:
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    except SlackReleaseAlertServiceError as exc:
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to send approved release-risk Slack alert.",
+        ) from exc
 
     except AgentJiraTicketNotFoundError as exc:
         await session.rollback()

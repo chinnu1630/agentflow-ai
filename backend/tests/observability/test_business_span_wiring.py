@@ -95,11 +95,14 @@ def test_slack_alert_route_has_business_span() -> None:
 
 def test_slack_duplicate_check_has_business_span() -> None:
     """Slack duplicate-send protection should be traced safely."""
-    route_source = Path("app/api/routes/release_runs.py").read_text()
+    service_source = Path(
+        "app/services/slack_release_alert_action_service.py"
+    ).read_text()
 
-    assert '"slack.release_alert.duplicate_check"' in route_source
-    assert '"release_run_id": str(release_run_id)' in route_source
-    assert '"run_id": request_id' in route_source
-    assert '"slack.duplicate_found", duplicate_found' in route_source
-    assert "SLACK_BOT_TOKEN" in route_source
-    assert '"slack_bot_token"' not in route_source
+    assert '"slack.release_alert.duplicate_check"' in service_source
+    assert '"release_run_id": str(release_run_id)' in service_source
+    assert '"run_id": self._request_id' in service_source
+    assert (
+        '"slack.duplicate_found", duplicate_found'
+        in service_source
+    )

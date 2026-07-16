@@ -13,6 +13,9 @@ from app.schemas.agent_query import (
 from app.schemas.risk import (
     ReleaseRunRiskResponse,
 )
+from app.services.agent_action_response_composer import (
+    AgentActionResponseComposerMixin,
+)
 from app.services.agent_current_risk_response_composer import (
     AgentCurrentRiskResponseComposerMixin,
 )
@@ -27,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 class AgentResponseComposer(
+    AgentActionResponseComposerMixin,
     AgentCurrentRiskResponseComposerMixin,
     AgentHistoricalResponseComposerMixin,
     AgentStatusResponseComposerMixin,

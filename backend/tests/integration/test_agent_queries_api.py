@@ -17,9 +17,11 @@ from sqlalchemy.pool import StaticPool
 from app.api.routes.agent_queries import (
     get_agent_github_risk_collector,
     get_agent_jira_risk_collector,
+    get_agent_slack_alert_sender,
 )
 from app.db.base import Base
 from app.db.session import get_db_session
+from app.integrations.slack_client import SlackPostMessageResult
 from app.main import app
 from app.schemas.jira import (
     JiraIssue,
@@ -42,6 +44,9 @@ from app.services.jira_risk_collector import (
     JiraRiskCollectionStatus,
 )
 from app.services.jira_risk_rules import JiraRiskRuleEngine
+from app.services.slack_alert_payload_service import (
+    SlackReleaseRiskAlertPayload,
+)
 
 
 class FakeAgentGitHubRiskCollector:
@@ -142,6 +147,27 @@ class FakeAgentJiraRiskCollector:
         )
 
 
+class FakeAgentSlackAlertSender:
+    """Fake Slack sender for natural-language action tests."""
+
+    call_count = 0
+    sent_payloads: list[SlackReleaseRiskAlertPayload] = []
+
+    async def send_release_risk_alert(
+        self,
+        payload: SlackReleaseRiskAlertPayload,
+    ) -> SlackPostMessageResult:
+        """Capture one Slack action without network I/O."""
+        type(self).call_count += 1
+        type(self).sent_payloads.append(payload)
+
+        return SlackPostMessageResult(
+            ok=True,
+            channel="C1234567890",
+            timestamp="12345.6789",
+        )
+
+
 @pytest.fixture
 async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
     """Provide an isolated API client for query planning and execution."""
@@ -178,12 +204,20 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
 
         return FakeAgentJiraRiskCollector()
 
+    async def override_get_slack_sender() -> FakeAgentSlackAlertSender:
+        """Return the fake Slack sender."""
+
+        return FakeAgentSlackAlertSender()
+
     FakeAgentGitHubRiskCollector.call_count = 0
     FakeAgentJiraRiskCollector.call_count = 0
+    FakeAgentSlackAlertSender.call_count = 0
+    FakeAgentSlackAlertSender.sent_payloads = []
 
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_agent_github_risk_collector] = override_get_github_collector
     app.dependency_overrides[get_agent_jira_risk_collector] = override_get_jira_collector
+    app.dependency_overrides[get_agent_slack_alert_sender] = override_get_slack_sender
 
     try:
         async with AsyncClient(
@@ -1051,3 +1085,138 @@ async def test_similar_past_release_uses_persisted_snapshots(
 
     assert FakeAgentGitHubRiskCollector.call_count == github_calls
     assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+@pytest.mark.anyio
+async def test_slack_action_sends_approved_persisted_release(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Natural-language Slack action should use approved persisted context."""
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": "What are the biggest release risks this week?"},
+    )
+
+    assert initial_response.status_code == 200
+
+    release_risk = initial_response.json()["release_risk"]
+    release_run_id = release_risk["release_run"]["id"]
+    approval_request_id = release_risk["approval_request_id"]
+
+    assert approval_request_id is not None
+
+    decision_response = await agent_query_api_client.post(
+        (
+            f"/api/v1/release-runs/{release_run_id}"
+            f"/approvals/{approval_request_id}/decision"
+        ),
+        json={
+            "approval_status": "approved",
+            "decided_by": "director@example.com",
+            "decision_note": "Approved after reviewing rollback plan.",
+        },
+    )
+
+    assert decision_response.status_code == 200
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    action_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Can you send this to Slack?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert action_response.status_code == 200, action_response.json()
+
+    action_payload = action_response.json()
+
+    assert action_payload["plan"]["intent"] == "action_request"
+    assert action_payload["plan"]["response_depth"] == "action_confirmation"
+    assert "Slack alert sent successfully." in action_payload["answer"]
+    assert "Channel: C1234567890." in action_payload["answer"]
+    assert action_payload["release_risk"]["release_run"]["id"] == release_run_id
+    assert FakeAgentSlackAlertSender.call_count == 1
+    assert len(FakeAgentSlackAlertSender.sent_payloads) == 1
+
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+@pytest.mark.anyio
+async def test_slack_action_is_blocked_before_human_approval(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Natural-language Slack action must remain behind the HITL gate."""
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": "What are the biggest release risks this week?"},
+    )
+
+    assert initial_response.status_code == 200
+
+    release_run_id = initial_response.json()["release_risk"]["release_run"]["id"]
+
+    action_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Can you send this to Slack?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert action_response.status_code == 409
+    assert "Slack alert cannot be sent before approval" in action_response.text
+    assert FakeAgentSlackAlertSender.call_count == 0
+
+
+@pytest.mark.anyio
+async def test_slack_action_blocks_duplicate_delivery(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Repeated natural-language Slack actions must not send twice."""
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": "What are the biggest release risks this week?"},
+    )
+
+    assert initial_response.status_code == 200
+
+    release_risk = initial_response.json()["release_risk"]
+    release_run_id = release_risk["release_run"]["id"]
+    approval_request_id = release_risk["approval_request_id"]
+
+    decision_response = await agent_query_api_client.post(
+        (
+            f"/api/v1/release-runs/{release_run_id}"
+            f"/approvals/{approval_request_id}/decision"
+        ),
+        json={
+            "approval_status": "approved",
+            "decided_by": "director@example.com",
+            "decision_note": "Approved after reviewing rollback plan.",
+        },
+    )
+
+    assert decision_response.status_code == 200
+
+    first_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Can you send this to Slack?",
+            "release_run_id": release_run_id,
+        },
+    )
+    second_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Can you send this to Slack?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 409
+    assert "Slack alert already sent" in second_response.text
+    assert FakeAgentSlackAlertSender.call_count == 1

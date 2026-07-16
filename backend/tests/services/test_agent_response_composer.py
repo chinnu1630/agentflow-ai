@@ -753,3 +753,41 @@ def test_composes_similar_past_release_without_history() -> None:
     assert response.release_risk is release_risk
     assert response.approval_required is True
     assert response.citations == []
+
+def test_composes_successful_slack_action_confirmation() -> None:
+    """Successful Slack actions should return a deterministic confirmation."""
+    from app.services.slack_release_alert_service import SlackReleaseAlertResult
+
+    release_risk = build_release_risk_response()
+    plan = build_plan(ResponseDepth.ACTION_CONFIRMATION).model_copy(
+        update={
+            "intent": AgentIntent.ACTION_REQUEST,
+            "requires_human_approval": True,
+            "may_execute_side_effect": True,
+            "routing_reason_code": "test_slack_action",
+        }
+    )
+    slack_result = SlackReleaseAlertResult(
+        sent=True,
+        slack_channel="C1234567890",
+        slack_timestamp="12345.6789",
+        risk_level="high",
+        risk_score=0.78,
+        recommended_action="review_required",
+    )
+    composer = AgentResponseComposer(request_id="request-123")
+
+    response = composer.compose_slack_action_confirmation(
+        plan=plan,
+        release_risk=release_risk,
+        slack_result=slack_result,
+    )
+
+    assert "Slack alert sent successfully." in response.answer
+    assert "Channel: C1234567890." in response.answer
+    assert "Risk level: high." in response.answer
+    assert "Risk score: 78%." in response.answer
+    assert "Recommended action: review required." in response.answer
+    assert response.release_risk is release_risk
+    assert response.approval_required is True
+    assert response.citations == []
