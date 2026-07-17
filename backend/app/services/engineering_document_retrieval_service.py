@@ -1,8 +1,8 @@
-"""BM25-style retrieval service for engineering document chunks.
+"""Hybrid retrieval service for AgentFlow engineering documents.
 
-This service provides the first deterministic retrieval layer for the Knowledge
-Agent. It intentionally avoids embeddings, pgvector, rerankers, and LLM calls so
-retrieval behavior can be tested before semantic search is introduced.
+The Knowledge Agent combines BM25 lexical retrieval, pgvector semantic search,
+reciprocal-rank fusion, and local cross-encoder reranking. Semantic and reranker
+failures degrade gracefully to deterministic lexical results.
 """
 
 from __future__ import annotations
@@ -11,12 +11,14 @@ import math
 import re
 import time
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 import structlog
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.models.engineering_document import (
     EngineeringDocument,
@@ -25,6 +27,13 @@ from app.models.engineering_document import (
 from app.models.engineering_document_chunk import EngineeringDocumentChunk
 from app.repositories.engineering_document_repository import (
     EngineeringDocumentRepository,
+    EngineeringDocumentSemanticMatch,
+)
+from app.services.engineering_document_embedding_provider import (
+    EngineeringDocumentEmbeddingError,
+)
+from app.services.engineering_document_reranker import (
+    EngineeringDocumentRerankerError,
 )
 
 logger = structlog.get_logger(__name__)
@@ -39,6 +48,34 @@ class _CandidateChunk:
     document: EngineeringDocument
     chunk: EngineeringDocumentChunk
     terms: list[str]
+
+
+
+class EngineeringDocumentCandidateReranker(Protocol):
+    """Protocol for cross-encoder candidate reranking."""
+
+    async def score_candidates(
+        self,
+        *,
+        query: str,
+        candidate_contents: Sequence[str],
+        run_id: str | None = None,
+    ) -> list[float]:
+        """Return one relevance score for each candidate."""
+        ...
+
+
+class EngineeringDocumentQueryEmbeddingProvider(Protocol):
+    """Protocol for generating query embeddings during semantic retrieval."""
+
+    async def embed_texts(
+        self,
+        texts: Sequence[str],
+        *,
+        run_id: str | None = None,
+    ) -> list[list[float]]:
+        """Return one embedding for every supplied query."""
+        ...
 
 
 class EngineeringDocumentRetrievalRequest(BaseModel):
@@ -83,21 +120,30 @@ class EngineeringDocumentRetrievalResponse(BaseModel):
 
 
 class EngineeringDocumentRetrievalService:
-    """Retrieve relevant engineering document chunks using BM25-style scoring.
+    """Retrieve relevant chunks using hybrid search and local reranking.
 
-    This service scans a bounded set of engineering documents, scores each chunk
-    with deterministic lexical relevance, and returns the top-k chunks. BM25 is
-    used as a production-friendly baseline before pgvector or embeddings are
-    introduced.
+    The service generates bounded lexical and semantic candidate sets, merges
+    them with reciprocal-rank fusion, and optionally reranks the fused pool with
+    a cross-encoder before returning the requested top-k results.
     """
 
-    def __init__(self, repository: EngineeringDocumentRepository) -> None:
+    def __init__(
+        self,
+        repository: EngineeringDocumentRepository,
+        *,
+        embedding_provider: EngineeringDocumentQueryEmbeddingProvider | None = None,
+        reranker: EngineeringDocumentCandidateReranker | None = None,
+    ) -> None:
         """Initialize the retrieval service.
 
         Args:
             repository: Repository used to read engineering documents and chunks.
+            embedding_provider: Optional provider for semantic query embeddings.
+            reranker: Optional cross-encoder used to rerank fused candidates.
         """
         self._repository = repository
+        self._embedding_provider = embedding_provider
+        self._reranker = reranker
 
     async def retrieve_relevant_chunks(
         self,
@@ -137,7 +183,7 @@ class EngineeringDocumentRetrievalService:
             candidate_chunks
         )
 
-        candidates: list[EngineeringDocumentRetrievalResult] = []
+        lexical_candidates: list[EngineeringDocumentRetrievalResult] = []
 
         for candidate in candidate_chunks:
             bm25_score = self._calculate_bm25_score(
@@ -158,7 +204,7 @@ class EngineeringDocumentRetrievalService:
             if score <= 0:
                 continue
 
-            candidates.append(
+            lexical_candidates.append(
                 EngineeringDocumentRetrievalResult(
                     document_id=candidate.document.id,
                     chunk_id=candidate.chunk.id,
@@ -173,10 +219,81 @@ class EngineeringDocumentRetrievalService:
                 )
             )
 
-        ranked_results = sorted(
-            candidates,
+        lexical_ranked = sorted(
+            lexical_candidates,
             key=lambda result: (-result.score, result.title, result.chunk_index),
-        )[: retrieval_request.top_k]
+        )
+
+        semantic_matches: list[EngineeringDocumentSemanticMatch] = []
+
+        if self._embedding_provider is not None and candidate_chunks:
+            try:
+                query_embeddings = await self._embedding_provider.embed_texts(
+                    [retrieval_request.query],
+                    run_id=run_id,
+                )
+
+                if len(query_embeddings) != 1:
+                    raise ValueError(
+                        "embedding provider must return one query embedding"
+                    )
+
+                semantic_matches = (
+                    await self._repository.search_chunks_by_embedding(
+                        query_embedding=query_embeddings[0],
+                        limit=min(max(retrieval_request.top_k * 4, 20), 100),
+                        document_ids=list(
+                            dict.fromkeys(
+                                candidate.document.id
+                                for candidate in candidate_chunks
+                            )
+                        ),
+                        run_id=run_id,
+                    )
+                )
+            except (
+                EngineeringDocumentEmbeddingError,
+                SQLAlchemyError,
+                ValueError,
+            ) as exc:
+                logger.warning(
+                    "engineering_document_semantic_retrieval_failed",
+                    run_id=run_id,
+                    error_type=exc.__class__.__name__,
+                )
+
+        documents_by_id = {document.id: document for document in documents}
+        candidate_pool_size = min(max(retrieval_request.top_k * 4, 20), 100)
+
+        fused_results = self._fuse_ranked_results(
+            lexical_results=lexical_ranked,
+            semantic_matches=semantic_matches,
+            documents_by_id=documents_by_id,
+            top_k=candidate_pool_size,
+        )
+        ranked_results = await self._rerank_results(
+            query=retrieval_request.query,
+            candidates=fused_results,
+            top_k=retrieval_request.top_k,
+            run_id=run_id,
+        )
+
+        total_candidates = len(
+            {
+                *(result.chunk_id for result in lexical_ranked),
+                *(match.chunk.id for match in semantic_matches),
+            }
+        )
+        semantic_results_used = bool(semantic_matches)
+
+        if semantic_results_used and self._reranker is not None:
+            retrieval_strategy = "hybrid_bm25_pgvector_rrf_cross_encoder"
+        elif semantic_results_used:
+            retrieval_strategy = "hybrid_bm25_pgvector_rrf"
+        elif self._reranker is not None:
+            retrieval_strategy = "bm25_cross_encoder"
+        else:
+            retrieval_strategy = "bm25_keyword"
 
         logger.info(
             "engineering_document_retrieval_completed",
@@ -187,9 +304,9 @@ class EngineeringDocumentRetrievalService:
                 if retrieval_request.source_type is not None
                 else None
             ),
-            retrieval_strategy="bm25_keyword",
+            retrieval_strategy=retrieval_strategy,
             total_chunks_scanned=len(candidate_chunks),
-            total_candidates=len(candidates),
+            total_candidates=total_candidates,
             returned_results=len(ranked_results),
             top_k=retrieval_request.top_k,
             duration_ms=round((time.perf_counter() - retrieval_started_at) * 1000, 2),
@@ -197,9 +314,126 @@ class EngineeringDocumentRetrievalService:
 
         return EngineeringDocumentRetrievalResponse(
             query=retrieval_request.query,
-            total_candidates=len(candidates),
+            total_candidates=total_candidates,
             results=ranked_results,
         )
+
+    async def _rerank_results(
+        self,
+        *,
+        query: str,
+        candidates: list[EngineeringDocumentRetrievalResult],
+        top_k: int,
+        run_id: str | None,
+    ) -> list[EngineeringDocumentRetrievalResult]:
+        """Rerank fused candidates and degrade gracefully on model failure."""
+        if self._reranker is None or not candidates:
+            return candidates[:top_k]
+
+        try:
+            reranker_scores = await self._reranker.score_candidates(
+                query=query,
+                candidate_contents=[candidate.content for candidate in candidates],
+                run_id=run_id,
+            )
+
+            if len(reranker_scores) != len(candidates):
+                raise ValueError(
+                    "reranker must return one score for every candidate"
+                )
+        except (EngineeringDocumentRerankerError, ValueError) as exc:
+            logger.warning(
+                "engineering_document_reranking_degraded",
+                run_id=run_id,
+                candidate_count=len(candidates),
+                error_type=exc.__class__.__name__,
+            )
+            return candidates[:top_k]
+
+        scored_candidates = [
+            candidate.model_copy(update={"score": round(score, 6)})
+            for candidate, score in zip(
+                candidates,
+                reranker_scores,
+                strict=True,
+            )
+        ]
+
+        return sorted(
+            scored_candidates,
+            key=lambda result: (
+                -result.score,
+                result.title,
+                result.chunk_index,
+            ),
+        )[:top_k]
+
+    def _fuse_ranked_results(
+        self,
+        *,
+        lexical_results: list[EngineeringDocumentRetrievalResult],
+        semantic_matches: list[EngineeringDocumentSemanticMatch],
+        documents_by_id: dict[UUID, EngineeringDocument],
+        top_k: int,
+    ) -> list[EngineeringDocumentRetrievalResult]:
+        """Fuse lexical and semantic rankings using reciprocal-rank fusion."""
+        if not semantic_matches:
+            return lexical_results[:top_k]
+
+        reciprocal_rank_constant = 60
+        fused_scores: dict[UUID, float] = {}
+        results_by_chunk_id: dict[UUID, EngineeringDocumentRetrievalResult] = {}
+
+        for rank, result in enumerate(lexical_results, start=1):
+            results_by_chunk_id[result.chunk_id] = result
+            fused_scores[result.chunk_id] = (
+                fused_scores.get(result.chunk_id, 0.0)
+                + 1.0 / (reciprocal_rank_constant + rank)
+            )
+
+        for rank, match in enumerate(semantic_matches, start=1):
+            document = documents_by_id.get(match.chunk.document_id)
+
+            if document is None:
+                continue
+
+            if match.chunk.id not in results_by_chunk_id:
+                results_by_chunk_id[match.chunk.id] = (
+                    EngineeringDocumentRetrievalResult(
+                        document_id=document.id,
+                        chunk_id=match.chunk.id,
+                        title=document.title,
+                        source_type=document.source_type,
+                        source_uri=document.source_uri,
+                        chunk_index=match.chunk.chunk_index,
+                        score=match.similarity_score,
+                        content=match.chunk.content,
+                        token_count=match.chunk.token_count,
+                        metadata_json=match.chunk.metadata_json or {},
+                    )
+                )
+
+            fused_scores[match.chunk.id] = (
+                fused_scores.get(match.chunk.id, 0.0)
+                + 1.0 / (reciprocal_rank_constant + rank)
+            )
+
+        ranked_chunk_ids = sorted(
+            results_by_chunk_id,
+            key=lambda chunk_id: (
+                -fused_scores.get(chunk_id, 0.0),
+                -results_by_chunk_id[chunk_id].score,
+                results_by_chunk_id[chunk_id].title,
+                results_by_chunk_id[chunk_id].chunk_index,
+            ),
+        )[:top_k]
+
+        return [
+            results_by_chunk_id[chunk_id].model_copy(
+                update={"score": round(fused_scores[chunk_id], 6)}
+            )
+            for chunk_id in ranked_chunk_ids
+        ]
 
     async def _build_candidate_chunks(
         self,

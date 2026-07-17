@@ -38,6 +38,7 @@ class EngineeringDocumentChunkCreate(BaseModel):
     chunk_index: int = Field(ge=0)
     content: str = Field(min_length=1)
     token_count: int = Field(default=0, ge=0)
+    embedding: list[float] | None = None
     metadata_json: dict[str, Any] = Field(default_factory=dict)
 
 

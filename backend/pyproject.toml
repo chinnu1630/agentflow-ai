@@ -141,6 +141,18 @@ dependencies = [
     # Without this, you would manually ALTER TABLE in production — dangerous.
     "alembic>=1.13.0",
 
+    # pgvector: SQLAlchemy integration for PostgreSQL vector columns and
+    # cosine-distance semantic retrieval.
+    "pgvector>=0.5.0,<1.0.0",
+
+    # NumPy: pin below 2.4 because newer stubs use Python 3.12-only syntax,
+    # while AgentFlow production type checking targets Python 3.11.
+    "numpy>=2.0.0,<2.4.0",
+
+    # Sentence Transformers: locally generates dense embeddings and performs
+    # cross-encoder reranking without sending engineering data to an API.
+    "sentence-transformers>=5.6.0,<6.0.0",
+
 
     # -------------------------------------------------------------------------
     # CACHING

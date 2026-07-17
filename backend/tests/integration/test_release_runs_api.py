@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -25,6 +25,12 @@ from app.repositories.release_run_risk_snapshot_repository import (
     CreateReleaseRunRiskSnapshotCommand,
     ReleaseRunRiskSnapshotRepository,
 )
+from app.services.engineering_document_embedding_provider import (
+    get_engineering_document_embedding_provider,
+)
+from app.services.engineering_document_reranker import (
+    get_engineering_document_reranker,
+)
 from app.services.engineering_document_retrieval_service import EngineeringDocumentRetrievalService
 from app.services.github_risk_collector import GitHubRiskCollectionResult, RiskCollectionStatus
 from app.services.jira_risk_collector import (
@@ -33,6 +39,37 @@ from app.services.jira_risk_collector import (
 )
 from app.services.release_run_service import ReleaseRunService
 from app.services.slack_alert_payload_service import SlackReleaseRiskAlertPayload
+
+
+class FakeReleaseRunEmbeddingProvider:
+    """Generate deterministic embeddings without loading model weights."""
+
+    async def embed_texts(
+        self,
+        texts: Sequence[str],
+        *,
+        run_id: str | None = None,
+    ) -> list[list[float]]:
+        """Return one 384-dimensional embedding per supplied text."""
+        return [[float(index + 1)] * 384 for index, _text in enumerate(texts)]
+
+
+
+class FakeReleaseRunReranker:
+    """Return deterministic scores without loading a cross-encoder."""
+
+    async def score_candidates(
+        self,
+        *,
+        query: str,
+        candidate_contents: Sequence[str],
+        run_id: str | None = None,
+    ) -> list[float]:
+        """Return descending scores in candidate order."""
+        return [
+            float(len(candidate_contents) - index)
+            for index, _content in enumerate(candidate_contents)
+        ]
 
 
 class FakeRiskCollector:
@@ -227,6 +264,12 @@ async def release_run_api_client() -> AsyncIterator[AsyncClient]:
                 await session.close()
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[
+        get_engineering_document_embedding_provider
+    ] = FakeReleaseRunEmbeddingProvider
+    app.dependency_overrides[
+        get_engineering_document_reranker
+    ] = FakeReleaseRunReranker
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

@@ -17,6 +17,9 @@ from app.repositories.engineering_document_repository import (
     EngineeringDocumentRepository,
     EngineeringDocumentRepositoryError,
 )
+from app.services.engineering_document_embedding_provider import (
+    get_engineering_document_embedding_provider,
+)
 from app.services.engineering_document_ingestion_service import (
     EngineeringDocumentIngestionRequest,
     EngineeringDocumentIngestionResult,
@@ -155,7 +158,11 @@ async def ingest_documents(
 
     async with session_factory() as session:
         repository = EngineeringDocumentRepository(session=session)
-        service = EngineeringDocumentIngestionService(repository=repository)
+        embedding_provider = get_engineering_document_embedding_provider()
+        service = EngineeringDocumentIngestionService(
+            repository=repository,
+            embedding_provider=embedding_provider,
+        )
         results: list[EngineeringDocumentIngestionResult] = []
 
         try:

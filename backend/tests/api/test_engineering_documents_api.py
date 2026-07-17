@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 
 import httpx
 import pytest
@@ -14,6 +14,43 @@ import app.models  # noqa: F401 - ensures all SQLAlchemy models are registered
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
+from app.services.engineering_document_embedding_provider import (
+    get_engineering_document_embedding_provider,
+)
+from app.services.engineering_document_reranker import (
+    get_engineering_document_reranker,
+)
+
+
+class FakeEmbeddingProvider:
+    """Generate deterministic embeddings without loading an ML model."""
+
+    async def embed_texts(
+        self,
+        texts: Sequence[str],
+        *,
+        run_id: str | None = None,
+    ) -> list[list[float]]:
+        """Return one 384-dimensional vector per text."""
+        return [[float(index + 1)] * 384 for index, _text in enumerate(texts)]
+
+
+
+class FakeReranker:
+    """Return deterministic scores without loading a cross-encoder."""
+
+    async def score_candidates(
+        self,
+        *,
+        query: str,
+        candidate_contents: Sequence[str],
+        run_id: str | None = None,
+    ) -> list[float]:
+        """Return descending scores in candidate order."""
+        return [
+            float(len(candidate_contents) - index)
+            for index, _content in enumerate(candidate_contents)
+        ]
 
 
 @pytest_asyncio.fixture
@@ -49,6 +86,12 @@ async def api_client(
         yield async_session
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[
+        get_engineering_document_embedding_provider
+    ] = FakeEmbeddingProvider
+    app.dependency_overrides[
+        get_engineering_document_reranker
+    ] = FakeReranker
 
     transport = httpx.ASGITransport(app=app)
 

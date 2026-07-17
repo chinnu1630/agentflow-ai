@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.db.vector_type import create_vector_type
 
 if TYPE_CHECKING:
     from app.models.engineering_document import EngineeringDocument
@@ -63,6 +64,10 @@ class EngineeringDocumentChunk(Base):
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    embedding: Mapped[list[float] | None] = mapped_column(
+        JSON().with_variant(create_vector_type(384), "postgresql"),
+        nullable=True,
+    )
     metadata_json: Mapped[dict[str, object]] = mapped_column(
         JSON().with_variant(JSONB(), "postgresql"),
         nullable=False,

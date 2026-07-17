@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from uuid import UUID
 
 import pytest
@@ -15,8 +15,14 @@ import app.models  # noqa: F401 - ensures all SQLAlchemy models are registered
 from app.db.base import Base
 from app.models.engineering_document import EngineeringDocumentSourceType
 from app.models.engineering_document_chunk import EngineeringDocumentChunk
-from app.repositories.engineering_document_repository import EngineeringDocumentRepository
+from app.repositories.engineering_document_repository import (
+    EngineeringDocumentRepository,
+    EngineeringDocumentSemanticMatch,
+)
 from app.services.document_chunker import DocumentChunkingConfig
+from app.services.engineering_document_embedding_provider import (
+    EngineeringDocumentEmbeddingError,
+)
 from app.services.engineering_document_ingestion_service import (
     EngineeringDocumentIngestionRequest,
     EngineeringDocumentIngestionService,
@@ -441,3 +447,302 @@ async def test_retrieval_quality_eval_cases_return_expected_top_document(
 
     assert response.results
     assert response.results[0].title == expected_top_title
+
+
+
+class FakeQueryEmbeddingProvider:
+    """Generate a deterministic query embedding for hybrid retrieval tests."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def embed_texts(
+        self,
+        texts: Sequence[str],
+        *,
+        run_id: str | None = None,
+    ) -> list[list[float]]:
+        """Return one deterministic 384-dimensional vector per query."""
+        self.calls.append(list(texts))
+        return [[0.5] * 384 for _text in texts]
+
+
+@pytest.mark.asyncio
+async def test_hybrid_retrieval_returns_semantic_only_match(
+    async_session: AsyncSession,
+) -> None:
+    """Hybrid retrieval should recover relevant chunks without keyword overlap."""
+    repository = EngineeringDocumentRepository(async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+
+    result = await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Production Release Policy",
+            source_type=EngineeringDocumentSourceType.RELEASE_CHECKLIST,
+            source_uri="docs/production-release-policy.md",
+            raw_content=(
+                "Release manager approval is mandatory before production deployment."
+            ),
+        )
+    )
+
+    chunks = await repository.list_chunks_by_document_id(result.document_id)
+    semantic_chunk = chunks[0]
+
+    async def fake_semantic_search(
+        *,
+        query_embedding: list[float],
+        limit: int = 20,
+        document_ids: list[UUID] | None = None,
+        run_id: str | None = None,
+    ) -> list[EngineeringDocumentSemanticMatch]:
+        assert query_embedding == [0.5] * 384
+        assert limit >= 1
+
+        return [
+            EngineeringDocumentSemanticMatch(
+                chunk=semantic_chunk,
+                similarity_score=0.92,
+            )
+        ]
+
+    repository.search_chunks_by_embedding = fake_semantic_search  # type: ignore[method-assign]
+    embedding_provider = FakeQueryEmbeddingProvider()
+    retrieval_service = EngineeringDocumentRetrievalService(
+        repository,
+        embedding_provider=embedding_provider,
+    )
+
+    response = await retrieval_service.retrieve_relevant_chunks(
+        EngineeringDocumentRetrievalRequest(
+            query="Can we ship?",
+            top_k=3,
+        ),
+        run_id="hybrid-semantic-test",
+    )
+
+    assert embedding_provider.calls == [["Can we ship?"]]
+    assert response.results
+    assert response.results[0].title == "Production Release Policy"
+    assert response.results[0].score > 0
+
+
+
+@pytest.mark.asyncio
+async def test_hybrid_retrieval_fuses_duplicate_lexical_and_semantic_match(
+    async_session: AsyncSession,
+) -> None:
+    """RRF should merge one chunk found by both retrieval strategies."""
+    repository = EngineeringDocumentRepository(async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+
+    result = await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Release Approval Policy",
+            source_type=EngineeringDocumentSourceType.RELEASE_CHECKLIST,
+            source_uri="docs/release-approval-policy.md",
+            raw_content="Release manager approval is required before deployment.",
+        )
+    )
+
+    chunks = await repository.list_chunks_by_document_id(result.document_id)
+    matching_chunk = chunks[0]
+
+    async def fake_semantic_search(
+        *,
+        query_embedding: list[float],
+        limit: int = 20,
+        document_ids: list[UUID] | None = None,
+        run_id: str | None = None,
+    ) -> list[EngineeringDocumentSemanticMatch]:
+        return [
+            EngineeringDocumentSemanticMatch(
+                chunk=matching_chunk,
+                similarity_score=0.95,
+            )
+        ]
+
+    repository.search_chunks_by_embedding = fake_semantic_search  # type: ignore[method-assign]
+
+    retrieval_service = EngineeringDocumentRetrievalService(
+        repository,
+        embedding_provider=FakeQueryEmbeddingProvider(),
+    )
+
+    response = await retrieval_service.retrieve_relevant_chunks(
+        EngineeringDocumentRetrievalRequest(
+            query="release manager approval",
+            top_k=5,
+        )
+    )
+
+    assert response.total_candidates == 1
+    assert len(response.results) == 1
+    assert response.results[0].title == "Release Approval Policy"
+    assert response.results[0].score == pytest.approx(2 / 61, abs=1e-6)
+
+
+class FailingQueryEmbeddingProvider:
+    """Simulate an unavailable local embedding model."""
+
+    async def embed_texts(
+        self,
+        texts: Sequence[str],
+        *,
+        run_id: str | None = None,
+    ) -> list[list[float]]:
+        """Raise the provider's expected operational error."""
+        raise EngineeringDocumentEmbeddingError("Embedding model unavailable.")
+
+
+@pytest.mark.asyncio
+async def test_semantic_failure_degrades_to_bm25_results(
+    async_session: AsyncSession,
+) -> None:
+    """Embedding failure should not prevent deterministic lexical retrieval."""
+    repository = EngineeringDocumentRepository(async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+
+    await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Payment Failure Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/payment-failure-runbook.md",
+            raw_content="Redis checkout failure requires payment service rollback.",
+        )
+    )
+
+    retrieval_service = EngineeringDocumentRetrievalService(
+        repository,
+        embedding_provider=FailingQueryEmbeddingProvider(),
+    )
+
+    response = await retrieval_service.retrieve_relevant_chunks(
+        EngineeringDocumentRetrievalRequest(
+            query="Redis checkout failure",
+            top_k=3,
+        ),
+        run_id="semantic-fallback-test",
+    )
+
+    assert response.total_candidates == 1
+    assert len(response.results) == 1
+    assert response.results[0].title == "Payment Failure Runbook"
+    assert response.results[0].score > 0
+
+
+class FakeCandidateReranker:
+    """Return deterministic cross-encoder scores for retrieval tests."""
+
+    def __init__(self, scores: list[float]) -> None:
+        self._scores = scores
+        self.calls: list[tuple[str, list[str]]] = []
+
+    async def score_candidates(
+        self,
+        *,
+        query: str,
+        candidate_contents: Sequence[str],
+        run_id: str | None = None,
+    ) -> list[float]:
+        """Return configured scores in candidate order."""
+        self.calls.append((query, list(candidate_contents)))
+        return list(self._scores)
+
+
+class FailingCandidateReranker:
+    """Simulate a cross-encoder inference failure."""
+
+    async def score_candidates(
+        self,
+        *,
+        query: str,
+        candidate_contents: Sequence[str],
+        run_id: str | None = None,
+    ) -> list[float]:
+        """Raise the expected reranker domain error."""
+        from app.services.engineering_document_reranker import (
+            EngineeringDocumentRerankerError,
+        )
+
+        raise EngineeringDocumentRerankerError("Reranker unavailable.")
+
+
+@pytest.mark.asyncio
+async def test_cross_encoder_reranker_changes_fused_result_order(
+    async_session: AsyncSession,
+) -> None:
+    """Cross-encoder scores should determine final candidate ordering."""
+    repository = EngineeringDocumentRepository(async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+
+    await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Lexical Release Notes",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/lexical-release-notes.md",
+            raw_content="Release approval release approval checklist guidance.",
+        )
+    )
+    await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Production Deployment Policy",
+            source_type=EngineeringDocumentSourceType.RELEASE_CHECKLIST,
+            source_uri="docs/production-deployment-policy.md",
+            raw_content="A manager must authorize the release before production deployment.",
+        )
+    )
+
+    reranker = FakeCandidateReranker(scores=[0.1, 0.9])
+    retrieval_service = EngineeringDocumentRetrievalService(
+        repository,
+        reranker=reranker,
+    )
+
+    response = await retrieval_service.retrieve_relevant_chunks(
+        EngineeringDocumentRetrievalRequest(
+            query="release approval",
+            top_k=2,
+        ),
+        run_id="reranker-order-test",
+    )
+
+    assert len(response.results) == 2
+    assert response.results[0].title == "Production Deployment Policy"
+    assert response.results[0].score == 0.9
+    assert len(reranker.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_reranker_failure_preserves_fused_ranking(
+    async_session: AsyncSession,
+) -> None:
+    """Reranker failure should preserve the deterministic fallback ranking."""
+    repository = EngineeringDocumentRepository(async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+
+    await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Payment Release Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/payment-release-runbook.md",
+            raw_content="Redis checkout failure requires immediate rollback.",
+        )
+    )
+
+    retrieval_service = EngineeringDocumentRetrievalService(
+        repository,
+        reranker=FailingCandidateReranker(),
+    )
+
+    response = await retrieval_service.retrieve_relevant_chunks(
+        EngineeringDocumentRetrievalRequest(
+            query="Redis checkout failure",
+            top_k=3,
+        ),
+        run_id="reranker-fallback-test",
+    )
+
+    assert len(response.results) == 1
+    assert response.results[0].title == "Payment Release Runbook"
+    assert response.results[0].score > 0

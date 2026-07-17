@@ -81,6 +81,14 @@ from app.services.agent_specific_risk_matcher import (
     AgentSpecificRiskMatcher,
     AgentSpecificRiskNotFoundError,
 )
+from app.services.engineering_document_embedding_provider import (
+    SentenceTransformerEmbeddingProvider,
+    get_engineering_document_embedding_provider,
+)
+from app.services.engineering_document_reranker import (
+    CrossEncoderEngineeringDocumentReranker,
+    get_engineering_document_reranker,
+)
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalRequest,
     EngineeringDocumentRetrievalService,
@@ -326,6 +334,12 @@ async def execute_agent_query(
     jira_risk_collector: AgentJiraRiskCollectorDependency,
     slack_sender: AgentSlackAlertSenderDependency,
     session: AsyncSession = Depends(get_db_session),
+    embedding_provider: SentenceTransformerEmbeddingProvider = Depends(
+        get_engineering_document_embedding_provider
+    ),
+    reranker: CrossEncoderEngineeringDocumentReranker = Depends(
+        get_engineering_document_reranker
+    ),
 ) -> AgentQueryResponse:
     """Execute a fresh query or answer from trusted persisted context."""
 
@@ -356,6 +370,8 @@ async def execute_agent_query(
             )
             knowledge_service = EngineeringDocumentRetrievalService(
                 repository=engineering_document_repository,
+                embedding_provider=embedding_provider,
+                reranker=reranker,
             )
             retrieval = await knowledge_service.retrieve_relevant_chunks(
                 EngineeringDocumentRetrievalRequest(
@@ -571,6 +587,8 @@ async def execute_agent_query(
         )
         knowledge_service = EngineeringDocumentRetrievalService(
             repository=engineering_document_repository,
+            embedding_provider=embedding_provider,
+            reranker=reranker,
         )
 
         release_run_service = ReleaseRunService(

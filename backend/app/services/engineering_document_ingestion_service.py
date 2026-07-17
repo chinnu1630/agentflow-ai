@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, Protocol
 from uuid import UUID
 
 import structlog
@@ -11,7 +12,10 @@ from pydantic import BaseModel, Field
 
 from app.models.engineering_document import EngineeringDocumentSourceType
 from app.repositories.engineering_document_repository import EngineeringDocumentRepository
-from app.schemas.engineering_document import EngineeringDocumentCreate
+from app.schemas.engineering_document import (
+    EngineeringDocumentChunkCreate,
+    EngineeringDocumentCreate,
+)
 from app.services.document_chunker import (
     DocumentChunker,
     DocumentChunkingConfig,
@@ -19,6 +23,19 @@ from app.services.document_chunker import (
 )
 
 logger = structlog.get_logger(__name__)
+
+
+class EngineeringDocumentEmbeddingProvider(Protocol):
+    """Protocol for generating dense embeddings during ingestion."""
+
+    async def embed_texts(
+        self,
+        texts: Sequence[str],
+        *,
+        run_id: str | None = None,
+    ) -> list[list[float]]:
+        """Return one embedding for every supplied text."""
+        ...
 
 
 class EngineeringDocumentIngestionRequest(BaseModel):
@@ -58,15 +75,18 @@ class EngineeringDocumentIngestionService:
         repository: EngineeringDocumentRepository,
         *,
         chunker: DocumentChunker | None = None,
+        embedding_provider: EngineeringDocumentEmbeddingProvider | None = None,
     ) -> None:
         """Initialize the ingestion service.
 
         Args:
             repository: Repository for engineering documents and chunks.
             chunker: Optional deterministic chunker dependency.
+            embedding_provider: Optional provider for semantic chunk embeddings.
         """
         self._repository = repository
         self._chunker = chunker or DocumentChunker()
+        self._embedding_provider = embedding_provider
 
     async def ingest_document(
         self,
@@ -99,6 +119,40 @@ class EngineeringDocumentIngestionService:
             )
 
             if existing_chunks:
+                chunks_without_embeddings = [
+                    chunk for chunk in existing_chunks if chunk.embedding is None
+                ]
+
+                if self._embedding_provider is not None and chunks_without_embeddings:
+                    embeddings = await self._embedding_provider.embed_texts(
+                        [chunk.content for chunk in chunks_without_embeddings],
+                        run_id=run_id,
+                    )
+
+                    if len(embeddings) != len(chunks_without_embeddings):
+                        raise ValueError(
+                            "embedding provider must return one embedding per document chunk"
+                        )
+
+                    updated_count = await self._repository.update_chunk_embeddings(
+                        {
+                            chunk.id: embedding
+                            for chunk, embedding in zip(
+                                chunks_without_embeddings,
+                                embeddings,
+                                strict=True,
+                            )
+                        },
+                        run_id=run_id,
+                    )
+
+                    logger.info(
+                        "engineering_document_ingestion_embeddings_backfilled",
+                        run_id=run_id,
+                        document_id=str(existing_document.id),
+                        updated_count=updated_count,
+                    )
+
                 logger.info(
                     "engineering_document_ingestion_skipped_duplicate",
                     run_id=run_id,
@@ -122,6 +176,10 @@ class EngineeringDocumentIngestionService:
                     metadata_json=existing_document.metadata_json,
                 ),
                 config=ingestion_request.chunking_config,
+                run_id=run_id,
+            )
+            chunk_payloads = await self._attach_embeddings(
+                chunk_payloads,
                 run_id=run_id,
             )
             created_chunks = await self._repository.create_chunks(
@@ -168,6 +226,10 @@ class EngineeringDocumentIngestionService:
             run_id=run_id,
         )
 
+        chunk_payloads = await self._attach_embeddings(
+            chunk_payloads,
+            run_id=run_id,
+        )
         created_chunks = await self._repository.create_chunks(
             chunk_payloads,
             run_id=run_id,
@@ -189,6 +251,31 @@ class EngineeringDocumentIngestionService:
             created_chunks=True,
             duplicate_document=False,
         )
+
+    async def _attach_embeddings(
+        self,
+        chunk_payloads: list[EngineeringDocumentChunkCreate],
+        *,
+        run_id: str | None,
+    ) -> list[EngineeringDocumentChunkCreate]:
+        """Attach generated embeddings while preserving chunk order."""
+        if self._embedding_provider is None or not chunk_payloads:
+            return chunk_payloads
+
+        embeddings = await self._embedding_provider.embed_texts(
+            [chunk.content for chunk in chunk_payloads],
+            run_id=run_id,
+        )
+
+        if len(embeddings) != len(chunk_payloads):
+            raise ValueError(
+                "embedding provider must return one embedding per document chunk"
+            )
+
+        return [
+            chunk.model_copy(update={"embedding": embedding})
+            for chunk, embedding in zip(chunk_payloads, embeddings, strict=True)
+        ]
 
     def _hash_content(self, raw_content: str) -> str:
         """Return a SHA-256 content hash for duplicate detection."""

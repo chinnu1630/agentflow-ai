@@ -48,6 +48,19 @@ async def session_factory(
     await engine.dispose()
 
 
+class FakeEmbeddingProvider:
+    """Generate deterministic embeddings without loading model weights."""
+
+    async def embed_texts(
+        self,
+        texts: Sequence[str],
+        *,
+        run_id: str | None = None,
+    ) -> list[list[float]]:
+        """Return one 384-dimensional embedding per text."""
+        return [[float(index + 1)] * 384 for index, _text in enumerate(texts)]
+
+
 def _write_document(
     document_path: Path,
     *,
@@ -176,6 +189,11 @@ async def test_ingest_documents_persists_and_deduplicates_documents(
         "get_session_factory",
         lambda: session_factory,
     )
+    monkeypatch.setattr(
+        seed_script,
+        "get_engineering_document_embedding_provider",
+        lambda: FakeEmbeddingProvider(),
+    )
 
     first_results = await seed_script.ingest_documents([document_path])
     second_results = await seed_script.ingest_documents([document_path])
@@ -189,8 +207,13 @@ async def test_ingest_documents_persists_and_deduplicates_documents(
     async with session_factory() as session:
         repository = EngineeringDocumentRepository(session)
         documents = await repository.list_documents()
+        chunks = await repository.list_chunks_by_document_id(
+            first_results[0].document_id
+        )
 
     assert len(documents) == 1
+    assert chunks
+    assert all(chunk.embedding is not None for chunk in chunks)
 
 
 def test_parse_arguments_returns_supplied_paths(

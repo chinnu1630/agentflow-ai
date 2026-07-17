@@ -182,3 +182,80 @@ def test_ingestion_request_rejects_empty_raw_content() -> None:
             source_uri="docs/payment-service-runbook.md",
             raw_content="",
         )
+
+
+class FakeEmbeddingProvider:
+    """Generate deterministic embeddings without loading a real ML model."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def embed_texts(
+        self,
+        texts: list[str],
+        *,
+        run_id: str | None = None,
+    ) -> list[list[float]]:
+        """Return one 384-dimensional embedding per supplied text."""
+        self.calls.append(texts)
+        return [
+            [float(index + 1)] * 384
+            for index, _text in enumerate(texts)
+        ]
+
+
+@pytest.mark.asyncio
+async def test_ingest_document_generates_and_persists_chunk_embeddings(
+    async_session: AsyncSession,
+) -> None:
+    """Ingestion should attach generated embeddings to every stored chunk."""
+    repository = EngineeringDocumentRepository(async_session)
+    embedding_provider = FakeEmbeddingProvider()
+    service = EngineeringDocumentIngestionService(
+        repository,
+        embedding_provider=embedding_provider,
+    )
+
+    result = await service.ingest_document(
+        _ingestion_request(raw_content=_numbered_tokens(25)),
+        run_id="embedding-ingestion-test",
+    )
+
+    chunks = await repository.list_chunks_by_document_id(result.document_id)
+
+    assert len(embedding_provider.calls) == 1
+    assert embedding_provider.calls[0] == [chunk.content for chunk in chunks]
+    assert chunks[0].embedding == [1.0] * 384
+    assert chunks[1].embedding == [2.0] * 384
+
+
+@pytest.mark.asyncio
+async def test_duplicate_ingestion_backfills_missing_chunk_embeddings(
+    async_session: AsyncSession,
+) -> None:
+    """Duplicate ingestion should backfill embeddings for legacy chunks."""
+    repository = EngineeringDocumentRepository(async_session)
+    request = _ingestion_request(raw_content=_numbered_tokens(25))
+
+    legacy_service = EngineeringDocumentIngestionService(repository)
+    first_result = await legacy_service.ingest_document(request)
+
+    embedding_provider = FakeEmbeddingProvider()
+    embedding_service = EngineeringDocumentIngestionService(
+        repository,
+        embedding_provider=embedding_provider,
+    )
+    second_result = await embedding_service.ingest_document(
+        request,
+        run_id="duplicate-embedding-backfill-test",
+    )
+
+    chunks = await repository.list_chunks_by_document_id(first_result.document_id)
+
+    assert second_result.document_id == first_result.document_id
+    assert second_result.created_document is False
+    assert second_result.created_chunks is False
+    assert second_result.duplicate_document is True
+    assert len(embedding_provider.calls) == 1
+    assert chunks[0].embedding == [1.0] * 384
+    assert chunks[1].embedding == [2.0] * 384

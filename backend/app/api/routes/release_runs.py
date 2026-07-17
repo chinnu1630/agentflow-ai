@@ -63,6 +63,14 @@ from app.schemas.release_run_event import (
     ReleaseRunEventResponse,
 )
 from app.schemas.risk import ReleaseRunRiskResponse
+from app.services.engineering_document_embedding_provider import (
+    SentenceTransformerEmbeddingProvider,
+    get_engineering_document_embedding_provider,
+)
+from app.services.engineering_document_reranker import (
+    CrossEncoderEngineeringDocumentReranker,
+    get_engineering_document_reranker,
+)
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalService,
 )
@@ -688,6 +696,12 @@ async def collect_release_risks(
     session: AsyncSession = Depends(get_db_session),
     risk_collector: RiskCollector = Depends(get_risk_collector),
     jira_risk_collector: JiraRiskCollector = Depends(get_jira_risk_collector),
+    embedding_provider: SentenceTransformerEmbeddingProvider = Depends(
+        get_engineering_document_embedding_provider
+    ),
+    reranker: CrossEncoderEngineeringDocumentReranker = Depends(
+        get_engineering_document_reranker
+    ),
 ) -> ReleaseRunRiskResponse:
     """Run the LangGraph release-risk workflow for an existing release run.
 
@@ -716,6 +730,8 @@ async def collect_release_risks(
             session=session,
             risk_collector=risk_collector,
             jira_risk_collector=jira_risk_collector,
+            embedding_provider=embedding_provider,
+            reranker=reranker,
         )
 
 
@@ -753,6 +769,8 @@ async def _collect_release_risk_workflow_response(
     session: AsyncSession,
     risk_collector: RiskCollector,
     jira_risk_collector: JiraRiskCollector,
+    embedding_provider: SentenceTransformerEmbeddingProvider,
+    reranker: CrossEncoderEngineeringDocumentReranker,
 ) -> ReleaseRunRiskResponse:
     """Run the LangGraph workflow and convert its final state into an API response.
 
@@ -784,6 +802,8 @@ async def _collect_release_risk_workflow_response(
     )
     knowledge_service = EngineeringDocumentRetrievalService(
         repository=engineering_document_repository,
+        embedding_provider=embedding_provider,
+        reranker=reranker,
     )
 
     service = ReleaseRunService(

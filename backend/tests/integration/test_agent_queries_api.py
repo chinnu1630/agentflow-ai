@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 
 import pytest
@@ -29,6 +29,12 @@ from app.schemas.jira import (
     JiraIssueStatus,
     JiraIssueType,
 )
+from app.services.engineering_document_embedding_provider import (
+    get_engineering_document_embedding_provider,
+)
+from app.services.engineering_document_reranker import (
+    get_engineering_document_reranker,
+)
 from app.services.github_risk_collector import (
     GitHubRiskCollectionResult,
     RiskCollectionStatus,
@@ -47,6 +53,37 @@ from app.services.jira_risk_rules import JiraRiskRuleEngine
 from app.services.slack_alert_payload_service import (
     SlackReleaseRiskAlertPayload,
 )
+
+
+class FakeAgentEmbeddingProvider:
+    """Generate deterministic embeddings without loading model weights."""
+
+    async def embed_texts(
+        self,
+        texts: Sequence[str],
+        *,
+        run_id: str | None = None,
+    ) -> list[list[float]]:
+        """Return one 384-dimensional embedding per supplied text."""
+        return [[float(index + 1)] * 384 for index, _text in enumerate(texts)]
+
+
+
+class FakeAgentReranker:
+    """Return deterministic scores without loading a cross-encoder."""
+
+    async def score_candidates(
+        self,
+        *,
+        query: str,
+        candidate_contents: Sequence[str],
+        run_id: str | None = None,
+    ) -> list[float]:
+        """Return descending scores in candidate order."""
+        return [
+            float(len(candidate_contents) - index)
+            for index, _content in enumerate(candidate_contents)
+        ]
 
 
 class FakeAgentGitHubRiskCollector:
@@ -218,6 +255,12 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
     app.dependency_overrides[get_agent_github_risk_collector] = override_get_github_collector
     app.dependency_overrides[get_agent_jira_risk_collector] = override_get_jira_collector
     app.dependency_overrides[get_agent_slack_alert_sender] = override_get_slack_sender
+    app.dependency_overrides[
+        get_engineering_document_embedding_provider
+    ] = FakeAgentEmbeddingProvider
+    app.dependency_overrides[
+        get_engineering_document_reranker
+    ] = FakeAgentReranker
 
     try:
         async with AsyncClient(

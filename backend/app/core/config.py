@@ -37,6 +37,24 @@ class Settings(BaseSettings):
     jira_project_key: str | None = None
     slack_bot_token: SecretStr | None = None
     slack_channel_id: str | None = None
+    knowledge_embedding_model_name: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        min_length=1,
+        description="Local Sentence Transformer model used for semantic retrieval.",
+    )
+    knowledge_embedding_dimension: int = Field(
+        default=384,
+        ge=384,
+        le=384,
+        description=(
+            "Vector dimension fixed by the engineering-document vector(384) schema."
+        ),
+    )
+    knowledge_reranker_model_name: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L6-v2",
+        min_length=1,
+        description="Local cross-encoder model used to rerank hybrid candidates.",
+    )
     otel_enabled: bool = Field(
         default=False,
         description="Enable OpenTelemetry tracing instrumentation.",

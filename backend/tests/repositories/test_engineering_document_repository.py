@@ -227,6 +227,7 @@ async def test_create_chunk_persists_engineering_document_chunk(
             chunk_index=0,
             content="Payment service depends on Redis.",
             token_count=6,
+            embedding=[0.1, 0.2, 0.3],
             metadata_json={"section": "dependencies"},
         )
     )
@@ -236,6 +237,7 @@ async def test_create_chunk_persists_engineering_document_chunk(
     assert chunk.chunk_index == 0
     assert chunk.content == "Payment service depends on Redis."
     assert chunk.token_count == 6
+    assert chunk.embedding == [0.1, 0.2, 0.3]
     assert chunk.metadata_json["section"] == "dependencies"
 
 
@@ -410,3 +412,59 @@ async def test_list_chunks_by_document_ids_returns_empty_list_for_empty_input(
 
     assert chunks == []
 
+
+
+@pytest.mark.asyncio
+async def test_update_chunk_embeddings_backfills_existing_chunks(
+    async_session: AsyncSession,
+) -> None:
+    """Repository should add embeddings to chunks created before vector support."""
+    repository = EngineeringDocumentRepository(async_session)
+    document = await repository.create_document(_document_create())
+
+    chunks = await repository.create_chunks(
+        [
+            EngineeringDocumentChunkCreate(
+                document_id=document.id,
+                chunk_index=0,
+                content="Payment service overview.",
+                token_count=3,
+            ),
+            EngineeringDocumentChunkCreate(
+                document_id=document.id,
+                chunk_index=1,
+                content="Payment rollback procedure.",
+                token_count=3,
+            ),
+        ]
+    )
+
+    updated_count = await repository.update_chunk_embeddings(
+        {
+            chunks[0].id: [1.0] * 384,
+            chunks[1].id: [2.0] * 384,
+        },
+        run_id="embedding-backfill-test",
+    )
+
+    stored_chunks = await repository.list_chunks_by_document_id(document.id)
+
+    assert updated_count == 2
+    assert stored_chunks[0].embedding == [1.0] * 384
+    assert stored_chunks[1].embedding == [2.0] * 384
+
+
+@pytest.mark.asyncio
+async def test_search_chunks_by_embedding_returns_empty_on_sqlite(
+    async_session: AsyncSession,
+) -> None:
+    """Semantic search should degrade safely when pgvector is unavailable."""
+    repository = EngineeringDocumentRepository(async_session)
+
+    matches = await repository.search_chunks_by_embedding(
+        query_embedding=[0.1] * 384,
+        limit=5,
+        run_id="semantic-search-sqlite-test",
+    )
+
+    assert matches == []

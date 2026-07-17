@@ -18,10 +18,18 @@ from app.repositories.engineering_document_repository import (
     EngineeringDocumentRepository,
     EngineeringDocumentRepositoryError,
 )
+from app.services.engineering_document_embedding_provider import (
+    SentenceTransformerEmbeddingProvider,
+    get_engineering_document_embedding_provider,
+)
 from app.services.engineering_document_ingestion_service import (
     EngineeringDocumentIngestionRequest,
     EngineeringDocumentIngestionResult,
     EngineeringDocumentIngestionService,
+)
+from app.services.engineering_document_reranker import (
+    CrossEncoderEngineeringDocumentReranker,
+    get_engineering_document_reranker,
 )
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalRequest,
@@ -41,18 +49,24 @@ async def ingest_engineering_document(
     request: Request,
     response: Response,
     session: AsyncSession = Depends(get_db_session),
+    embedding_provider: SentenceTransformerEmbeddingProvider = Depends(
+        get_engineering_document_embedding_provider
+    ),
 ) -> EngineeringDocumentIngestionResult:
     """Ingest one engineering document into the Knowledge Agent store.
 
     This endpoint stores the original document, chunks it deterministically,
-    persists ordered chunks, and returns ingestion metadata. It intentionally
-    does not call Claude, Slack, ML models, embeddings, or pgvector.
+    persists ordered chunks and local semantic embeddings, and returns
+    ingestion metadata. It does not call Claude, Slack, or external AI APIs.
     """
 
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
 
     repository = EngineeringDocumentRepository(session=session)
-    service = EngineeringDocumentIngestionService(repository=repository)
+    service = EngineeringDocumentIngestionService(
+        repository=repository,
+        embedding_provider=embedding_provider,
+    )
 
     try:
         result = await service.ingest_document(
@@ -99,18 +113,28 @@ async def retrieve_engineering_document_chunks(
     command: EngineeringDocumentRetrievalRequest,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
+    embedding_provider: SentenceTransformerEmbeddingProvider = Depends(
+        get_engineering_document_embedding_provider
+    ),
+    reranker: CrossEncoderEngineeringDocumentReranker = Depends(
+        get_engineering_document_reranker
+    ),
 ) -> EngineeringDocumentRetrievalResponse:
     """Retrieve relevant engineering document chunks for a query.
 
-    This endpoint uses deterministic keyword retrieval as the first Knowledge
-    Agent retrieval baseline. It intentionally avoids embeddings, pgvector,
-    rerankers, and LLM synthesis for now.
+    This endpoint combines deterministic BM25 keyword retrieval with pgvector
+    semantic retrieval and reciprocal-rank fusion. It does not perform LLM
+    synthesis or send engineering data to an external AI service.
     """
 
     request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
 
     repository = EngineeringDocumentRepository(session=session)
-    service = EngineeringDocumentRetrievalService(repository=repository)
+    service = EngineeringDocumentRetrievalService(
+        repository=repository,
+        embedding_provider=embedding_provider,
+        reranker=reranker,
+    )
 
     try:
         return await service.retrieve_relevant_chunks(
