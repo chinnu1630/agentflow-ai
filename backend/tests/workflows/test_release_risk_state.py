@@ -11,6 +11,7 @@ from app.workflows.release_risk_state import (
     ReleaseRiskState,
     ReleaseRiskWorkflowStage,
     ReleaseRiskWorkflowStatus,
+    RiskSynthesisStatus,
 )
 
 
@@ -88,7 +89,7 @@ def test_release_risk_state_rejects_unknown_fields() -> None:
         ReleaseRiskState(
             release_run_id=uuid4(),
             run_id="test-run-004",
-            unexpected_field="not allowed",
+            unexpected_field="not allowed",  # type: ignore[call-arg]
         )
 
 
@@ -193,3 +194,57 @@ def test_release_risk_state_adds_non_recoverable_error_as_failed() -> None:
     assert updated_state.errors[0].source == "jira_collector"
     assert updated_state.errors[0].recoverable is False
     assert updated_state.failed_nodes == ["jira_collector"]
+
+
+def test_release_risk_state_defaults_synthesis_to_not_started() -> None:
+    """Claude synthesis should be disabled safely in new workflow state."""
+    state = ReleaseRiskState(
+        release_run_id=uuid4(),
+        run_id="test-run-synthesis-001",
+    )
+
+    assert state.synthesis_status is RiskSynthesisStatus.NOT_STARTED
+    assert state.synthesis_report is None
+    assert state.synthesis_prompt_version is None
+    assert state.synthesis_model is None
+    assert state.synthesis_input_tokens is None
+    assert state.synthesis_output_tokens is None
+    assert state.synthesis_duration_ms is None
+    assert state.synthesis_error is None
+
+
+def test_release_risk_state_accepts_completed_synthesis_metadata() -> None:
+    """Workflow state should store validated Claude report metadata."""
+    state = ReleaseRiskState(
+        release_run_id=uuid4(),
+        run_id="test-run-synthesis-002",
+        stage=ReleaseRiskWorkflowStage.SYNTHESIZING_RELEASE_RISK,
+        synthesis_status=RiskSynthesisStatus.COMPLETED,
+        synthesis_report={
+            "schema_version": "claude_release_risk_report_v1",
+            "recommendation": "review_required",
+            "confidence": 0.91,
+        },
+        synthesis_prompt_version="release-risk-synthesis-v1",
+        synthesis_model="test-claude-model",
+        synthesis_input_tokens=450,
+        synthesis_output_tokens=220,
+        synthesis_duration_ms=850.5,
+    )
+
+    assert state.synthesis_status is RiskSynthesisStatus.COMPLETED
+    assert state.synthesis_report is not None
+    assert state.synthesis_report["recommendation"] == "review_required"
+    assert state.synthesis_input_tokens == 450
+    assert state.synthesis_output_tokens == 220
+    assert state.synthesis_duration_ms == 850.5
+
+
+def test_release_risk_state_rejects_negative_synthesis_usage() -> None:
+    """Claude token and latency metadata must never be negative."""
+    with pytest.raises(ValidationError):
+        ReleaseRiskState(
+            release_run_id=uuid4(),
+            run_id="test-run-synthesis-003",
+            synthesis_input_tokens=-1,
+        )

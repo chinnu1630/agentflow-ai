@@ -6,9 +6,9 @@ read from and write to during the release-risk workflow.
 Current workflow scope:
 FastAPI -> ReleaseRunService -> workflow state -> GitHub/Jira summaries
 
-Future workflow scope:
+Target workflow scope:
 FastAPI -> LangGraph Orchestrator -> EngOps Agent -> Knowledge Agent
--> ML Scoring -> Risk Synthesis -> HITL Gate -> Slack Agent
+-> Deterministic Scoring -> Claude Risk Synthesis -> HITL Gate -> Slack Agent
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ class ReleaseRiskWorkflowStage(StrEnum):
     BUILDING_RELEASE_SUMMARY = "building_release_summary"
     RETRIEVING_KNOWLEDGE_CONTEXT = "retrieving_knowledge_context"
     SCORING_RELEASE_RISK = "scoring_release_risk"
+    SYNTHESIZING_RELEASE_RISK = "synthesizing_release_risk"
     DETERMINING_APPROVAL_REQUIREMENT = "determining_approval_requirement"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -50,6 +51,15 @@ class KnowledgeRetrievalStatus(StrEnum):
     NOT_STARTED = "not_started"
     COMPLETED = "completed"
     NO_RESULTS = "no_results"
+    FAILED = "failed"
+
+
+class RiskSynthesisStatus(StrEnum):
+    """Execution status for Claude release-risk synthesis."""
+
+    NOT_STARTED = "not_started"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
     FAILED = "failed"
 
 
@@ -185,6 +195,45 @@ class ReleaseRiskState(BaseModel):
     risk_score: dict[str, Any] | None = Field(
         default=None,
         description="Deterministic release-risk score and recommendation.",
+    )
+
+    synthesis_status: RiskSynthesisStatus = Field(
+        default=RiskSynthesisStatus.NOT_STARTED,
+        description="Current Claude structured-synthesis execution status.",
+    )
+    synthesis_report: dict[str, Any] | None = Field(
+        default=None,
+        description="Validated Claude structured release-risk report.",
+    )
+    synthesis_prompt_version: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Version of the prompt used for Claude synthesis.",
+    )
+    synthesis_model: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Claude model that generated the synthesis report.",
+    )
+    synthesis_input_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        description="Claude input-token usage for this workflow run.",
+    )
+    synthesis_output_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        description="Claude output-token usage for this workflow run.",
+    )
+    synthesis_duration_ms: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Claude synthesis duration in milliseconds.",
+    )
+    synthesis_error: str | None = Field(
+        default=None,
+        max_length=1_000,
+        description="Safe Claude synthesis failure message.",
     )
 
     approval_required: bool = Field(
