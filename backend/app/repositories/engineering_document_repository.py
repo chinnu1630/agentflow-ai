@@ -7,7 +7,7 @@ from typing import cast
 from uuid import UUID
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import Float, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
@@ -360,7 +360,10 @@ class EngineeringDocumentRepository:
 
         distance_expression = cast(
             ColumnElement[float],
-            EngineeringDocumentChunk.embedding.op("<=>")(query_embedding),
+            EngineeringDocumentChunk.embedding.op(
+                "<=>",
+                return_type=Float(),
+            )(query_embedding),
         )
 
         statement = (

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import Float
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -468,3 +471,50 @@ async def test_search_chunks_by_embedding_returns_empty_on_sqlite(
     )
 
     assert matches == []
+
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_distance_column_uses_float_result_type() -> None:
+    """Cosine distance must use FLOAT instead of the vector result processor."""
+    captured_statements: list[Any] = []
+
+    class FakeResult:
+        """Return no semantic matches."""
+
+        def all(self) -> list[Any]:
+            """Return an empty row collection."""
+            return []
+
+    class FakePostgresSession:
+        """Capture the semantic-search statement without a real database."""
+
+        def get_bind(self) -> Any:
+            """Return a PostgreSQL-like bind."""
+            return SimpleNamespace(
+                dialect=SimpleNamespace(name="postgresql"),
+            )
+
+        async def execute(self, statement: Any) -> FakeResult:
+            """Capture the statement and return an empty result."""
+            captured_statements.append(statement)
+            return FakeResult()
+
+    repository = EngineeringDocumentRepository(
+        FakePostgresSession(),  # type: ignore[arg-type]
+    )
+
+    matches = await repository.search_chunks_by_embedding(
+        query_embedding=[0.1] * 384,
+        limit=5,
+        run_id="semantic-distance-type-test",
+    )
+
+    assert matches == []
+    assert len(captured_statements) == 1
+
+    selected_columns = list(captured_statements[0].selected_columns)
+    distance_column = selected_columns[-1]
+
+    assert distance_column.key == "cosine_distance"
+    assert isinstance(distance_column.type, Float)
