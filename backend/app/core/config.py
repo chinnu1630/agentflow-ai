@@ -37,6 +37,37 @@ class Settings(BaseSettings):
     jira_project_key: str | None = None
     slack_bot_token: SecretStr | None = None
     slack_channel_id: str | None = None
+    anthropic_enabled: bool = Field(
+        default=False,
+        description="Enable Claude-based structured release-risk synthesis.",
+    )
+    anthropic_api_key: SecretStr | None = Field(
+        default=None,
+        description="Anthropic API key loaded only from environment variables.",
+    )
+    anthropic_model: str = Field(
+        default="claude-sonnet-5",
+        min_length=1,
+        description="Claude model used for structured release-risk synthesis.",
+    )
+    anthropic_max_tokens: int = Field(
+        default=4_096,
+        ge=256,
+        le=8_192,
+        description="Maximum Claude output-token budget for one synthesis call.",
+    )
+    anthropic_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=120.0,
+        description="Timeout for one Claude API request.",
+    )
+    anthropic_max_retries: int = Field(
+        default=2,
+        ge=0,
+        le=5,
+        description="Maximum retries for transient Claude API failures.",
+    )
     knowledge_embedding_model_name: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2",
         min_length=1,

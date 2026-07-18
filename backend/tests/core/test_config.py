@@ -10,7 +10,7 @@ from app.core.config import Settings
 
 def test_settings_use_default_knowledge_model_configuration() -> None:
     """Settings should provide safe local model defaults for hybrid retrieval."""
-    settings = Settings(_env_file=None)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
     assert (
         settings.knowledge_embedding_model_name
@@ -30,7 +30,7 @@ def test_settings_allow_knowledge_model_name_overrides(
     monkeypatch.setenv("KNOWLEDGE_EMBEDDING_MODEL_NAME", "local/embedding-model")
     monkeypatch.setenv("KNOWLEDGE_RERANKER_MODEL_NAME", "local/reranker-model")
 
-    settings = Settings(_env_file=None)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
     assert settings.knowledge_embedding_model_name == "local/embedding-model"
     assert settings.knowledge_embedding_dimension == 384
@@ -44,4 +44,66 @@ def test_settings_reject_embedding_dimension_schema_mismatch(
     monkeypatch.setenv("KNOWLEDGE_EMBEDDING_DIMENSION", "768")
 
     with pytest.raises(ValidationError):
-        Settings(_env_file=None)
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_use_safe_default_anthropic_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude synthesis should be disabled unless explicitly configured."""
+    monkeypatch.delenv("ANTHROPIC_ENABLED", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.anthropic_enabled is False
+    assert settings.anthropic_api_key is None
+    assert settings.anthropic_model == "claude-sonnet-5"
+    assert settings.anthropic_max_tokens == 4_096
+    assert settings.anthropic_timeout_seconds == 30.0
+    assert settings.anthropic_max_retries == 2
+
+
+def test_settings_allow_anthropic_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude configuration should load securely from environment variables."""
+    monkeypatch.setenv("ANTHROPIC_ENABLED", "true")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-secret-key")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "test-claude-model")
+    monkeypatch.setenv("ANTHROPIC_MAX_TOKENS", "2048")
+    monkeypatch.setenv("ANTHROPIC_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("ANTHROPIC_MAX_RETRIES", "3")
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.anthropic_enabled is True
+    assert settings.anthropic_api_key is not None
+    assert (
+        settings.anthropic_api_key.get_secret_value()
+        == "test-secret-key"
+    )
+    assert settings.anthropic_model == "test-claude-model"
+    assert settings.anthropic_max_tokens == 2_048
+    assert settings.anthropic_timeout_seconds == 45.0
+    assert settings.anthropic_max_retries == 3
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "invalid_value"),
+    [
+        ("ANTHROPIC_MAX_TOKENS", "100"),
+        ("ANTHROPIC_TIMEOUT_SECONDS", "0"),
+        ("ANTHROPIC_MAX_RETRIES", "6"),
+    ],
+)
+def test_settings_reject_invalid_anthropic_limits(
+    monkeypatch: pytest.MonkeyPatch,
+    environment_name: str,
+    invalid_value: str,
+) -> None:
+    """Claude request limits must remain inside configured safety bounds."""
+    monkeypatch.setenv(environment_name, invalid_value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
