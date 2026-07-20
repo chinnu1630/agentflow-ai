@@ -194,3 +194,44 @@ async def test_run_release_risk_service_workflow_convenience_function() -> None:
     assert fake_service.called_with_release_run_id == release_run_id
     assert final_state.status == ReleaseRiskWorkflowStatus.SUCCEEDED
     assert final_state.stage == ReleaseRiskWorkflowStage.COMPLETED
+
+def test_runner_passes_synthesis_service_to_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner should inject the optional synthesis service into the graph."""
+    from typing import cast
+
+    from app.workflows import release_risk_service_runner
+    from app.workflows.release_risk_service_nodes import RiskSynthesisService
+
+    captured: dict[str, object] = {}
+    fake_graph = object()
+    synthesis_service = cast(RiskSynthesisService, object())
+
+    def fake_build_graph(
+        service: object,
+        *,
+        knowledge_service: object | None = None,
+        synthesis_service: object | None = None,
+    ) -> object:
+        captured["service"] = service
+        captured["knowledge_service"] = knowledge_service
+        captured["synthesis_service"] = synthesis_service
+
+        return fake_graph
+
+    monkeypatch.setattr(
+        release_risk_service_runner,
+        "build_release_risk_service_graph",
+        fake_build_graph,
+    )
+
+    collection_service = FakeReleaseRiskService(None)
+    ReleaseRiskServiceWorkflowRunner(
+        collection_service,
+        synthesis_service=synthesis_service,
+    )
+
+    assert captured["service"] is collection_service
+    assert captured["knowledge_service"] is None
+    assert captured["synthesis_service"] is synthesis_service

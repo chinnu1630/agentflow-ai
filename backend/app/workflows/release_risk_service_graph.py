@@ -35,10 +35,12 @@ from app.workflows.release_risk_nodes import (
 from app.workflows.release_risk_service_nodes import (
     KnowledgeRetrievalService,
     ReleaseRiskCollectionService,
+    RiskSynthesisService,
     create_collect_release_risks_node,
     create_determine_approval_requirement_node,
     create_retrieve_knowledge_context_node,
     create_score_release_risk_node,
+    create_synthesize_release_risk_node,
 )
 from app.workflows.release_risk_state import (
     ReleaseRiskState,
@@ -48,6 +50,7 @@ from app.workflows.release_risk_state import (
 _ROUTE_COMPLETE = "complete"
 _ROUTE_KNOWLEDGE = "knowledge"
 _ROUTE_SCORE = "score"
+_ROUTE_SYNTHESIS = "synthesis"
 _ROUTE_APPROVAL = "approval"
 _ROUTE_END = "end"
 
@@ -103,13 +106,33 @@ def _route_after_collection_with_knowledge(state: WorkflowStateInput) -> str:
 
 
 def _route_after_scoring(state: WorkflowStateInput) -> str:
-    """Route after release-risk scoring."""
+    """Route from deterministic scoring directly to approval."""
     validated_state = _validate_state_input(state)
 
     if validated_state.status == ReleaseRiskWorkflowStatus.FAILED:
         return _ROUTE_END
 
-    return _ROUTE_COMPLETE
+    return _ROUTE_APPROVAL
+
+
+def _route_after_scoring_with_synthesis(state: WorkflowStateInput) -> str:
+    """Route from deterministic scoring to Claude synthesis."""
+    validated_state = _validate_state_input(state)
+
+    if validated_state.status == ReleaseRiskWorkflowStatus.FAILED:
+        return _ROUTE_END
+
+    return _ROUTE_SYNTHESIS
+
+
+def _route_after_synthesis(state: WorkflowStateInput) -> str:
+    """Continue to approval even when Claude fails recoverably."""
+    validated_state = _validate_state_input(state)
+
+    if validated_state.status == ReleaseRiskWorkflowStatus.FAILED:
+        return _ROUTE_END
+
+    return _ROUTE_APPROVAL
 
 
 def _route_after_approval_decision(state: WorkflowStateInput) -> str:
@@ -125,6 +148,7 @@ def build_release_risk_service_graph(
     service: ReleaseRiskCollectionService,
     *,
     knowledge_service: KnowledgeRetrievalService | None = None,
+    synthesis_service: RiskSynthesisService | None = None,
 ) -> CompiledStateGraph[
     ReleaseRiskState,
     None,
@@ -136,6 +160,7 @@ def build_release_risk_service_graph(
     Args:
         service: Existing application service that collects release risks.
         knowledge_service: Optional service that retrieves engineering docs.
+        synthesis_service: Optional Claude structured-synthesis service.
 
     Returns:
         A compiled LangGraph workflow.
@@ -188,14 +213,38 @@ def build_release_risk_service_graph(
         )
         graph.add_edge("retrieve_knowledge_context", "score_release_risk")
 
-    graph.add_conditional_edges(
-        "score_release_risk",
-        _route_after_scoring,
-        {
-            _ROUTE_COMPLETE: "determine_approval_requirement",
-            _ROUTE_END: END,
-        },
-    )
+    if synthesis_service is None:
+        graph.add_conditional_edges(
+            "score_release_risk",
+            _route_after_scoring,
+            {
+                _ROUTE_APPROVAL: "determine_approval_requirement",
+                _ROUTE_END: END,
+            },
+        )
+    else:
+        graph.add_node(
+            "synthesize_release_risk",
+            RunnableLambda(
+                create_synthesize_release_risk_node(synthesis_service)
+            ),
+        )
+        graph.add_conditional_edges(
+            "score_release_risk",
+            _route_after_scoring_with_synthesis,
+            {
+                _ROUTE_SYNTHESIS: "synthesize_release_risk",
+                _ROUTE_END: END,
+            },
+        )
+        graph.add_conditional_edges(
+            "synthesize_release_risk",
+            _route_after_synthesis,
+            {
+                _ROUTE_APPROVAL: "determine_approval_requirement",
+                _ROUTE_END: END,
+            },
+        )
     graph.add_conditional_edges(
         "determine_approval_requirement",
         _route_after_approval_decision,

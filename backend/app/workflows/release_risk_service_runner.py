@@ -27,6 +27,7 @@ from app.workflows.release_risk_service_graph import (
 from app.workflows.release_risk_service_nodes import (
     KnowledgeRetrievalService,
     ReleaseRiskCollectionService,
+    RiskSynthesisService,
 )
 from app.workflows.release_risk_state import ReleaseRiskState
 
@@ -51,13 +52,15 @@ class ReleaseRiskServiceWorkflowRunner:
         service: ReleaseRiskCollectionService,
         *,
         knowledge_service: KnowledgeRetrievalService | None = None,
+        synthesis_service: RiskSynthesisService | None = None,
     ) -> None:
-        """Initialize the runner with release-risk and Knowledge services."""
+        """Initialize the runner with collection, knowledge, and synthesis services."""
         self._graph = cast(
             AsyncWorkflowGraph,
             build_release_risk_service_graph(
                 service,
                 knowledge_service=knowledge_service,
+                synthesis_service=synthesis_service,
             ),
         )
 
@@ -105,6 +108,7 @@ async def run_release_risk_service_workflow(
     manager_query: str = "What are the biggest release risks this week?",
     requested_by: str | None = None,
     knowledge_service: KnowledgeRetrievalService | None = None,
+    synthesis_service: RiskSynthesisService | None = None,
 ) -> ReleaseRiskState:
     """Execute the service-backed release-risk workflow with a temporary runner.
 
@@ -115,6 +119,7 @@ async def run_release_risk_service_workflow(
     runner = ReleaseRiskServiceWorkflowRunner(
         service,
         knowledge_service=knowledge_service,
+        synthesis_service=synthesis_service,
     )
 
     return await runner.run(

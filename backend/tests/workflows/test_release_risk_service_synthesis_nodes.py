@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -19,6 +19,9 @@ from app.schemas.llm_risk_synthesis import (
 from app.schemas.risk import (
     RiskSeverityResponse,
     RiskSummaryActionResponse,
+)
+from app.workflows.release_risk_service_graph import (
+    build_release_risk_service_graph,
 )
 from app.workflows.release_risk_service_nodes import (
     create_synthesize_release_risk_node,
@@ -196,3 +199,82 @@ async def test_synthesis_node_degrades_gracefully_when_claude_fails() -> None:
     assert final_state.has_errors is True
     assert final_state.errors[-1].source == "release_risk_synthesis"
     assert final_state.errors[-1].recoverable is True
+
+
+
+class FakeGraphReleaseRiskCollectionService:
+    """Return deterministic release-risk evidence for graph tests."""
+
+    async def collect_release_risks(
+        self,
+        release_run_id: UUID,
+    ) -> dict[str, object]:
+        """Return a valid persisted release-risk response payload."""
+        payload = build_snapshot_payload(
+            release_run_id=release_run_id,
+            approval_request_id=uuid4(),
+        )
+
+        return {
+            "release_run": payload["release_run"],
+            "github": payload["github"],
+            "github_summary": payload["github_summary"],
+            "jira": payload["jira"],
+            "jira_summary": payload["jira_summary"],
+            "release_summary": payload["release_summary"],
+        }
+
+
+@pytest.mark.anyio
+async def test_service_graph_runs_optional_claude_synthesis() -> None:
+    """Configured synthesis should execute between scoring and approval."""
+    synthesis_service = FakeRiskSynthesisService()
+    graph = build_release_risk_service_graph(
+        FakeGraphReleaseRiskCollectionService(),
+        synthesis_service=synthesis_service,
+    )
+    initial_state = ReleaseRiskState(
+        release_run_id=uuid4(),
+        run_id="release-run-graph-001",
+    )
+
+    result = await graph.ainvoke(initial_state)
+    final_state = ReleaseRiskState.model_validate(result)
+
+    assert final_state.status is ReleaseRiskWorkflowStatus.SUCCEEDED
+    assert final_state.stage is ReleaseRiskWorkflowStage.COMPLETED
+    assert final_state.synthesis_status is RiskSynthesisStatus.COMPLETED
+    assert final_state.synthesis_report is not None
+    assert final_state.completed_nodes == [
+        "start_release_risk_workflow",
+        "collect_release_risks",
+        "score_release_risk",
+        "synthesize_release_risk",
+        "determine_approval_requirement",
+        "complete_release_risk_workflow",
+    ]
+
+
+@pytest.mark.anyio
+async def test_service_graph_continues_when_claude_synthesis_fails() -> None:
+    """Recoverable Claude failure should not bypass approval or completion."""
+    graph = build_release_risk_service_graph(
+        FakeGraphReleaseRiskCollectionService(),
+        synthesis_service=FailingRiskSynthesisService(),
+    )
+    initial_state = ReleaseRiskState(
+        release_run_id=uuid4(),
+        run_id="release-run-graph-002",
+    )
+
+    result = await graph.ainvoke(initial_state)
+    final_state = ReleaseRiskState.model_validate(result)
+
+    assert final_state.status is ReleaseRiskWorkflowStatus.SUCCEEDED
+    assert final_state.stage is ReleaseRiskWorkflowStage.COMPLETED
+    assert final_state.synthesis_status is RiskSynthesisStatus.FAILED
+    assert final_state.synthesis_report is None
+    assert final_state.has_errors is True
+    assert final_state.errors[-1].source == "release_risk_synthesis"
+    assert "determine_approval_requirement" in final_state.completed_nodes
+    assert "complete_release_risk_workflow" in final_state.completed_nodes
