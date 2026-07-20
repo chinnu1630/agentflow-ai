@@ -24,14 +24,25 @@ from uuid import UUID
 import structlog
 from pydantic import BaseModel
 
+from app.integrations.anthropic_client import (
+    AnthropicClientError,
+    ClaudeSynthesisResult,
+)
 from app.observability.tracing import start_business_span
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalRequest,
 )
 from app.services.hitl_approval_decision_service import HITLApprovalDecisionService
+from app.services.release_risk_response_mapper import (
+    to_release_run_risk_response,
+)
+from app.services.release_risk_synthesis_prompt import (
+    ReleaseRiskSynthesisPromptBuilder,
+)
 from app.services.risk_feature_extraction_service import RiskFeatureExtractionService
 from app.services.rule_based_risk_scoring_service import RuleBasedRiskScoringService
 from app.workflows.release_risk_graph import (
+    AsyncWorkflowNode,
     WorkflowStateInput,
     WorkflowStateUpdate,
 )
@@ -39,6 +50,7 @@ from app.workflows.release_risk_state import (
     KnowledgeRetrievalStatus,
     ReleaseRiskState,
     ReleaseRiskWorkflowStage,
+    RiskSynthesisStatus,
 )
 
 logger = structlog.get_logger(__name__)
@@ -61,6 +73,19 @@ class KnowledgeRetrievalService(Protocol):
         run_id: str | None = None,
     ) -> object:
         """Retrieve relevant engineering document chunks."""
+
+
+class RiskSynthesisService(Protocol):
+    """Service contract required by the Claude synthesis workflow node."""
+
+    async def synthesize_release_risk(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        prompt_version: str,
+    ) -> ClaudeSynthesisResult:
+        """Produce a validated structured release-risk synthesis."""
 
 
 def _validate_state_input(state: WorkflowStateInput) -> ReleaseRiskState:
@@ -431,6 +456,115 @@ def create_score_release_risk_node(
             return failed_state.model_dump(mode="python")
 
     return score_release_risk_node
+
+
+def create_synthesize_release_risk_node(
+    synthesis_service: RiskSynthesisService,
+    prompt_builder: ReleaseRiskSynthesisPromptBuilder | None = None,
+) -> AsyncWorkflowNode:
+    """Create an async LangGraph node for Claude risk synthesis.
+
+    Claude receives only validated and bounded AgentFlow evidence. Failures are
+    recoverable because deterministic scoring remains available as a fallback.
+    """
+
+    builder = prompt_builder or ReleaseRiskSynthesisPromptBuilder()
+
+    async def synthesize_release_risk_node(
+        state: WorkflowStateInput,
+    ) -> WorkflowStateUpdate:
+        """Generate and persist one structured Claude risk report."""
+        validated_state = _validate_state_input(state)
+        running_state = validated_state.mark_running(
+            ReleaseRiskWorkflowStage.SYNTHESIZING_RELEASE_RISK
+        )
+
+        try:
+            release_risk = to_release_run_risk_response(
+                running_state.model_dump(mode="python")
+            )
+            prompt = builder.build(release_risk)
+
+            with start_business_span(
+                "llm.release_risk_synthesis",
+                {
+                    "release_run_id": str(running_state.release_run_id),
+                    "run_id": running_state.run_id,
+                    "prompt_version": prompt.prompt_version,
+                    "risk_count": prompt.risk_count,
+                    "knowledge_result_count": prompt.knowledge_result_count,
+                    "degraded_source_count": prompt.degraded_source_count,
+                },
+            ) as span:
+                result = await synthesis_service.synthesize_release_risk(
+                    system_prompt=prompt.system_prompt,
+                    user_prompt=prompt.user_prompt,
+                    prompt_version=prompt.prompt_version,
+                )
+
+                span.set_attribute("llm.model", result.model)
+                span.set_attribute("llm.input_tokens", result.input_tokens)
+                span.set_attribute("llm.output_tokens", result.output_tokens)
+                span.set_attribute(
+                    "llm.recommendation",
+                    result.report.recommendation.value,
+                )
+
+            logger.info(
+                "release_risk_synthesis_node_completed",
+                run_id=running_state.run_id,
+                release_run_id=str(running_state.release_run_id),
+                prompt_version=result.prompt_version,
+                model=result.model,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                duration_ms=result.duration_ms,
+                recommendation=result.report.recommendation.value,
+                risk_count=len(result.report.risks),
+            )
+
+            updated_state = running_state.model_copy(
+                update={
+                    "synthesis_status": RiskSynthesisStatus.COMPLETED,
+                    "synthesis_report": result.report.model_dump(mode="python"),
+                    "synthesis_prompt_version": result.prompt_version,
+                    "synthesis_model": result.model,
+                    "synthesis_input_tokens": result.input_tokens,
+                    "synthesis_output_tokens": result.output_tokens,
+                    "synthesis_duration_ms": result.duration_ms,
+                    "synthesis_error": None,
+                }
+            ).add_completed_node("synthesize_release_risk")
+
+            return updated_state.model_dump(mode="python")
+
+        except (AnthropicClientError, TypeError, ValueError) as exc:
+            logger.warning(
+                "release_risk_synthesis_node_failed",
+                run_id=running_state.run_id,
+                release_run_id=str(running_state.release_run_id),
+                error_type=type(exc).__name__,
+            )
+
+            failed_state = running_state.model_copy(
+                update={
+                    "synthesis_status": RiskSynthesisStatus.FAILED,
+                    "synthesis_report": None,
+                    "synthesis_error": "Claude risk synthesis failed.",
+                }
+            ).add_error(
+                source="release_risk_synthesis",
+                message=(
+                    "Claude risk synthesis failed; deterministic risk "
+                    "assessment remains available."
+                ),
+                recoverable=True,
+                details={"error_type": type(exc).__name__},
+            )
+
+            return failed_state.model_dump(mode="python")
+
+    return synthesize_release_risk_node
 
 
 def create_determine_approval_requirement_node(
