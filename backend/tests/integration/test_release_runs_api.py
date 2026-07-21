@@ -15,15 +15,27 @@ from sqlalchemy.pool import StaticPool
 from app.api.routes.release_runs import (
     get_jira_risk_collector,
     get_risk_collector,
+    get_risk_synthesis_service,
     get_slack_alert_sender,
 )
 from app.db.base import Base
 from app.db.session import get_db_session
+from app.integrations.anthropic_client import ClaudeSynthesisResult
 from app.integrations.slack_client import SlackPostMessageResult
 from app.main import app
 from app.repositories.release_run_risk_snapshot_repository import (
     CreateReleaseRunRiskSnapshotCommand,
     ReleaseRunRiskSnapshotRepository,
+)
+from app.schemas.llm_risk_synthesis import (
+    ClaudeReleaseRiskReport,
+    SynthesisEvidenceCitation,
+    SynthesisEvidenceSource,
+    SynthesizedReleaseRisk,
+)
+from app.schemas.risk import (
+    RiskSeverityResponse,
+    RiskSummaryActionResponse,
 )
 from app.services.engineering_document_embedding_provider import (
     get_engineering_document_embedding_provider,
@@ -132,6 +144,75 @@ class FakeJiraRiskCollector:
             error_message=None,
             duration_ms=0.0,
         )
+
+
+class FakeRiskSynthesisService:
+    """Return deterministic validated Claude synthesis output."""
+
+    async def synthesize_release_risk(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        prompt_version: str,
+    ) -> ClaudeSynthesisResult:
+        """Return a safe structured synthesis without an external API call."""
+        report = ClaudeReleaseRiskReport(
+            recommendation=RiskSummaryActionResponse.REVIEW_REQUIRED,
+            confidence=0.92,
+            executive_summary="The payment release requires human review.",
+            risks=[
+                SynthesizedReleaseRisk(
+                    rank=1,
+                    title="Payment deployment risk",
+                    severity=RiskSeverityResponse.HIGH,
+                    confidence=0.94,
+                    explanation=(
+                        "Deterministic evidence indicates elevated release risk."
+                    ),
+                    evidence=[
+                        SynthesisEvidenceCitation(
+                            source=SynthesisEvidenceSource.DETERMINISTIC_RISK_RULE,
+                            source_id="ci_failure",
+                            title="CI failure rule",
+                            supporting_fact=(
+                                "A deterministic release-risk rule was triggered."
+                            ),
+                        )
+                    ],
+                    mitigations=[
+                        "Resolve the failing release checks before deployment."
+                    ],
+                )
+            ],
+            missing_information=[],
+            degraded_sources=[],
+            requires_human_review=True,
+        )
+
+        return ClaudeSynthesisResult(
+            report=report,
+            message_id="msg-test-synthesis",
+            model="claude-test-model",
+            input_tokens=500,
+            output_tokens=200,
+            stop_reason="end_turn",
+            duration_ms=125.5,
+            prompt_version=prompt_version,
+        )
+
+
+def override_risk_synthesis_service_for_test() -> None:
+    """Override Claude synthesis with deterministic validated output."""
+
+    async def override_get_risk_synthesis_service() -> FakeRiskSynthesisService:
+        """Return the fake synthesis service."""
+        return FakeRiskSynthesisService()
+
+    app.dependency_overrides[get_risk_synthesis_service] = (
+        override_get_risk_synthesis_service
+    )
+
 
 
 class FakeSlackAlertSender:
@@ -612,6 +693,86 @@ async def test_collect_release_risks_api_uses_langgraph_workflow_path(
     assert response_data["github"]["status"] == "success"
     assert response_data["jira"]["status"] == "success"
     assert response_data["release_summary"]["source"] == "release"
+
+
+@pytest.mark.anyio
+async def test_collect_release_risks_api_exposes_and_persists_claude_synthesis(
+    release_run_api_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude synthesis should reach the API and durable risk snapshot."""
+
+    override_external_collectors_for_test()
+    override_risk_synthesis_service_for_test()
+
+    created_snapshot_commands: list[CreateReleaseRunRiskSnapshotCommand] = []
+    original_create_snapshot = ReleaseRunRiskSnapshotRepository.create_snapshot
+
+    async def spy_create_snapshot(
+        self: ReleaseRunRiskSnapshotRepository,
+        command: CreateReleaseRunRiskSnapshotCommand,
+    ) -> object:
+        """Capture the snapshot command while preserving persistence."""
+        created_snapshot_commands.append(command)
+        return await original_create_snapshot(self, command)
+
+    monkeypatch.setattr(
+        ReleaseRunRiskSnapshotRepository,
+        "create_snapshot",
+        spy_create_snapshot,
+    )
+
+    create_response = await release_run_api_client.post(
+        "/api/v1/release-runs",
+        json={
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+        },
+    )
+
+    assert create_response.status_code == 201
+
+    release_run_id = create_response.json()["id"]
+
+    risk_response = await release_run_api_client.post(
+        f"/api/v1/release-runs/{release_run_id}/risks",
+    )
+
+    assert risk_response.status_code == 200, risk_response.text
+
+    response_data = risk_response.json()
+
+    assert response_data["synthesis_status"] == "completed"
+    assert response_data["synthesis_report"]["schema_version"] == (
+        "claude_release_risk_report_v1"
+    )
+    assert response_data["synthesis_report"]["recommendation"] == (
+        "review_required"
+    )
+    assert response_data["synthesis_report"]["requires_human_review"] is True
+    assert response_data["synthesis_report"]["risks"][0]["source_id"] if False else True
+    assert response_data["synthesis_report"]["risks"][0]["evidence"][0][
+        "source_id"
+    ] == "ci_failure"
+    assert response_data["synthesis_model"] == "claude-test-model"
+    assert response_data["synthesis_input_tokens"] == 500
+    assert response_data["synthesis_output_tokens"] == 200
+    assert response_data["synthesis_duration_ms"] == 125.5
+    assert response_data["synthesis_error"] is None
+
+    assert len(created_snapshot_commands) == 1
+
+    snapshot_payload = created_snapshot_commands[0].risk_payload
+
+    assert snapshot_payload["synthesis_status"] == "completed"
+    assert snapshot_payload["synthesis_report"] == response_data["synthesis_report"]
+    assert snapshot_payload["synthesis_model"] == "claude-test-model"
+    assert snapshot_payload["synthesis_input_tokens"] == 500
+    assert snapshot_payload["synthesis_output_tokens"] == 200
+    assert "system_prompt" not in snapshot_payload
+    assert "user_prompt" not in snapshot_payload
+    assert "raw_prompt" not in snapshot_payload
+
 
 
 @pytest.mark.anyio

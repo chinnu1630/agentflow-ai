@@ -17,13 +17,13 @@ from app.services.rule_based_risk_scoring_service import (
 )
 
 
-def merge_workflow_knowledge_context(
+def merge_workflow_context(
     result: object,
     workflow_state: Mapping[str, object],
 ) -> object:
-    """Merge top-level workflow Knowledge Agent fields into result data."""
+    """Merge top-level workflow enrichment fields into result data."""
 
-    knowledge_keys = (
+    workflow_context_keys = (
         "knowledge_query",
         "knowledge_results",
         "knowledge_status",
@@ -33,11 +33,19 @@ def merge_workflow_knowledge_context(
         "approval_reason",
         "approval_required",
         "risk_features",
+        "synthesis_status",
+        "synthesis_report",
+        "synthesis_prompt_version",
+        "synthesis_model",
+        "synthesis_input_tokens",
+        "synthesis_output_tokens",
+        "synthesis_duration_ms",
+        "synthesis_error",
     )
 
-    knowledge_fields: dict[str, object] = {}
+    context_fields: dict[str, object] = {}
 
-    for key in knowledge_keys:
+    for key in workflow_context_keys:
         if key not in workflow_state:
             continue
 
@@ -46,9 +54,9 @@ def merge_workflow_knowledge_context(
         if hasattr(value, "value"):
             value = value.value
 
-        knowledge_fields[key] = value
+        context_fields[key] = value
 
-    if not knowledge_fields:
+    if not context_fields:
         return result
 
     if hasattr(result, "model_dump"):
@@ -58,7 +66,7 @@ def merge_workflow_knowledge_context(
     else:
         return result
 
-    result_data.update(knowledge_fields)
+    result_data.update(context_fields)
     return result_data
 
 
@@ -91,13 +99,13 @@ def extract_risk_result_from_workflow_state(
             result = workflow_state.get(key)
 
             if result is not None:
-                return merge_workflow_knowledge_context(
+                return merge_workflow_context(
                     result=result,
                     workflow_state=workflow_state,
                 )
 
         if response_shape_keys.issubset(workflow_state.keys()):
-            return merge_workflow_knowledge_context(
+            return merge_workflow_context(
                 result=workflow_state,
                 workflow_state=workflow_state,
             )
@@ -118,13 +126,13 @@ def extract_risk_result_from_workflow_state(
             result = dumped_state.get(key)
 
             if result is not None:
-                return merge_workflow_knowledge_context(
+                return merge_workflow_context(
                     result=result,
                     workflow_state=dumped_state,
                 )
 
         if response_shape_keys.issubset(dumped_state.keys()):
-            return merge_workflow_knowledge_context(
+            return merge_workflow_context(
                 result=dumped_state,
                 workflow_state=dumped_state,
             )

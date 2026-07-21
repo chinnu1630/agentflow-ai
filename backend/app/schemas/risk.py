@@ -14,14 +14,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
-class RiskSeverityResponse(StrEnum):
-    """API severity level for a detected risk."""
-
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
+from app.schemas.llm_risk_synthesis import ClaudeReleaseRiskReport
+from app.schemas.risk_enums import (
+    RiskSeverityResponse,
+    RiskSummaryActionResponse,
+)
 
 
 class RiskCategoryResponse(StrEnum):
@@ -51,13 +48,13 @@ class RiskCollectionStatusResponse(StrEnum):
     DEGRADED = "degraded"
 
 
-class RiskSummaryActionResponse(StrEnum):
-    """API recommended action from deterministic risk summary."""
+class RiskSynthesisStatusResponse(StrEnum):
+    """API status for Claude release-risk synthesis."""
 
-    PROCEED = "proceed"
-    REVIEW_REQUIRED = "review_required"
-    BLOCK_RELEASE = "block_release"
-    PARTIAL_DATA_REVIEW = "partial_data_review"
+    NOT_STARTED = "not_started"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+    FAILED = "failed"
 
 
 class RiskSignalResponse(BaseModel):
@@ -344,6 +341,14 @@ class ReleaseRunRiskResponse(BaseModel):
     knowledge_error: str | None = None
     risk_features: ReleaseRiskFeatureVectorResponse | None = None
     risk_score: ReleaseRiskScoreResponse | None = None
+    synthesis_status: RiskSynthesisStatusResponse | None = None
+    synthesis_report: ClaudeReleaseRiskReport | None = None
+    synthesis_prompt_version: str | None = Field(default=None, max_length=100)
+    synthesis_model: str | None = Field(default=None, max_length=255)
+    synthesis_input_tokens: int | None = Field(default=None, ge=0)
+    synthesis_output_tokens: int | None = Field(default=None, ge=0)
+    synthesis_duration_ms: float | None = Field(default=None, ge=0.0)
+    synthesis_error: str | None = Field(default=None, max_length=1_000)
     approval_required: bool | None = None
     approval_reason: str | None = None
     approval_policy_version: str | None = None

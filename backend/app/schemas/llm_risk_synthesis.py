@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.schemas.risk import (
+from app.schemas.risk_enums import (
     RiskSeverityResponse,
     RiskSummaryActionResponse,
 )

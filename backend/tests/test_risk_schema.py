@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from app.schemas.llm_risk_synthesis import ClaudeReleaseRiskReport
 from app.schemas.risk import (
     GitHubRiskCollectionResponse,
     GitHubRiskSummaryResponse,
@@ -20,6 +21,7 @@ from app.schemas.risk import (
     RiskSignalResponse,
     RiskSummaryActionResponse,
     RiskSummaryItemResponse,
+    RiskSynthesisStatusResponse,
 )
 
 
@@ -199,6 +201,16 @@ def test_release_run_risk_response_accepts_nested_github_and_jira_result() -> No
         generated_at=datetime.now(UTC),
     )
 
+    synthesis_report = ClaudeReleaseRiskReport(
+        recommendation=RiskSummaryActionResponse.PROCEED,
+        confidence=0.95,
+        executive_summary="Deterministic evidence supports proceeding.",
+        risks=[],
+        missing_information=[],
+        degraded_sources=[],
+        requires_human_review=False,
+    )
+
     response = ReleaseRunRiskResponse(
         release_run=release_run,
         github=github,
@@ -206,6 +218,14 @@ def test_release_run_risk_response_accepts_nested_github_and_jira_result() -> No
         jira=jira,
         jira_summary=jira_summary,
         release_summary=release_summary,
+        synthesis_status=RiskSynthesisStatusResponse.COMPLETED,
+        synthesis_report=synthesis_report,
+        synthesis_prompt_version="release_risk_synthesis_v1",
+        synthesis_model="claude-test-model",
+        synthesis_input_tokens=400,
+        synthesis_output_tokens=120,
+        synthesis_duration_ms=85.5,
+        synthesis_error=None,
     )
 
     assert response.release_run.status == "completed"
@@ -244,3 +264,14 @@ def test_release_run_risk_response_accepts_nested_github_and_jira_result() -> No
     )
     assert response.release_summary.total_signal_count == 3
     assert response.release_summary.high_risk_count == 1
+
+    assert response.synthesis_status is RiskSynthesisStatusResponse.COMPLETED
+    assert response.synthesis_report is not None
+    assert response.synthesis_report.schema_version == "claude_release_risk_report_v1"
+    assert response.synthesis_report.confidence == 0.95
+    assert response.synthesis_prompt_version == "release_risk_synthesis_v1"
+    assert response.synthesis_model == "claude-test-model"
+    assert response.synthesis_input_tokens == 400
+    assert response.synthesis_output_tokens == 120
+    assert response.synthesis_duration_ms == 85.5
+    assert response.synthesis_error is None
