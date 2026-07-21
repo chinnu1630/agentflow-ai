@@ -26,6 +26,9 @@ from app.schemas.agent_tool import (
     AgentToolName,
     AgentToolResult,
 )
+from app.schemas.agent_tool_arguments import (
+    validate_agent_tool_arguments,
+)
 from app.services.agent_execution_plan_validator import (
     AgentExecutionPlanValidator,
 )
@@ -333,7 +336,28 @@ class AgentDynamicExecutionService:
         """Execute one adapter with timeout, tracing, and safe normalization."""
         started_at = time.perf_counter()
         invocation = step.invocation
-        adapter = self._adapters.get(invocation.tool_name)
+
+        try:
+            validated_arguments = validate_agent_tool_arguments(
+                tool_name=invocation.tool_name,
+                arguments=dict(invocation.arguments),
+            )
+        except ValidationError:
+            return self._build_failed_result(
+                step=step,
+                error_code="invalid_tool_arguments",
+                error_message=(
+                    "The planner supplied invalid arguments for this tool."
+                ),
+                duration_ms=self._elapsed_ms(started_at),
+            )
+
+        safe_invocation = invocation.model_copy(
+            update={
+                "arguments": validated_arguments.model_dump(mode="json")
+            }
+        )
+        adapter = self._adapters.get(safe_invocation.tool_name)
 
         if adapter is None:
             return self._build_failed_result(
@@ -360,7 +384,7 @@ class AgentDynamicExecutionService:
                     invocation.timeout_seconds
                 ):
                     result = await adapter.execute(
-                        invocation=invocation,
+                        invocation=safe_invocation,
                         dependency_results=dependency_results,
                     )
             except TimeoutError:

@@ -100,6 +100,7 @@ def _build_step(
     tool_name: AgentToolName,
     depends_on: list[str] | None = None,
     timeout_seconds: int = 10,
+    arguments: dict[str, object] | None = None,
     failure_policy: AgentStepFailurePolicy = (
         AgentStepFailurePolicy.CONTINUE_WITH_PARTIAL_RESULTS
     ),
@@ -110,6 +111,7 @@ def _build_step(
         invocation=AgentToolInvocation(
             step_id=step_id,
             tool_name=tool_name,
+            arguments=arguments or {},
             timeout_seconds=timeout_seconds,
         ),
         depends_on=depends_on or [],
@@ -182,6 +184,7 @@ async def test_executes_dependencies_in_order() -> None:
                 step_id="jira",
                 tool_name=AgentToolName.LOOKUP_JIRA_ISSUE,
                 depends_on=["snapshot"],
+                arguments={"issue_key": "PAY-102"},
             ),
         ]
     )
@@ -342,6 +345,7 @@ async def test_fail_plan_policy_aborts_remaining_steps() -> None:
                 step_id="jira",
                 tool_name=AgentToolName.LOOKUP_JIRA_ISSUE,
                 depends_on=["snapshot"],
+                arguments={"issue_key": "PAY-102"},
             ),
         ]
     )
@@ -392,3 +396,43 @@ async def test_revalidates_side_effect_policy_before_execution() -> None:
         )
 
     assert slack_adapter.received_dependencies == []
+
+
+@pytest.mark.asyncio
+async def test_rejects_invalid_tool_arguments_before_adapter_call() -> None:
+    """Raw planner arguments are validated before reaching an adapter."""
+    knowledge_adapter = RecordingAdapter()
+    service = _build_service(
+        {
+            AgentToolName.SEARCH_ENGINEERING_KNOWLEDGE: (
+                knowledge_adapter
+            )
+        }
+    )
+    plan = _build_plan(
+        steps=[
+            _build_step(
+                step_id="knowledge",
+                tool_name=(
+                    AgentToolName.SEARCH_ENGINEERING_KNOWLEDGE
+                ),
+                timeout_seconds=30,
+                arguments={
+                    "query": "payment rollback",
+                    "include_secrets": True,
+                },
+            )
+        ],
+        intent=AgentIntent.KNOWLEDGE_DOC_QUESTION,
+    )
+
+    result = await service.execute(
+        plan,
+        has_release_run_context=False,
+    )
+
+    assert result.status is AgentExecutionStatus.FAILED
+    assert result.tool_results[0].error_code == (
+        "invalid_tool_arguments"
+    )
+    assert knowledge_adapter.received_dependencies == []
