@@ -45,6 +45,12 @@ from app.services.engineering_document_reranker import (
 )
 from app.services.engineering_document_retrieval_service import EngineeringDocumentRetrievalService
 from app.services.github_risk_collector import GitHubRiskCollectionResult, RiskCollectionStatus
+from app.services.github_risk_rules import (
+    PullRequestRiskResult,
+    RiskCategory,
+    RiskSeverity,
+    RiskSignal,
+)
 from app.services.jira_risk_collector import (
     JiraRiskCollectionResult,
     JiraRiskCollectionStatus,
@@ -104,6 +110,49 @@ class FakeRiskCollector:
             collected_at=datetime.now(UTC),
             duration_ms=10.5,
         )
+
+
+class FakeSynthesisRiskCollector:
+    """Return one concrete trusted GitHub risk for synthesis tests."""
+
+    async def collect_github_risks(
+        self,
+        *,
+        run_id: str,
+    ) -> GitHubRiskCollectionResult:
+        """Return a real risk object whose citation can be verified."""
+        signal = RiskSignal(
+            source_id="1",
+            source_url="https://github.example/pr/1",
+            rule_id="github_ci_failure",
+            category=RiskCategory.CI_FAILURE,
+            severity=RiskSeverity.HIGH,
+            score=0.85,
+            title="Payment API has failing CI",
+            description="CI failed on a release-critical service.",
+            evidence={"ci_status": "failure"},
+        )
+        risk_result = PullRequestRiskResult(
+            source_id="1",
+            source_url="https://github.example/pr/1",
+            pull_request_number=1,
+            total_score=0.85,
+            max_severity=RiskSeverity.HIGH,
+            signals=[signal],
+            evaluated_at=datetime.now(UTC),
+        )
+
+        return GitHubRiskCollectionResult(
+            status=RiskCollectionStatus.SUCCESS,
+            pull_request_count=1,
+            risk_result_count=1,
+            total_signal_count=1,
+            high_risk_count=1,
+            risk_results=[risk_result],
+            collected_at=datetime.now(UTC),
+            duration_ms=10.5,
+        )
+
 
 
 class FakeDegradedRiskCollector:
@@ -172,8 +221,8 @@ class FakeRiskSynthesisService:
                     ),
                     evidence=[
                         SynthesisEvidenceCitation(
-                            source=SynthesisEvidenceSource.DETERMINISTIC_RISK_RULE,
-                            source_id="ci_failure",
+                            source=SynthesisEvidenceSource.GITHUB_PULL_REQUEST,
+                            source_id="1",
                             title="CI failure rule",
                             supporting_fact=(
                                 "A deterministic release-risk rule was triggered."
@@ -234,6 +283,24 @@ class FakeSlackAlertSender:
             channel="C1234567890",
             timestamp="12345.6789",
         )
+
+
+def override_synthesis_collectors_for_test() -> None:
+    """Override collectors with concrete evidence for synthesis tests."""
+
+    async def override_get_risk_collector() -> FakeSynthesisRiskCollector:
+        """Return a collector containing verifiable GitHub evidence."""
+        return FakeSynthesisRiskCollector()
+
+    async def override_get_jira_risk_collector() -> FakeJiraRiskCollector:
+        """Return the deterministic fake Jira collector."""
+        return FakeJiraRiskCollector()
+
+    app.dependency_overrides[get_risk_collector] = override_get_risk_collector
+    app.dependency_overrides[get_jira_risk_collector] = (
+        override_get_jira_risk_collector
+    )
+
 
 
 def override_external_collectors_for_test() -> None:
@@ -702,7 +769,7 @@ async def test_collect_release_risks_api_exposes_and_persists_claude_synthesis(
 ) -> None:
     """Claude synthesis should reach the API and durable risk snapshot."""
 
-    override_external_collectors_for_test()
+    override_synthesis_collectors_for_test()
     override_risk_synthesis_service_for_test()
 
     created_snapshot_commands: list[CreateReleaseRunRiskSnapshotCommand] = []
@@ -753,7 +820,7 @@ async def test_collect_release_risks_api_exposes_and_persists_claude_synthesis(
     assert response_data["synthesis_report"]["risks"][0]["source_id"] if False else True
     assert response_data["synthesis_report"]["risks"][0]["evidence"][0][
         "source_id"
-    ] == "ci_failure"
+    ] == "1"
     assert response_data["synthesis_model"] == "claude-test-model"
     assert response_data["synthesis_input_tokens"] == 500
     assert response_data["synthesis_output_tokens"] == 200

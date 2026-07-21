@@ -36,6 +36,9 @@ from app.services.hitl_approval_decision_service import HITLApprovalDecisionServ
 from app.services.release_risk_response_mapper import (
     to_release_run_risk_response,
 )
+from app.services.release_risk_synthesis_citation_verifier import (
+    ReleaseRiskSynthesisCitationVerifier,
+)
 from app.services.release_risk_synthesis_prompt import (
     ReleaseRiskSynthesisPromptBuilder,
 )
@@ -461,6 +464,7 @@ def create_score_release_risk_node(
 def create_synthesize_release_risk_node(
     synthesis_service: RiskSynthesisService,
     prompt_builder: ReleaseRiskSynthesisPromptBuilder | None = None,
+    citation_verifier: ReleaseRiskSynthesisCitationVerifier | None = None,
 ) -> AsyncWorkflowNode:
     """Create an async LangGraph node for Claude risk synthesis.
 
@@ -469,6 +473,7 @@ def create_synthesize_release_risk_node(
     """
 
     builder = prompt_builder or ReleaseRiskSynthesisPromptBuilder()
+    verifier = citation_verifier or ReleaseRiskSynthesisCitationVerifier()
 
     async def synthesize_release_risk_node(
         state: WorkflowStateInput,
@@ -501,13 +506,17 @@ def create_synthesize_release_risk_node(
                     user_prompt=prompt.user_prompt,
                     prompt_version=prompt.prompt_version,
                 )
+                verified_report = verifier.verify(
+                    report=result.report,
+                    release_risk=release_risk,
+                )
 
                 span.set_attribute("llm.model", result.model)
                 span.set_attribute("llm.input_tokens", result.input_tokens)
                 span.set_attribute("llm.output_tokens", result.output_tokens)
                 span.set_attribute(
                     "llm.recommendation",
-                    result.report.recommendation.value,
+                    verified_report.recommendation.value,
                 )
 
             logger.info(
@@ -519,14 +528,14 @@ def create_synthesize_release_risk_node(
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
                 duration_ms=result.duration_ms,
-                recommendation=result.report.recommendation.value,
-                risk_count=len(result.report.risks),
+                recommendation=verified_report.recommendation.value,
+                risk_count=len(verified_report.risks),
             )
 
             updated_state = running_state.model_copy(
                 update={
                     "synthesis_status": RiskSynthesisStatus.COMPLETED,
-                    "synthesis_report": result.report.model_dump(mode="python"),
+                    "synthesis_report": verified_report.model_dump(mode="python"),
                     "synthesis_prompt_version": result.prompt_version,
                     "synthesis_model": result.model,
                     "synthesis_input_tokens": result.input_tokens,

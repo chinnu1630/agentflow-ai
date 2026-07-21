@@ -100,6 +100,55 @@ class FakeRiskSynthesisService:
         )
 
 
+class HallucinatedCitationSynthesisService:
+    """Return structured output containing an invented evidence citation."""
+
+    async def synthesize_release_risk(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        prompt_version: str,
+    ) -> ClaudeSynthesisResult:
+        """Return a valid schema containing an untrusted source ID."""
+        report = ClaudeReleaseRiskReport(
+            recommendation=RiskSummaryActionResponse.REVIEW_REQUIRED,
+            confidence=0.9,
+            executive_summary="The release requires human review.",
+            risks=[
+                SynthesizedReleaseRisk(
+                    rank=1,
+                    title="Invented payment risk",
+                    severity=RiskSeverityResponse.HIGH,
+                    confidence=0.9,
+                    explanation="The model cited evidence that does not exist.",
+                    evidence=[
+                        SynthesisEvidenceCitation(
+                            source=SynthesisEvidenceSource.GITHUB_PULL_REQUEST,
+                            source_id="invented-pr-999",
+                            title="Invented pull request",
+                            supporting_fact="This evidence is not trusted.",
+                        )
+                    ],
+                    mitigations=["Review trusted release evidence."],
+                )
+            ],
+            requires_human_review=True,
+        )
+
+        return ClaudeSynthesisResult(
+            report=report,
+            message_id="msg-hallucinated-citation",
+            model="test-claude-model",
+            input_tokens=400,
+            output_tokens=180,
+            stop_reason="end_turn",
+            duration_ms=500.0,
+            prompt_version=prompt_version,
+        )
+
+
+
 class FailingRiskSynthesisService:
     """Simulate an unavailable Claude service."""
 
@@ -178,6 +227,27 @@ async def test_synthesis_node_stores_structured_report_and_usage() -> None:
         synthesis_service.prompt_version
         == "release-risk-synthesis-v1"
     )
+
+
+@pytest.mark.anyio
+async def test_synthesis_node_rejects_invented_citation() -> None:
+    """Unverified Claude citations should trigger safe deterministic fallback."""
+    node = create_synthesize_release_risk_node(
+        HallucinatedCitationSynthesisService()
+    )
+    initial_state = build_scored_workflow_state()
+
+    result = await node(initial_state)
+    final_state = ReleaseRiskState.model_validate(result)
+
+    assert final_state.status is ReleaseRiskWorkflowStatus.PARTIAL
+    assert final_state.synthesis_status is RiskSynthesisStatus.FAILED
+    assert final_state.synthesis_report is None
+    assert final_state.synthesis_error == "Claude risk synthesis failed."
+    assert final_state.risk_score == initial_state.risk_score
+    assert final_state.errors[-1].source == "release_risk_synthesis"
+    assert final_state.errors[-1].recoverable is True
+
 
 
 @pytest.mark.anyio
