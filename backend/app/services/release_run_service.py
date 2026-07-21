@@ -51,7 +51,10 @@ from app.services.release_risk_summary import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from app.workflows.release_risk_service_nodes import KnowledgeRetrievalService
+    from app.workflows.release_risk_service_nodes import (
+        KnowledgeRetrievalService,
+        RiskSynthesisService,
+    )
     from app.workflows.release_risk_state import ReleaseRiskState
 
 
@@ -160,6 +163,7 @@ class ReleaseRunService:
         release_risk_summary_generator: ReleaseRiskSummaryGenerator | None = None,
         event_repository: ReleaseRunEventRepository | None = None,
         knowledge_service: KnowledgeRetrievalService | None = None,
+        synthesis_service: RiskSynthesisService | None = None,
     ) -> None:
         """Initialize the service.
 
@@ -174,6 +178,7 @@ class ReleaseRunService:
                 Optional generator used to summarize combined release risks.
             event_repository: Optional repository used to persist audit events.
             knowledge_service: Optional service used to retrieve engineering document evidence.
+            synthesis_service: Optional Claude structured-synthesis service.
         """
 
         self._repository = repository
@@ -189,6 +194,7 @@ class ReleaseRunService:
         )
         self._event_repository = event_repository
         self._knowledge_service = knowledge_service
+        self._synthesis_service = synthesis_service
 
     async def start_release_run(
         self,
@@ -548,6 +554,7 @@ class ReleaseRunService:
             runner = ReleaseRiskServiceWorkflowRunner(
                 self,
                 knowledge_service=getattr(self, "_knowledge_service", None),
+                synthesis_service=getattr(self, "_synthesis_service", None),
             )
 
             try:

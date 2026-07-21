@@ -20,6 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.db.session import get_db_session
+from app.integrations.anthropic_client import (
+    AnthropicClientConfig,
+    AnthropicRiskSynthesisClient,
+)
 from app.integrations.github_client import GitHubClient, GitHubClientConfig
 from app.integrations.jira_client import JiraClient, JiraClientConfig
 from app.integrations.slack_client import SlackClient, SlackClientConfig
@@ -181,6 +185,43 @@ async def get_jira_risk_collector() -> AsyncIterator[JiraRiskCollector]:
 
     async with JiraClient(config=jira_config) as jira_client:
         yield JiraRiskCollector(jira_client=jira_client)
+
+
+async def get_risk_synthesis_service(
+    request: Request,
+) -> AsyncIterator[AnthropicRiskSynthesisClient | None]:
+    """Create the optional Claude synthesis service for this request."""
+    settings = get_settings()
+
+    if not settings.anthropic_enabled:
+        yield None
+        return
+
+    api_key = settings.anthropic_api_key
+
+    if api_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Claude risk synthesis is enabled but not configured. "
+                "Set ANTHROPIC_API_KEY."
+            ),
+        )
+
+    request_id = str(getattr(request.state, "request_id", "unknown-request-id"))
+    config = AnthropicClientConfig(
+        api_key=api_key,
+        model=settings.anthropic_model,
+        max_tokens=settings.anthropic_max_tokens,
+        timeout_seconds=settings.anthropic_timeout_seconds,
+        max_retries=settings.anthropic_max_retries,
+    )
+
+    async with AnthropicRiskSynthesisClient(
+        config=config,
+        run_id=request_id,
+    ) as synthesis_service:
+        yield synthesis_service
 
 
 async def get_slack_alert_sender(request: Request) -> AsyncIterator[SlackClient]:
@@ -702,6 +743,9 @@ async def collect_release_risks(
     reranker: CrossEncoderEngineeringDocumentReranker = Depends(
         get_engineering_document_reranker
     ),
+    synthesis_service: AnthropicRiskSynthesisClient | None = Depends(
+        get_risk_synthesis_service
+    ),
 ) -> ReleaseRunRiskResponse:
     """Run the LangGraph release-risk workflow for an existing release run.
 
@@ -732,6 +776,7 @@ async def collect_release_risks(
             jira_risk_collector=jira_risk_collector,
             embedding_provider=embedding_provider,
             reranker=reranker,
+            synthesis_service=synthesis_service,
         )
 
 
@@ -771,6 +816,7 @@ async def _collect_release_risk_workflow_response(
     jira_risk_collector: JiraRiskCollector,
     embedding_provider: SentenceTransformerEmbeddingProvider,
     reranker: CrossEncoderEngineeringDocumentReranker,
+    synthesis_service: AnthropicRiskSynthesisClient | None,
 ) -> ReleaseRunRiskResponse:
     """Run the LangGraph workflow and convert its final state into an API response.
 
@@ -813,6 +859,7 @@ async def _collect_release_risk_workflow_response(
         jira_risk_collector=jira_risk_collector,
         event_repository=event_repository,
         knowledge_service=knowledge_service,
+        synthesis_service=synthesis_service,
     )
     finalizer = ReleaseRiskExecutionFinalizer(
         release_run_repository=repository,
