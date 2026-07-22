@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -272,3 +274,115 @@ async def test_accepts_context_tool_with_release_run_context() -> None:
     assert result.plan.steps[0].invocation.tool_name is (
         AgentToolName.LOOKUP_APPROVAL_STATUS
     )
+
+
+
+class CapturingSpan:
+    """Capture planner span attributes and status."""
+
+    def __init__(self) -> None:
+        self.attributes: dict[str, object] = {}
+        self.status: object | None = None
+
+    def set_attribute(self, key: str, value: object) -> None:
+        """Store one safe span attribute."""
+        self.attributes[key] = value
+
+    def set_status(self, status: object) -> None:
+        """Store the assigned span status."""
+        self.status = status
+
+
+@pytest.mark.anyio
+async def test_planning_span_records_safe_usage_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Planning span should expose bounded LLM usage metadata only."""
+    captured_name: str | None = None
+    span = CapturingSpan()
+
+    @contextmanager
+    def capture_span(
+        span_name: str,
+        attributes: dict[str, object],
+    ) -> Iterator[CapturingSpan]:
+        nonlocal captured_name
+        captured_name = span_name
+        span.attributes.update(attributes)
+        yield span
+
+    monkeypatch.setattr(
+        "app.services.agent_execution_planner_service.start_business_span",
+        capture_span,
+    )
+
+    plan = _build_execution_plan()
+    service = _build_service(
+        FakePlannerClient(result=_build_claude_result(plan))
+    )
+
+    await service.create_plan(
+        request=AgentQueryRequest(
+            query="How do I rollback the payment service?"
+        ),
+        query_plan=_build_query_plan(),
+    )
+
+    assert captured_name == "agent.dynamic_planning"
+    assert span.attributes == {
+        "run_id": "request-plan-test",
+        "intent": "knowledge_doc_question",
+        "prompt_version": "agent-execution-planner-v1",
+        "step_count": 1,
+        "model_name": "test-claude-model",
+        "input_token_count": 250,
+        "output_token_count": 100,
+    }
+    assert "query" not in span.attributes
+    assert "system_prompt" not in span.attributes
+    assert "user_prompt" not in span.attributes
+
+
+@pytest.mark.anyio
+async def test_planning_span_records_safe_validation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Planner validation failures should expose type, not messages."""
+    span = CapturingSpan()
+
+    @contextmanager
+    def capture_span(
+        span_name: str,
+        attributes: dict[str, object],
+    ) -> Iterator[CapturingSpan]:
+        assert span_name == "agent.dynamic_planning"
+        span.attributes.update(attributes)
+        yield span
+
+    monkeypatch.setattr(
+        "app.services.agent_execution_planner_service.start_business_span",
+        capture_span,
+    )
+
+    changed_plan = _build_execution_plan(
+        intent=AgentIntent.RELEASE_RISK_SUMMARY
+    )
+    service = _build_service(
+        FakePlannerClient(result=_build_claude_result(changed_plan))
+    )
+
+    with pytest.raises(AgentExecutionPlanIntentMismatchError):
+        await service.create_plan(
+            request=AgentQueryRequest(
+                query="How do I rollback the payment service?"
+            ),
+            query_plan=_build_query_plan(),
+        )
+
+    assert span.attributes["failure_stage"] == "dynamic_planning"
+    assert span.attributes["exception_type"] == (
+        "AgentExecutionPlanIntentMismatchError"
+    )
+    assert span.status is not None
+    assert "changed the deterministic intent" not in str(span.attributes)
+    assert "changed the deterministic intent" not in str(span.status)

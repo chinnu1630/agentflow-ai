@@ -10,7 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.integrations.anthropic_execution_planner_client import (
     ClaudeExecutionPlanResult,
 )
-from app.observability.tracing import start_business_span
+from app.observability.tracing import (
+    record_business_span_failure,
+    set_safe_span_attributes,
+    start_business_span,
+)
 from app.schemas.agent_execution_plan import AgentExecutionPlan
 from app.schemas.agent_query import AgentQueryPlan, AgentQueryRequest
 from app.services.agent_execution_plan_validator import (
@@ -116,54 +120,51 @@ class AgentExecutionPlannerService:
         )
 
         with start_business_span(
-            "agent.execution_planning",
+            "agent.dynamic_planning",
             {
                 "run_id": self._request_id,
                 "intent": query_plan.intent.value,
                 "prompt_version": prompt.prompt_version,
-                "approved_tool_count": prompt.approved_tool_count,
-                "release_run_context_available": (
-                    prompt.release_run_context_available
-                ),
             },
         ) as span:
-            claude_result = (
-                await self._planner_client.create_execution_plan(
-                    system_prompt=prompt.system_prompt,
-                    user_prompt=prompt.user_prompt,
-                    prompt_version=prompt.prompt_version,
-                )
-            )
-
-            if claude_result.plan.intent is not query_plan.intent:
-                raise AgentExecutionPlanIntentMismatchError(
-                    "Claude execution plan changed the deterministic intent."
+            try:
+                claude_result = (
+                    await self._planner_client.create_execution_plan(
+                        system_prompt=prompt.system_prompt,
+                        user_prompt=prompt.user_prompt,
+                        prompt_version=prompt.prompt_version,
+                    )
                 )
 
-            validated_plan = self._plan_validator.validate(
-                claude_result.plan,
-                has_release_run_context=(
-                    prompt.release_run_context_available
-                ),
-                allow_side_effects=False,
-                human_approval_granted=False,
-            )
+                if claude_result.plan.intent is not query_plan.intent:
+                    raise AgentExecutionPlanIntentMismatchError(
+                        "Claude execution plan changed the deterministic intent."
+                    )
 
-            span.set_attribute(
-                "agent.execution_plan.step_count",
-                len(validated_plan.steps),
-            )
-            span.set_attribute(
-                "llm.model",
-                claude_result.model,
-            )
-            span.set_attribute(
-                "llm.input_tokens",
-                claude_result.input_tokens,
-            )
-            span.set_attribute(
-                "llm.output_tokens",
-                claude_result.output_tokens,
+                validated_plan = self._plan_validator.validate(
+                    claude_result.plan,
+                    has_release_run_context=(
+                        prompt.release_run_context_available
+                    ),
+                    allow_side_effects=False,
+                    human_approval_granted=False,
+                )
+            except Exception as exc:
+                record_business_span_failure(
+                    span,
+                    failure_stage="dynamic_planning",
+                    exception=exc,
+                )
+                raise
+
+            set_safe_span_attributes(
+                span,
+                {
+                    "step_count": len(validated_plan.steps),
+                    "model_name": claude_result.model,
+                    "input_token_count": claude_result.input_tokens,
+                    "output_token_count": claude_result.output_tokens,
+                },
             )
 
         logger.info(

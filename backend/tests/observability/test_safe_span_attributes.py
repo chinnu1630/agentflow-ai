@@ -100,6 +100,10 @@ def test_known_business_span_names_are_stable() -> None:
         "knowledge.retrieve",
         "slack.release_alert.route",
         "slack.release_alert.duplicate_check",
+        "agent.dynamic_query_pipeline",
+        "agent.dynamic_planning",
+        "agent.tool_execution",
+        "agent.dynamic_synthesis",
     }
 
     for span_name in expected_spans:

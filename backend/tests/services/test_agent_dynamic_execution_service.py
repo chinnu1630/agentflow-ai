@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 
 import pytest
 
@@ -436,3 +437,122 @@ async def test_rejects_invalid_tool_arguments_before_adapter_call() -> None:
         "invalid_tool_arguments"
     )
     assert knowledge_adapter.received_dependencies == []
+
+
+
+class CapturingSpan:
+    """Capture dynamic execution span attributes and status."""
+
+    def __init__(self) -> None:
+        self.attributes: dict[str, object] = {}
+        self.status: object | None = None
+
+    def set_attribute(self, key: str, value: object) -> None:
+        """Store one safe span attribute."""
+        self.attributes[key] = value
+
+    def set_status(self, status: object) -> None:
+        """Store the assigned span status."""
+        self.status = status
+
+
+@pytest.mark.anyio
+async def test_tool_execution_span_records_safe_success_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Execution span should expose identifiers and aggregate status only."""
+    captured_name: str | None = None
+    span = CapturingSpan()
+
+    @contextmanager
+    def capture_span(
+        span_name: str,
+        attributes: dict[str, object],
+    ) -> Iterator[CapturingSpan]:
+        nonlocal captured_name
+        captured_name = span_name
+        span.attributes.update(attributes)
+        yield span
+
+    monkeypatch.setattr(
+        "app.services.agent_dynamic_execution_service.start_business_span",
+        capture_span,
+    )
+
+    step = _build_step(
+        step_id="search_docs",
+        tool_name=AgentToolName.SEARCH_ENGINEERING_KNOWLEDGE,
+        arguments={"query": "payment rollback"},
+    )
+    plan = _build_plan(steps=[step])
+    service = _build_service(
+        {
+            AgentToolName.SEARCH_ENGINEERING_KNOWLEDGE: RecordingAdapter()
+        }
+    )
+
+    result = await service.execute(
+        plan,
+        has_release_run_context=False,
+    )
+
+    assert captured_name == "agent.tool_execution"
+    assert span.attributes == {
+        "run_id": "request-123",
+        "intent": "explain_risk_score",
+        "step_count": 1,
+        "execution_id": str(result.execution_id),
+        "execution_status": "success",
+    }
+    assert "arguments" not in span.attributes
+    assert "output" not in span.attributes
+    assert "tool_results" not in span.attributes
+
+
+@pytest.mark.anyio
+async def test_tool_execution_span_records_safe_validation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Execution policy failures should expose type, not exception messages."""
+    span = CapturingSpan()
+
+    @contextmanager
+    def capture_span(
+        span_name: str,
+        attributes: dict[str, object],
+    ) -> Iterator[CapturingSpan]:
+        assert span_name == "agent.tool_execution"
+        span.attributes.update(attributes)
+        yield span
+
+    monkeypatch.setattr(
+        "app.services.agent_dynamic_execution_service.start_business_span",
+        capture_span,
+    )
+
+    step = _build_step(
+        step_id="send_alert",
+        tool_name=AgentToolName.SEND_APPROVED_SLACK_ALERT,
+        arguments={"release_run_id": "11111111-1111-1111-1111-111111111111"},
+    )
+    plan = _build_plan(
+        steps=[step],
+        intent=AgentIntent.ACTION_REQUEST,
+    )
+    service = _build_service({})
+
+    with pytest.raises(AgentExecutionToolNotAllowedError):
+        await service.execute(
+            plan,
+            has_release_run_context=True,
+            allow_side_effects=False,
+            human_approval_granted=False,
+        )
+
+    assert span.attributes["failure_stage"] == "tool_execution"
+    assert span.attributes["exception_type"] == (
+        "AgentExecutionToolNotAllowedError"
+    )
+    assert span.status is not None
+    assert "disabled for this execution" not in str(span.attributes)
+    assert "disabled for this execution" not in str(span.status)

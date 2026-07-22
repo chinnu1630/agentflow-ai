@@ -9,6 +9,11 @@ import structlog
 from app.integrations.anthropic_dynamic_synthesis_client import (
     ClaudeDynamicSynthesisResult,
 )
+from app.observability.tracing import (
+    record_business_span_failure,
+    set_safe_span_attributes,
+    start_business_span,
+)
 from app.schemas.agent_dynamic_query import AgentDynamicQueryResponse
 from app.schemas.agent_execution_plan import AgentExecutionPlan
 from app.schemas.agent_execution_result import AgentExecutionResult
@@ -92,77 +97,136 @@ class AgentDynamicQueryService:
         query_plan: AgentQueryPlan,
     ) -> AgentDynamicQueryResponse:
         """Plan and execute one read-only dynamic manager query."""
-        planner_result = await self._planner.create_plan(
-            request=request,
-            query_plan=query_plan,
-        )
-        has_release_run_context = (
-            request.release_run_id is not None
-            or query_plan.release_run_id is not None
-        )
+        with start_business_span(
+            "agent.dynamic_query_pipeline",
+            {
+                "run_id": self._request_id,
+                "intent": query_plan.intent.value,
+            },
+        ) as span:
+            try:
+                planner_result = await self._planner.create_plan(
+                    request=request,
+                    query_plan=query_plan,
+                )
+            except Exception as exc:
+                record_business_span_failure(
+                    span,
+                    failure_stage="dynamic_planning",
+                    exception=exc,
+                )
+                raise
 
-        execution_result = await self._executor.execute(
-            planner_result.plan,
-            has_release_run_context=has_release_run_context,
-            allow_side_effects=False,
-            human_approval_granted=False,
-        )
-
-        try:
-            synthesis_result = await self._synthesizer.synthesize(
-                request=request,
-                query_plan=query_plan,
-                execution_result=execution_result,
+            has_release_run_context = (
+                request.release_run_id is not None
+                or query_plan.release_run_id is not None
             )
-        except AgentDynamicSynthesisCitationVerificationError as exc:
-            logger.error(
-                "agent_dynamic_synthesis_rejected",
+
+            try:
+                execution_result = await self._executor.execute(
+                    planner_result.plan,
+                    has_release_run_context=has_release_run_context,
+                    allow_side_effects=False,
+                    human_approval_granted=False,
+                )
+            except Exception as exc:
+                record_business_span_failure(
+                    span,
+                    failure_stage="tool_execution",
+                    exception=exc,
+                )
+                raise
+
+            set_safe_span_attributes(
+                span,
+                {
+                    "execution_id": str(execution_result.execution_id),
+                    "execution_status": execution_result.status.value,
+                    "step_count": len(execution_result.tool_results),
+                },
+            )
+
+            try:
+                synthesis_result = await self._synthesizer.synthesize(
+                    request=request,
+                    query_plan=query_plan,
+                    execution_result=execution_result,
+                )
+            except AgentDynamicSynthesisCitationVerificationError as exc:
+                record_business_span_failure(
+                    span,
+                    failure_stage="grounding_verification",
+                    exception=exc,
+                    execution_status=execution_result.status.value,
+                )
+                logger.error(
+                    "agent_dynamic_synthesis_rejected",
+                    run_id=self._request_id,
+                    intent=query_plan.intent.value,
+                    execution_id=str(execution_result.execution_id),
+                    execution_status=execution_result.status.value,
+                    step_count=len(execution_result.tool_results),
+                    error_type=type(exc).__name__,
+                )
+                raise
+            except Exception as exc:
+                record_business_span_failure(
+                    span,
+                    failure_stage="dynamic_synthesis",
+                    exception=exc,
+                    execution_status=execution_result.status.value,
+                )
+                raise
+
+            set_safe_span_attributes(
+                span,
+                {
+                    "citation_count": len(
+                        synthesis_result.answer.citations
+                    ),
+                    "requires_human_review": (
+                        synthesis_result.answer.requires_human_review
+                    ),
+                },
+            )
+
+            response = AgentDynamicQueryResponse(
+                query_plan=query_plan,
+                execution_plan=planner_result.plan,
+                execution_result=execution_result,
+                answer=synthesis_result.answer,
+                prompt_version=planner_result.prompt_version,
+                model=planner_result.model,
+                message_id=planner_result.message_id,
+                input_tokens=planner_result.input_tokens,
+                output_tokens=planner_result.output_tokens,
+                planning_duration_ms=planner_result.duration_ms,
+                synthesis_prompt_version=synthesis_result.prompt_version,
+                synthesis_model=synthesis_result.model,
+                synthesis_message_id=synthesis_result.message_id,
+                synthesis_input_tokens=synthesis_result.input_tokens,
+                synthesis_output_tokens=synthesis_result.output_tokens,
+                synthesis_duration_ms=synthesis_result.duration_ms,
+            )
+
+            logger.info(
+                "agent_dynamic_query_completed",
                 run_id=self._request_id,
                 intent=query_plan.intent.value,
                 execution_id=str(execution_result.execution_id),
                 execution_status=execution_result.status.value,
                 step_count=len(execution_result.tool_results),
-                error_type=type(exc).__name__,
+                prompt_version=planner_result.prompt_version,
+                model=planner_result.model,
+                input_tokens=planner_result.input_tokens,
+                output_tokens=planner_result.output_tokens,
+                synthesis_prompt_version=synthesis_result.prompt_version,
+                synthesis_model=synthesis_result.model,
+                synthesis_input_tokens=synthesis_result.input_tokens,
+                synthesis_output_tokens=synthesis_result.output_tokens,
+                synthesis_citation_count=len(
+                    synthesis_result.answer.citations
+                ),
             )
-            raise
 
-        response = AgentDynamicQueryResponse(
-            query_plan=query_plan,
-            execution_plan=planner_result.plan,
-            execution_result=execution_result,
-            answer=synthesis_result.answer,
-            prompt_version=planner_result.prompt_version,
-            model=planner_result.model,
-            message_id=planner_result.message_id,
-            input_tokens=planner_result.input_tokens,
-            output_tokens=planner_result.output_tokens,
-            planning_duration_ms=planner_result.duration_ms,
-            synthesis_prompt_version=synthesis_result.prompt_version,
-            synthesis_model=synthesis_result.model,
-            synthesis_message_id=synthesis_result.message_id,
-            synthesis_input_tokens=synthesis_result.input_tokens,
-            synthesis_output_tokens=synthesis_result.output_tokens,
-            synthesis_duration_ms=synthesis_result.duration_ms,
-        )
-
-        logger.info(
-            "agent_dynamic_query_completed",
-            run_id=self._request_id,
-            intent=query_plan.intent.value,
-            execution_id=str(execution_result.execution_id),
-            execution_status=execution_result.status.value,
-            step_count=len(execution_result.tool_results),
-            prompt_version=planner_result.prompt_version,
-            model=planner_result.model,
-            input_tokens=planner_result.input_tokens,
-            output_tokens=planner_result.output_tokens,
-            synthesis_prompt_version=synthesis_result.prompt_version,
-            synthesis_model=synthesis_result.model,
-            synthesis_input_tokens=synthesis_result.input_tokens,
-            synthesis_output_tokens=synthesis_result.output_tokens,
-            synthesis_citation_count=len(
-                synthesis_result.answer.citations
-            ),
-        )
-
-        return response
+            return response

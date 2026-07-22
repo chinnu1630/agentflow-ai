@@ -1,5 +1,8 @@
 """Tests for dynamic answer synthesis orchestration."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import pytest
 
 from app.integrations.anthropic_dynamic_synthesis_client import (
@@ -238,3 +241,143 @@ async def test_fails_closed_when_degraded_step_is_hidden() -> None:
         )
 
     assert client.call_count == 1
+
+
+
+class CapturingSpan:
+    """Capture dynamic synthesis span attributes and status."""
+
+    def __init__(self) -> None:
+        self.attributes: dict[str, object] = {}
+        self.status: object | None = None
+
+    def set_attribute(self, key: str, value: object) -> None:
+        """Store one safe span attribute."""
+        self.attributes[key] = value
+
+    def set_status(self, status: object) -> None:
+        """Store the assigned span status."""
+        self.status = status
+
+
+@pytest.mark.anyio
+async def test_synthesis_span_records_safe_usage_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Synthesis span should expose safe usage and grounding metadata."""
+    captured_name: str | None = None
+    span = CapturingSpan()
+
+    @contextmanager
+    def capture_span(
+        span_name: str,
+        attributes: dict[str, object],
+    ) -> Iterator[CapturingSpan]:
+        nonlocal captured_name
+        captured_name = span_name
+        span.attributes.update(attributes)
+        yield span
+
+    monkeypatch.setattr(
+        "app.services.agent_dynamic_synthesis_service.start_business_span",
+        capture_span,
+    )
+
+    answer = AgentDynamicAnswer(
+        answer="Follow the documented payment rollback procedure.",
+        confidence=0.94,
+        citations=[
+            AgentDynamicAnswerCitation(
+                source_type="engineering_document_chunk",
+                source_id="chunk-123",
+                title="Payment Service Runbook",
+                supporting_fact="The runbook defines rollback steps.",
+            )
+        ],
+        requires_human_review=False,
+    )
+    execution_result = _build_execution_result()
+    service = AgentDynamicSynthesisService(
+        client=FakeDynamicSynthesisClient(answer),
+        request_id="request-synthesis-trace",
+    )
+
+    await service.synthesize(
+        request=AgentQueryRequest(
+            query="How do I rollback the payment service?"
+        ),
+        query_plan=_build_query_plan(),
+        execution_result=execution_result,
+    )
+
+    assert captured_name == "agent.dynamic_synthesis"
+    assert span.attributes == {
+        "run_id": "request-synthesis-trace",
+        "intent": "knowledge_doc_question",
+        "execution_id": str(execution_result.execution_id),
+        "execution_status": "success",
+        "step_count": 1,
+        "prompt_version": "agent-dynamic-synthesis-v1",
+        "model_name": "test-claude-model",
+        "input_token_count": 300,
+        "output_token_count": 120,
+        "citation_count": 1,
+        "requires_human_review": False,
+    }
+    assert "query" not in span.attributes
+    assert "answer" not in span.attributes
+    assert "tool_results" not in span.attributes
+
+
+@pytest.mark.anyio
+async def test_synthesis_span_records_safe_grounding_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Grounding failures should expose stage and type without content."""
+    span = CapturingSpan()
+
+    @contextmanager
+    def capture_span(
+        span_name: str,
+        attributes: dict[str, object],
+    ) -> Iterator[CapturingSpan]:
+        assert span_name == "agent.dynamic_synthesis"
+        span.attributes.update(attributes)
+        yield span
+
+    monkeypatch.setattr(
+        "app.services.agent_dynamic_synthesis_service.start_business_span",
+        capture_span,
+    )
+
+    answer = AgentDynamicAnswer(
+        answer="Follow the documented rollback procedure.",
+        confidence=0.9,
+        requires_human_review=False,
+    )
+    service = AgentDynamicSynthesisService(
+        client=FakeDynamicSynthesisClient(answer),
+        request_id="request-synthesis-grounding-failure",
+    )
+
+    with pytest.raises(AgentDynamicSynthesisCitationVerificationError):
+        await service.synthesize(
+            request=AgentQueryRequest(
+                query="How do I rollback the payment service?"
+            ),
+            query_plan=_build_query_plan(),
+            execution_result=_build_execution_result(),
+        )
+
+    assert span.attributes["failure_stage"] == "grounding_verification"
+    assert span.attributes["exception_type"] == (
+        "AgentDynamicSynthesisCitationVerificationError"
+    )
+    assert span.attributes["execution_status"] == "success"
+    assert span.status is not None
+    assert "must include at least one verified citation" not in str(
+        span.attributes
+    )
+    assert "must include at least one verified citation" not in str(
+        span.status
+    )

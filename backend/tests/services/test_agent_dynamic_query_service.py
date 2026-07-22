@@ -1,5 +1,7 @@
 """Tests for bounded dynamic query orchestration."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from uuid import UUID
 
 import pytest
@@ -326,3 +328,139 @@ async def test_logs_safe_audit_metadata_when_synthesis_is_rejected(
         "AgentDynamicSynthesisCitationVerificationError"
     )
     assert "Untrusted Claude output" not in str(metadata)
+
+
+
+class CapturingSpan:
+    """Capture safe attributes and status assigned to a business span."""
+
+    def __init__(self) -> None:
+        self.attributes: dict[str, object] = {}
+        self.status: object | None = None
+
+    def set_attribute(self, key: str, value: object) -> None:
+        """Store one safe scalar span attribute."""
+        self.attributes[key] = value
+
+    def set_status(self, status: object) -> None:
+        """Store the final span status."""
+        self.status = status
+
+
+@pytest.mark.anyio
+async def test_dynamic_pipeline_span_records_safe_success_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pipeline span should contain only safe operational metadata."""
+    captured_span_name: str | None = None
+    span = CapturingSpan()
+
+    @contextmanager
+    def capture_business_span(
+        span_name: str,
+        attributes: dict[str, object],
+    ) -> Iterator[CapturingSpan]:
+        """Capture span creation without exporting a real trace."""
+        nonlocal captured_span_name
+        captured_span_name = span_name
+        span.attributes.update(attributes)
+        yield span
+
+    monkeypatch.setattr(
+        "app.services.agent_dynamic_query_service.start_business_span",
+        capture_business_span,
+    )
+
+    plan = _build_execution_plan()
+    service = AgentDynamicQueryService(
+        planner=FakeDynamicPlanner(plan),
+        executor=FakeDynamicExecutor(plan),
+        synthesizer=FakeDynamicSynthesizer(),
+        request_id="request-trace-success",
+    )
+
+    response = await service.execute(
+        request=AgentQueryRequest(
+            query="How do I rollback the payment service?"
+        ),
+        query_plan=AgentQueryPlan(
+            intent=AgentIntent.KNOWLEDGE_DOC_QUESTION,
+            response_depth=ResponseDepth.STANDARD,
+            confidence=0.98,
+            routing_reason_code="matched_knowledge_question",
+        ),
+    )
+
+    assert captured_span_name == "agent.dynamic_query_pipeline"
+    assert span.attributes == {
+        "run_id": "request-trace-success",
+        "intent": "knowledge_doc_question",
+        "execution_id": str(response.execution_result.execution_id),
+        "execution_status": "success",
+        "step_count": 1,
+        "citation_count": 0,
+        "requires_human_review": False,
+    }
+    assert "query" not in span.attributes
+    assert "answer" not in span.attributes
+    assert "tool_results" not in span.attributes
+
+
+@pytest.mark.anyio
+async def test_dynamic_pipeline_span_records_safe_grounding_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Grounding rejection should be traceable without exception content."""
+    captured_span_name: str | None = None
+    span = CapturingSpan()
+
+    @contextmanager
+    def capture_business_span(
+        span_name: str,
+        attributes: dict[str, object],
+    ) -> Iterator[CapturingSpan]:
+        """Capture span creation without exporting a real trace."""
+        nonlocal captured_span_name
+        captured_span_name = span_name
+        span.attributes.update(attributes)
+        yield span
+
+    monkeypatch.setattr(
+        "app.services.agent_dynamic_query_service.start_business_span",
+        capture_business_span,
+    )
+
+    plan = _build_execution_plan()
+    service = AgentDynamicQueryService(
+        planner=FakeDynamicPlanner(plan),
+        executor=FakeDynamicExecutor(plan),
+        synthesizer=FakeRejectedDynamicSynthesizer(),
+        request_id="request-trace-grounding-failure",
+    )
+
+    with pytest.raises(AgentDynamicSynthesisCitationVerificationError):
+        await service.execute(
+            request=AgentQueryRequest(
+                query="How do I rollback the payment service?"
+            ),
+            query_plan=AgentQueryPlan(
+                intent=AgentIntent.KNOWLEDGE_DOC_QUESTION,
+                response_depth=ResponseDepth.STANDARD,
+                confidence=0.98,
+                routing_reason_code="matched_knowledge_question",
+            ),
+        )
+
+    assert captured_span_name == "agent.dynamic_query_pipeline"
+    assert span.attributes["run_id"] == (
+        "request-trace-grounding-failure"
+    )
+    assert span.attributes["intent"] == "knowledge_doc_question"
+    assert span.attributes["execution_status"] == "success"
+    assert span.attributes["failure_stage"] == "grounding_verification"
+    assert span.attributes["exception_type"] == (
+        "AgentDynamicSynthesisCitationVerificationError"
+    )
+    assert span.status is not None
+    assert "Untrusted Claude output" not in str(span.attributes)
+    assert "Untrusted Claude output" not in str(span.status)

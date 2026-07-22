@@ -10,7 +10,11 @@ from typing import Protocol
 import structlog
 from pydantic import ValidationError
 
-from app.observability.tracing import start_business_span
+from app.observability.tracing import (
+    record_business_span_failure,
+    set_safe_span_attributes,
+    start_business_span,
+)
 from app.schemas.agent_execution_plan import (
     AgentExecutionPlan,
     AgentExecutionStep,
@@ -100,72 +104,77 @@ class AgentDynamicExecutionService:
         Raises:
             AgentExecutionPlanValidationError: If deterministic policy fails.
         """
-        validated_plan = self._plan_validator.validate(
-            plan,
-            has_release_run_context=has_release_run_context,
-            allow_side_effects=allow_side_effects,
-            human_approval_granted=human_approval_granted,
-        )
         started_at = time.perf_counter()
         results_by_step: dict[str, AgentToolResult] = {}
 
         with start_business_span(
-            "agent.dynamic_execution",
+            "agent.tool_execution",
             {
                 "run_id": self._request_id,
-                "intent": validated_plan.intent.value,
-                "step_count": len(validated_plan.steps),
-                "max_parallel_steps": (
-                    validated_plan.budget.max_parallel_steps
-                ),
-                "max_total_duration_seconds": (
-                    validated_plan.budget.max_total_duration_seconds
-                ),
-                "allow_side_effects": allow_side_effects,
+                "intent": plan.intent.value,
+                "step_count": len(plan.steps),
             },
         ) as span:
             try:
-                async with asyncio.timeout(
-                    validated_plan.budget.max_total_duration_seconds
-                ):
-                    await self._execute_dag(
-                        plan=validated_plan,
-                        results_by_step=results_by_step,
-                    )
-            except TimeoutError:
-                self._mark_unexecuted_steps_failed(
-                    plan=validated_plan,
-                    results_by_step=results_by_step,
-                    error_code="execution_timeout",
-                    error_message=(
-                        "The execution exceeded its total duration budget."
-                    ),
+                validated_plan = self._plan_validator.validate(
+                    plan,
+                    has_release_run_context=has_release_run_context,
+                    allow_side_effects=allow_side_effects,
+                    human_approval_granted=human_approval_granted,
                 )
 
-            ordered_results = [
-                results_by_step[step.step_id]
-                for step in validated_plan.steps
-            ]
-            execution_status = self._derive_execution_status(
-                ordered_results
-            )
-            duration_ms = self._elapsed_ms(started_at)
+                try:
+                    async with asyncio.timeout(
+                        validated_plan.budget.max_total_duration_seconds
+                    ):
+                        await self._execute_dag(
+                            plan=validated_plan,
+                            results_by_step=results_by_step,
+                        )
+                except TimeoutError:
+                    self._mark_unexecuted_steps_failed(
+                        plan=validated_plan,
+                        results_by_step=results_by_step,
+                        error_code="execution_timeout",
+                        error_message=(
+                            "The execution exceeded its total duration budget."
+                        ),
+                    )
 
-            span.set_attribute(
-                "agent.execution.status",
-                execution_status.value,
-            )
-            span.set_attribute(
-                "agent.execution.duration_ms",
-                duration_ms,
-            )
-            span.set_attribute(
-                "agent.execution.failed_step_count",
-                sum(
-                    result.status is AgentToolExecutionStatus.FAILED
-                    for result in ordered_results
-                ),
-            )
+                ordered_results = [
+                    results_by_step[step.step_id]
+                    for step in validated_plan.steps
+                ]
+                execution_status = self._derive_execution_status(
+                    ordered_results
+                )
+                duration_ms = self._elapsed_ms(started_at)
+
+                execution_result = AgentExecutionResult(
+                    intent=validated_plan.intent,
+                    objective=validated_plan.objective,
+                    plan_reason_code=validated_plan.plan_reason_code,
+                    status=execution_status,
+                    tool_results=ordered_results,
+                    requires_synthesis=validated_plan.requires_synthesis,
+                    duration_ms=duration_ms,
+                )
+
+                set_safe_span_attributes(
+                    span,
+                    {
+                        "execution_id": str(execution_result.execution_id),
+                        "execution_status": execution_status.value,
+                        "step_count": len(ordered_results),
+                    },
+                )
+            except Exception as exc:
+                record_business_span_failure(
+                    span,
+                    failure_stage="tool_execution",
+                    exception=exc,
+                )
+                raise
 
         logger.info(
             "agent_dynamic_execution_completed",
@@ -180,15 +189,7 @@ class AgentDynamicExecutionService:
             duration_ms=duration_ms,
         )
 
-        return AgentExecutionResult(
-            intent=validated_plan.intent,
-            objective=validated_plan.objective,
-            plan_reason_code=validated_plan.plan_reason_code,
-            status=execution_status,
-            tool_results=ordered_results,
-            requires_synthesis=validated_plan.requires_synthesis,
-            duration_ms=duration_ms,
-        )
+        return execution_result
 
     async def _execute_dag(
         self,
@@ -369,66 +370,56 @@ class AgentDynamicExecutionService:
                 duration_ms=self._elapsed_ms(started_at),
             )
 
-        with start_business_span(
-            "agent.tool_execution",
-            {
-                "run_id": self._request_id,
-                "step_id": step.step_id,
-                "tool_name": invocation.tool_name.value,
-                "timeout_seconds": invocation.timeout_seconds,
-                "dependency_count": len(step.depends_on),
-            },
-        ):
-            try:
-                async with asyncio.timeout(
-                    invocation.timeout_seconds
-                ):
-                    result = await adapter.execute(
-                        invocation=safe_invocation,
-                        dependency_results=dependency_results,
-                    )
-            except TimeoutError:
-                return self._build_failed_result(
-                    step=step,
-                    error_code="tool_timeout",
-                    error_message=(
-                        "The tool exceeded its execution timeout."
-                    ),
-                    duration_ms=self._elapsed_ms(started_at),
+        try:
+            async with asyncio.timeout(
+                invocation.timeout_seconds
+            ):
+                result = await adapter.execute(
+                    invocation=safe_invocation,
+                    dependency_results=dependency_results,
                 )
-            except AgentToolAdapterError:
-                return self._build_failed_result(
-                    step=step,
-                    error_code="tool_execution_failed",
-                    error_message=(
-                        "The tool adapter could not complete the request."
-                    ),
-                    duration_ms=self._elapsed_ms(started_at),
-                )
-            except ValidationError:
-                return self._build_failed_result(
-                    step=step,
-                    error_code="invalid_tool_result",
-                    error_message=(
-                        "The tool returned an invalid normalized result."
-                    ),
-                    duration_ms=self._elapsed_ms(started_at),
-                )
-            except Exception:
-                logger.exception(
-                    "agent_tool_unexpected_error",
-                    run_id=self._request_id,
-                    step_id=step.step_id,
-                    tool_name=invocation.tool_name.value,
-                )
-                return self._build_failed_result(
-                    step=step,
-                    error_code="unexpected_tool_error",
-                    error_message=(
-                        "The tool encountered an unexpected internal error."
-                    ),
-                    duration_ms=self._elapsed_ms(started_at),
-                )
+        except TimeoutError:
+            return self._build_failed_result(
+                step=step,
+                error_code="tool_timeout",
+                error_message=(
+                    "The tool exceeded its execution timeout."
+                ),
+                duration_ms=self._elapsed_ms(started_at),
+            )
+        except AgentToolAdapterError:
+            return self._build_failed_result(
+                step=step,
+                error_code="tool_execution_failed",
+                error_message=(
+                    "The tool adapter could not complete the request."
+                ),
+                duration_ms=self._elapsed_ms(started_at),
+            )
+        except ValidationError:
+            return self._build_failed_result(
+                step=step,
+                error_code="invalid_tool_result",
+                error_message=(
+                    "The tool returned an invalid normalized result."
+                ),
+                duration_ms=self._elapsed_ms(started_at),
+            )
+        except Exception:
+            logger.exception(
+                "agent_tool_unexpected_error",
+                run_id=self._request_id,
+                step_id=step.step_id,
+                tool_name=invocation.tool_name.value,
+            )
+            return self._build_failed_result(
+                step=step,
+                error_code="unexpected_tool_error",
+                error_message=(
+                    "The tool encountered an unexpected internal error."
+                ),
+                duration_ms=self._elapsed_ms(started_at),
+            )
 
         if (
             result.step_id != step.step_id

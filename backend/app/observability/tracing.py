@@ -19,7 +19,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
-from opentelemetry.trace import Span, Tracer
+from opentelemetry.trace import Span, Status, StatusCode, Tracer
 
 from app.core.logging import get_logger
 
@@ -137,9 +137,44 @@ def start_business_span(
     """
     tracer = get_tracer("agentflow.business")
 
-    with tracer.start_as_current_span(span_name) as span:
+    with tracer.start_as_current_span(
+        span_name,
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as span:
         set_safe_span_attributes(span, attributes or {})
         yield span
+
+
+def record_business_span_failure(
+    span: Span,
+    *,
+    failure_stage: str,
+    exception: BaseException,
+    execution_status: str | None = None,
+) -> None:
+    """Record safe failure metadata without exporting exception messages.
+
+    Args:
+        span: Active business span receiving failure metadata.
+        failure_stage: Stable pipeline stage where the failure occurred.
+        exception: Exception used only to derive its safe class name.
+        execution_status: Optional normalized execution status.
+    """
+    set_safe_span_attributes(
+        span,
+        {
+            "failure_stage": failure_stage,
+            "exception_type": type(exception).__name__,
+            "execution_status": execution_status,
+        },
+    )
+    span.set_status(
+        Status(
+            StatusCode.ERROR,
+            "AgentFlow business operation failed.",
+        )
+    )
 
 
 def set_safe_span_attributes(

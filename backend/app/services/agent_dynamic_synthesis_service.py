@@ -9,9 +9,15 @@ import structlog
 from app.integrations.anthropic_dynamic_synthesis_client import (
     ClaudeDynamicSynthesisResult,
 )
+from app.observability.tracing import (
+    record_business_span_failure,
+    set_safe_span_attributes,
+    start_business_span,
+)
 from app.schemas.agent_execution_result import AgentExecutionResult
 from app.schemas.agent_query import AgentQueryPlan, AgentQueryRequest
 from app.services.agent_dynamic_synthesis_citation_verifier import (
+    AgentDynamicSynthesisCitationVerificationError,
     AgentDynamicSynthesisCitationVerifier,
 )
 from app.services.agent_dynamic_synthesis_prompt import (
@@ -71,19 +77,68 @@ class AgentDynamicSynthesisService:
             execution_result=execution_result,
         )
 
-        result = await self._client.synthesize_dynamic_answer(
-            system_prompt=prompt.system_prompt,
-            user_prompt=prompt.user_prompt,
-            prompt_version=prompt.prompt_version,
-        )
+        with start_business_span(
+            "agent.dynamic_synthesis",
+            {
+                "run_id": self._request_id,
+                "intent": query_plan.intent.value,
+                "execution_id": str(execution_result.execution_id),
+                "execution_status": execution_result.status.value,
+                "step_count": len(execution_result.tool_results),
+                "prompt_version": prompt.prompt_version,
+            },
+        ) as span:
+            try:
+                result = await self._client.synthesize_dynamic_answer(
+                    system_prompt=prompt.system_prompt,
+                    user_prompt=prompt.user_prompt,
+                    prompt_version=prompt.prompt_version,
+                )
+            except Exception as exc:
+                record_business_span_failure(
+                    span,
+                    failure_stage="dynamic_synthesis",
+                    exception=exc,
+                    execution_status=execution_result.status.value,
+                )
+                raise
 
-        verified_answer = self._citation_verifier.verify(
-            answer=result.answer,
-            execution_result=execution_result,
-        )
-        verified_result = result.model_copy(
-            update={"answer": verified_answer}
-        )
+            set_safe_span_attributes(
+                span,
+                {
+                    "model_name": result.model,
+                    "input_token_count": result.input_tokens,
+                    "output_token_count": result.output_tokens,
+                },
+            )
+
+            try:
+                verified_answer = self._citation_verifier.verify(
+                    answer=result.answer,
+                    execution_result=execution_result,
+                )
+            except AgentDynamicSynthesisCitationVerificationError as exc:
+                record_business_span_failure(
+                    span,
+                    failure_stage="grounding_verification",
+                    exception=exc,
+                    execution_status=execution_result.status.value,
+                )
+                raise
+
+            set_safe_span_attributes(
+                span,
+                {
+                    "citation_count": len(verified_answer.citations),
+                    "requires_human_review": (
+                        verified_answer.requires_human_review
+                    ),
+                },
+            )
+
+            verified_result = result.model_copy(
+                update={"answer": verified_answer}
+            )
 
         logger.info(
             "agent_dynamic_synthesis_completed",
