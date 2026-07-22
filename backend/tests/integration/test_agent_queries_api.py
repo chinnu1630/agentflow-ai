@@ -1443,3 +1443,80 @@ async def test_dynamic_knowledge_query_executes_read_only_tool_plan(
     assert FakeAgentExecutionPlannerClient.call_count == 1
     assert FakeAgentGitHubRiskCollector.call_count == 0
     assert FakeAgentJiraRiskCollector.call_count == 0
+
+
+@pytest.mark.anyio
+async def test_dynamic_query_returns_503_when_planning_is_disabled(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """The dynamic endpoint should fail closed when planning is disabled."""
+
+    async def override_disabled_planner() -> None:
+        """Represent a disabled dynamic-planning dependency."""
+
+        return None
+
+    app.dependency_overrides[
+        get_agent_execution_planner_client
+    ] = override_disabled_planner
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query-dynamic",
+        json={
+            "query": (
+                "What does the payment service runbook say about rollback?"
+            ),
+        },
+    )
+
+    assert response.status_code == 503
+    assert "Dynamic agent planning is disabled" in response.text
+    assert FakeAgentExecutionPlannerClient.call_count == 0
+
+
+@pytest.mark.anyio
+async def test_dynamic_query_blocks_fresh_release_analysis(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Fresh analysis must stay outside the read-only dynamic endpoint."""
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query-dynamic",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert response.status_code == 422
+    assert (
+        "not available through read-only dynamic execution"
+        in response.text
+    )
+    assert FakeAgentExecutionPlannerClient.call_count == 0
+    assert FakeAgentGitHubRiskCollector.call_count == 0
+    assert FakeAgentJiraRiskCollector.call_count == 0
+
+
+@pytest.mark.anyio
+async def test_dynamic_query_blocks_slack_side_effect_intent(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Slack actions must remain on the durable HITL-controlled endpoint."""
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query-dynamic",
+        json={
+            "query": "Can you send this to Slack?",
+            "release_run_id": (
+                "11111111-1111-1111-1111-111111111111"
+            ),
+        },
+    )
+
+    assert response.status_code == 422
+    assert (
+        "not available through read-only dynamic execution"
+        in response.text
+    )
+    assert FakeAgentExecutionPlannerClient.call_count == 0
+    assert FakeAgentSlackAlertSender.call_count == 0
