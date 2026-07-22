@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from datetime import datetime
 from typing import Protocol, cast
+from uuid import UUID
 
 from pydantic import JsonValue
 
+from app.repositories.release_run_approval_repository import (
+    ReleaseRunApprovalRepositoryError,
+)
+from app.repositories.release_run_slack_alert_repository import (
+    ReleaseRunSlackAlertRepositoryError,
+)
 from app.schemas.agent_query import (
     AgentEntityReferences,
     AgentQueryContext,
@@ -21,11 +30,17 @@ from app.schemas.agent_tool import (
     AgentToolResult,
 )
 from app.schemas.agent_tool_arguments import (
+    LookupApprovalStatusArguments,
     LookupGitHubPullRequestArguments,
     LookupJiraIssueArguments,
+    LookupReleaseHistoryArguments,
+    LookupSimilarReleaseArguments,
+    LookupSlackStatusArguments,
     SearchEngineeringKnowledgeArguments,
 )
+from app.schemas.risk import ReleaseRunRiskResponse
 from app.services.agent_dynamic_execution_service import (
+    AgentToolAdapter,
     AgentToolAdapterError,
 )
 from app.services.agent_github_pr_resolver import (
@@ -39,6 +54,9 @@ from app.services.agent_jira_ticket_resolver import (
 from app.services.agent_query_context_resolver import (
     AgentQueryContextResolver,
     AgentQueryContextResolverError,
+)
+from app.services.agent_similar_release_matcher import (
+    AgentSimilarReleaseMatcher,
 )
 from app.services.engineering_document_retrieval_service import (
     EngineeringDocumentRetrievalRequest,
@@ -57,6 +75,98 @@ class EngineeringKnowledgeRetrievalProtocol(Protocol):
     ) -> EngineeringDocumentRetrievalResponse:
         """Return bounded ranked engineering-document chunks."""
         ...
+
+
+class ApprovalRecordProtocol(Protocol):
+    """Durable approval fields required by the status adapter."""
+
+    id: UUID
+    release_run_id: UUID
+    approval_status: str
+    approval_reason: str
+    approval_policy_version: str
+    requested_by: str | None
+    decided_by: str | None
+    decision_note: str | None
+    created_at: datetime
+    decided_at: datetime | None
+
+
+class ApprovalRepositoryProtocol(Protocol):
+    """Approval repository operation required by the status adapter."""
+
+    async def get_latest_by_release_run_id(
+        self,
+        release_run_id: UUID,
+    ) -> ApprovalRecordProtocol | None:
+        """Return the latest durable approval for a release run."""
+        ...
+
+
+class SlackAlertRecordProtocol(Protocol):
+    """Durable Slack delivery fields required by the status adapter."""
+
+    id: UUID
+    release_run_id: UUID
+    approval_request_id: UUID | None
+    snapshot_id: UUID | None
+    snapshot_version: int | None
+    delivery_status: str
+    slack_channel: str
+    slack_timestamp: str
+    risk_level: str
+    risk_score: float
+    recommended_action: str
+    created_at: datetime
+
+
+class SlackAlertRepositoryProtocol(Protocol):
+    """Slack repository operation required by the status adapter."""
+
+    async def get_by_release_run_id(
+        self,
+        release_run_id: UUID,
+    ) -> SlackAlertRecordProtocol | None:
+        """Return the persisted Slack delivery record."""
+        ...
+
+
+def _datetime_to_json(value: datetime | None) -> str | None:
+    """Convert a timestamp into a JSON-safe ISO-8601 string."""
+
+    return value.isoformat() if value is not None else None
+
+
+def _release_risk_summary_output(
+    release_risk: ReleaseRunRiskResponse,
+) -> dict[str, JsonValue]:
+    """Return a bounded JSON-safe summary of one validated release risk."""
+
+    risk_score = release_risk.risk_score
+
+    return cast(
+        dict[str, JsonValue],
+        {
+            "release_run_id": str(release_risk.release_run.id),
+            "run_id": release_risk.release_run.run_id,
+            "release_status": release_risk.release_run.status,
+            "overall_severity": (
+                release_risk.release_summary.overall_severity.value
+            ),
+            "recommended_action": (
+                release_risk.release_summary.recommended_action.value
+            ),
+            "risk_score": risk_score.score if risk_score else None,
+            "risk_level": (
+                risk_score.risk_level.value if risk_score else None
+            ),
+            "approval_required": release_risk.approval_required,
+            "approval_status": release_risk.approval_status,
+            "top_risk_count": len(
+                release_risk.release_summary.top_risks
+            ),
+        },
+    )
 
 
 class AgentToolExecutionContextProvider:
@@ -122,7 +232,7 @@ class LoadCurrentRiskSnapshotAdapter:
         self,
         *,
         invocation: AgentToolInvocation,
-        dependency_results: dict[str, AgentToolResult],
+        dependency_results: Mapping[str, AgentToolResult],
     ) -> AgentToolResult:
         """Load trusted release context and return selected safe fields."""
         del dependency_results
@@ -192,7 +302,7 @@ class LookupGitHubPullRequestAdapter:
         self,
         *,
         invocation: AgentToolInvocation,
-        dependency_results: dict[str, AgentToolResult],
+        dependency_results: Mapping[str, AgentToolResult],
     ) -> AgentToolResult:
         """Resolve and normalize one persisted GitHub PR."""
         del dependency_results
@@ -260,7 +370,7 @@ class LookupJiraIssueAdapter:
         self,
         *,
         invocation: AgentToolInvocation,
-        dependency_results: dict[str, AgentToolResult],
+        dependency_results: Mapping[str, AgentToolResult],
     ) -> AgentToolResult:
         """Resolve and normalize one persisted Jira issue."""
         del dependency_results
@@ -323,7 +433,7 @@ class SearchEngineeringKnowledgeAdapter:
         self,
         *,
         invocation: AgentToolInvocation,
-        dependency_results: dict[str, AgentToolResult],
+        dependency_results: Mapping[str, AgentToolResult],
     ) -> AgentToolResult:
         """Retrieve bounded document chunks and trusted citations."""
         del dependency_results
@@ -387,26 +497,356 @@ class SearchEngineeringKnowledgeAdapter:
         )
 
 
+class LookupReleaseHistoryAdapter:
+    """Load bounded summaries of validated historical release snapshots."""
+
+    def __init__(
+        self,
+        *,
+        context_provider: AgentToolExecutionContextProvider,
+        context_resolver: AgentQueryContextResolver,
+    ) -> None:
+        """Initialize the release-history adapter."""
+
+        self._context_provider = context_provider
+        self._context_resolver = context_resolver
+
+    async def execute(
+        self,
+        *,
+        invocation: AgentToolInvocation,
+        dependency_results: Mapping[str, AgentToolResult],
+    ) -> AgentToolResult:
+        """Load validated historical release-risk summaries."""
+
+        del dependency_results
+
+        arguments = LookupReleaseHistoryArguments.model_validate(
+            invocation.arguments
+        )
+        context = await self._context_provider.get_context()
+
+        try:
+            historical_risks = (
+                await self._context_resolver
+                .resolve_historical_release_risks(
+                    exclude_release_run_id=context.release_run_id,
+                    limit=arguments.limit,
+                )
+            )
+        except AgentQueryContextResolverError as exc:
+            raise AgentToolAdapterError(
+                "Historical release-risk context could not be resolved."
+            ) from exc
+
+        releases = [
+            _release_risk_summary_output(release_risk)
+            for release_risk in historical_risks
+        ]
+
+        return AgentToolResult(
+            step_id=invocation.step_id,
+            tool_name=AgentToolName.LOOKUP_RELEASE_HISTORY,
+            status=AgentToolExecutionStatus.SUCCESS,
+            output=cast(
+                dict[str, JsonValue],
+                {
+                    "release_count": len(releases),
+                    "releases": releases,
+                },
+            ),
+            evidence=[
+                AgentToolEvidence(
+                    source_type="historical_release_risk",
+                    source_id=str(release_risk.release_run.id),
+                    title=release_risk.release_run.run_id,
+                )
+                for release_risk in historical_risks
+            ],
+            duration_ms=0,
+        )
+
+
+class LookupSimilarReleaseAdapter:
+    """Find the closest historical release using deterministic features."""
+
+    def __init__(
+        self,
+        *,
+        context_provider: AgentToolExecutionContextProvider,
+        context_resolver: AgentQueryContextResolver,
+        request_id: str,
+    ) -> None:
+        """Initialize the similar-release adapter."""
+
+        self._context_provider = context_provider
+        self._context_resolver = context_resolver
+        self._matcher = AgentSimilarReleaseMatcher(
+            request_id=request_id
+        )
+
+    async def execute(
+        self,
+        *,
+        invocation: AgentToolInvocation,
+        dependency_results: Mapping[str, AgentToolResult],
+    ) -> AgentToolResult:
+        """Return the deterministic closest historical release."""
+
+        del dependency_results
+
+        arguments = LookupSimilarReleaseArguments.model_validate(
+            invocation.arguments
+        )
+        context = await self._context_provider.get_context()
+
+        try:
+            historical_risks = (
+                await self._context_resolver
+                .resolve_historical_release_risks(
+                    exclude_release_run_id=context.release_run_id,
+                    limit=arguments.limit,
+                )
+            )
+        except AgentQueryContextResolverError as exc:
+            raise AgentToolAdapterError(
+                "Historical release-risk context could not be resolved."
+            ) from exc
+
+        match = self._matcher.match(
+            current_release_risk=context.release_risk,
+            historical_release_risks=historical_risks,
+        )
+
+        if match is None:
+            return AgentToolResult(
+                step_id=invocation.step_id,
+                tool_name=AgentToolName.LOOKUP_SIMILAR_RELEASE,
+                status=AgentToolExecutionStatus.SUCCESS,
+                output={"found": False},
+                evidence=[],
+                duration_ms=0,
+            )
+
+        matched_risk = match.release_risk
+
+        return AgentToolResult(
+            step_id=invocation.step_id,
+            tool_name=AgentToolName.LOOKUP_SIMILAR_RELEASE,
+            status=AgentToolExecutionStatus.SUCCESS,
+            output=cast(
+                dict[str, JsonValue],
+                {
+                    "found": True,
+                    "similarity_score": match.similarity_score,
+                    "release": _release_risk_summary_output(
+                        matched_risk
+                    ),
+                },
+            ),
+            evidence=[
+                AgentToolEvidence(
+                    source_type="historical_release_risk",
+                    source_id=str(matched_risk.release_run.id),
+                    title=matched_risk.release_run.run_id,
+                )
+            ],
+            duration_ms=0,
+        )
+
+
+class LookupApprovalStatusAdapter:
+    """Load the latest durable human-approval state."""
+
+    def __init__(
+        self,
+        *,
+        context_provider: AgentToolExecutionContextProvider,
+        approval_repository: ApprovalRepositoryProtocol,
+    ) -> None:
+        """Initialize the approval-status adapter."""
+
+        self._context_provider = context_provider
+        self._approval_repository = approval_repository
+
+    async def execute(
+        self,
+        *,
+        invocation: AgentToolInvocation,
+        dependency_results: Mapping[str, AgentToolResult],
+    ) -> AgentToolResult:
+        """Return the latest persisted approval record."""
+
+        del dependency_results
+
+        LookupApprovalStatusArguments.model_validate(
+            invocation.arguments
+        )
+        context = await self._context_provider.get_context()
+
+        try:
+            approval = (
+                await self._approval_repository
+                .get_latest_by_release_run_id(context.release_run_id)
+            )
+        except ReleaseRunApprovalRepositoryError as exc:
+            raise AgentToolAdapterError(
+                "Durable approval status could not be loaded."
+            ) from exc
+
+        if approval is None:
+            return AgentToolResult(
+                step_id=invocation.step_id,
+                tool_name=AgentToolName.LOOKUP_APPROVAL_STATUS,
+                status=AgentToolExecutionStatus.SUCCESS,
+                output={"found": False},
+                evidence=[],
+                duration_ms=0,
+            )
+
+        return AgentToolResult(
+            step_id=invocation.step_id,
+            tool_name=AgentToolName.LOOKUP_APPROVAL_STATUS,
+            status=AgentToolExecutionStatus.SUCCESS,
+            output=cast(
+                dict[str, JsonValue],
+                {
+                    "found": True,
+                    "approval_id": str(approval.id),
+                    "release_run_id": str(approval.release_run_id),
+                    "approval_status": approval.approval_status,
+                    "approval_reason": approval.approval_reason,
+                    "approval_policy_version": (
+                        approval.approval_policy_version
+                    ),
+                    "requested_by": approval.requested_by,
+                    "decided_by": approval.decided_by,
+                    "decision_note": approval.decision_note,
+                    "created_at": _datetime_to_json(
+                        approval.created_at
+                    ),
+                    "decided_at": _datetime_to_json(
+                        approval.decided_at
+                    ),
+                },
+            ),
+            evidence=[
+                AgentToolEvidence(
+                    source_type="release_run_approval",
+                    source_id=str(approval.id),
+                    title=(
+                        f"Release approval {approval.approval_status}"
+                    ),
+                )
+            ],
+            duration_ms=0,
+        )
+
+
+class LookupSlackStatusAdapter:
+    """Load persisted Slack delivery state without sending a message."""
+
+    def __init__(
+        self,
+        *,
+        context_provider: AgentToolExecutionContextProvider,
+        slack_alert_repository: SlackAlertRepositoryProtocol,
+    ) -> None:
+        """Initialize the Slack-status adapter."""
+
+        self._context_provider = context_provider
+        self._slack_alert_repository = slack_alert_repository
+
+    async def execute(
+        self,
+        *,
+        invocation: AgentToolInvocation,
+        dependency_results: Mapping[str, AgentToolResult],
+    ) -> AgentToolResult:
+        """Return the persisted Slack alert record."""
+
+        del dependency_results
+
+        LookupSlackStatusArguments.model_validate(
+            invocation.arguments
+        )
+        context = await self._context_provider.get_context()
+
+        try:
+            alert = (
+                await self._slack_alert_repository
+                .get_by_release_run_id(context.release_run_id)
+            )
+        except ReleaseRunSlackAlertRepositoryError as exc:
+            raise AgentToolAdapterError(
+                "Persisted Slack delivery status could not be loaded."
+            ) from exc
+
+        if alert is None:
+            return AgentToolResult(
+                step_id=invocation.step_id,
+                tool_name=AgentToolName.LOOKUP_SLACK_STATUS,
+                status=AgentToolExecutionStatus.SUCCESS,
+                output={"found": False},
+                evidence=[],
+                duration_ms=0,
+            )
+
+        return AgentToolResult(
+            step_id=invocation.step_id,
+            tool_name=AgentToolName.LOOKUP_SLACK_STATUS,
+            status=AgentToolExecutionStatus.SUCCESS,
+            output=cast(
+                dict[str, JsonValue],
+                {
+                    "found": True,
+                    "slack_alert_id": str(alert.id),
+                    "release_run_id": str(alert.release_run_id),
+                    "approval_request_id": (
+                        str(alert.approval_request_id)
+                        if alert.approval_request_id is not None
+                        else None
+                    ),
+                    "snapshot_id": (
+                        str(alert.snapshot_id)
+                        if alert.snapshot_id is not None
+                        else None
+                    ),
+                    "snapshot_version": alert.snapshot_version,
+                    "delivery_status": alert.delivery_status,
+                    "slack_channel": alert.slack_channel,
+                    "slack_timestamp": alert.slack_timestamp,
+                    "risk_level": alert.risk_level,
+                    "risk_score": alert.risk_score,
+                    "recommended_action": alert.recommended_action,
+                    "created_at": _datetime_to_json(
+                        alert.created_at
+                    ),
+                },
+            ),
+            evidence=[
+                AgentToolEvidence(
+                    source_type="release_run_slack_alert",
+                    source_id=str(alert.id),
+                    title=f"Slack delivery {alert.delivery_status}",
+                )
+            ],
+            duration_ms=0,
+        )
+
+
 def build_read_only_tool_adapters(
     *,
     request: AgentQueryRequest,
     query_plan: AgentQueryPlan,
     context_resolver: AgentQueryContextResolver,
     knowledge_retrieval_service: EngineeringKnowledgeRetrievalProtocol,
+    approval_repository: ApprovalRepositoryProtocol,
+    slack_alert_repository: SlackAlertRepositoryProtocol,
     request_id: str,
-) -> dict[AgentToolName, object]:
-    """Build the first approved read-only runtime adapter set.
+) -> dict[AgentToolName, AgentToolAdapter]:
+    """Build all approved read-only runtime tool adapters."""
 
-    Args:
-        request: Original validated manager query.
-        query_plan: Trusted deterministic routing plan.
-        context_resolver: Persisted risk-context resolver.
-        knowledge_retrieval_service: Trusted hybrid retrieval service.
-        request_id: Correlation identifier for logs and retrieval.
-
-    Returns:
-        Adapter mapping suitable for the dynamic execution service.
-    """
     context_provider = AgentToolExecutionContextProvider(
         request=request,
         query_plan=query_plan,
@@ -416,7 +856,7 @@ def build_read_only_tool_adapters(
     return {
         AgentToolName.LOAD_CURRENT_RISK_SNAPSHOT: (
             LoadCurrentRiskSnapshotAdapter(
-                context_provider=context_provider
+                context_provider=context_provider,
             )
         ),
         AgentToolName.LOOKUP_GITHUB_PULL_REQUEST: (
@@ -434,5 +874,28 @@ def build_read_only_tool_adapters(
                 retrieval_service=knowledge_retrieval_service,
                 request_id=request_id,
             )
+        ),
+        AgentToolName.LOOKUP_RELEASE_HISTORY: (
+            LookupReleaseHistoryAdapter(
+                context_provider=context_provider,
+                context_resolver=context_resolver,
+            )
+        ),
+        AgentToolName.LOOKUP_SIMILAR_RELEASE: (
+            LookupSimilarReleaseAdapter(
+                context_provider=context_provider,
+                context_resolver=context_resolver,
+                request_id=request_id,
+            )
+        ),
+        AgentToolName.LOOKUP_APPROVAL_STATUS: (
+            LookupApprovalStatusAdapter(
+                context_provider=context_provider,
+                approval_repository=approval_repository,
+            )
+        ),
+        AgentToolName.LOOKUP_SLACK_STATUS: LookupSlackStatusAdapter(
+            context_provider=context_provider,
+            slack_alert_repository=slack_alert_repository,
         ),
     }
