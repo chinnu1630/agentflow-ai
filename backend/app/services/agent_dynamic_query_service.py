@@ -13,6 +13,9 @@ from app.schemas.agent_dynamic_query import AgentDynamicQueryResponse
 from app.schemas.agent_execution_plan import AgentExecutionPlan
 from app.schemas.agent_execution_result import AgentExecutionResult
 from app.schemas.agent_query import AgentQueryPlan, AgentQueryRequest
+from app.services.agent_dynamic_synthesis_citation_verifier import (
+    AgentDynamicSynthesisCitationVerificationError,
+)
 from app.services.agent_execution_planner_service import (
     AgentExecutionPlannerResult,
 )
@@ -105,11 +108,23 @@ class AgentDynamicQueryService:
             human_approval_granted=False,
         )
 
-        synthesis_result = await self._synthesizer.synthesize(
-            request=request,
-            query_plan=query_plan,
-            execution_result=execution_result,
-        )
+        try:
+            synthesis_result = await self._synthesizer.synthesize(
+                request=request,
+                query_plan=query_plan,
+                execution_result=execution_result,
+            )
+        except AgentDynamicSynthesisCitationVerificationError as exc:
+            logger.error(
+                "agent_dynamic_synthesis_rejected",
+                run_id=self._request_id,
+                intent=query_plan.intent.value,
+                execution_id=str(execution_result.execution_id),
+                execution_status=execution_result.status.value,
+                step_count=len(execution_result.tool_results),
+                error_type=type(exc).__name__,
+            )
+            raise
 
         response = AgentDynamicQueryResponse(
             query_plan=query_plan,

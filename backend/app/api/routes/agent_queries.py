@@ -67,6 +67,9 @@ from app.services.agent_dynamic_execution_service import (
     AgentDynamicExecutionService,
 )
 from app.services.agent_dynamic_query_service import AgentDynamicQueryService
+from app.services.agent_dynamic_synthesis_citation_verifier import (
+    AgentDynamicSynthesisCitationVerificationError,
+)
 from app.services.agent_dynamic_synthesis_service import (
     AgentDynamicSynthesisService,
 )
@@ -561,6 +564,23 @@ async def execute_dynamic_agent_query(
         )
         await session.commit()
         return response
+
+    except AgentDynamicSynthesisCitationVerificationError as exc:
+        await session.rollback()
+        logger.error(
+            "agent_dynamic_synthesis_grounding_verification_failed",
+            extra={
+                "run_id": request_id,
+                "intent": plan.intent.value,
+                "error_type": type(exc).__name__,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Dynamic agent synthesis failed grounding verification."
+            ),
+        ) from exc
 
     except AnthropicClientTimeoutError as exc:
         await session.rollback()

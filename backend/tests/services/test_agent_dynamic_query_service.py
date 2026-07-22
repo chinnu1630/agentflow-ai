@@ -31,6 +31,9 @@ from app.schemas.agent_tool import (
 from app.services.agent_dynamic_query_service import (
     AgentDynamicQueryService,
 )
+from app.services.agent_dynamic_synthesis_citation_verifier import (
+    AgentDynamicSynthesisCitationVerificationError,
+)
 from app.services.agent_execution_planner_service import (
     AgentExecutionPlannerResult,
 )
@@ -247,3 +250,79 @@ async def test_forwards_release_context_availability() -> None:
     )
 
     assert executor.has_release_run_context is True
+
+
+
+class FakeRejectedDynamicSynthesizer:
+    """Reject synthesized output that violates grounding policy."""
+
+    async def synthesize(
+        self,
+        *,
+        request: AgentQueryRequest,
+        query_plan: AgentQueryPlan,
+        execution_result: AgentExecutionResult,
+    ) -> ClaudeDynamicSynthesisResult:
+        """Raise the verifier error after tool execution."""
+        del request, query_plan, execution_result
+
+        raise AgentDynamicSynthesisCitationVerificationError(
+            "Untrusted Claude output must not be exposed."
+        )
+
+
+@pytest.mark.anyio
+async def test_logs_safe_audit_metadata_when_synthesis_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Grounding rejection should preserve safe execution audit metadata."""
+    plan = _build_execution_plan()
+    planner = FakeDynamicPlanner(plan)
+    executor = FakeDynamicExecutor(plan)
+    logged_events: list[tuple[str, dict[str, object]]] = []
+
+    def capture_error(event: str, **metadata: object) -> None:
+        """Capture structured error metadata without logging answer content."""
+        logged_events.append((event, metadata))
+
+    monkeypatch.setattr(
+        "app.services.agent_dynamic_query_service.logger.error",
+        capture_error,
+    )
+
+    service = AgentDynamicQueryService(
+        planner=planner,
+        executor=executor,
+        synthesizer=FakeRejectedDynamicSynthesizer(),
+        request_id="request-grounding-rejected",
+    )
+    request = AgentQueryRequest(
+        query="How do I rollback the payment service?"
+    )
+    query_plan = AgentQueryPlan(
+        intent=AgentIntent.KNOWLEDGE_DOC_QUESTION,
+        response_depth=ResponseDepth.STANDARD,
+        confidence=0.98,
+        routing_reason_code="matched_knowledge_question",
+    )
+
+    with pytest.raises(
+        AgentDynamicSynthesisCitationVerificationError,
+        match="Untrusted Claude output",
+    ):
+        await service.execute(
+            request=request,
+            query_plan=query_plan,
+        )
+
+    assert len(logged_events) == 1
+    event, metadata = logged_events[0]
+    assert event == "agent_dynamic_synthesis_rejected"
+    assert metadata["run_id"] == "request-grounding-rejected"
+    assert metadata["intent"] == "knowledge_doc_question"
+    assert metadata["execution_status"] == "success"
+    assert metadata["step_count"] == 1
+    assert metadata["error_type"] == (
+        "AgentDynamicSynthesisCitationVerificationError"
+    )
+    assert "Untrusted Claude output" not in str(metadata)

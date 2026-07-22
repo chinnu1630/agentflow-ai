@@ -262,6 +262,7 @@ class FakeAgentDynamicSynthesisClient:
     """Return grounded dynamic answers without calling Claude."""
 
     call_count = 0
+    return_invalid_grounding = False
 
     async def synthesize_dynamic_answer(
         self,
@@ -278,7 +279,7 @@ class FakeAgentDynamicSynthesisClient:
         trusted_evidence = evidence_payload["trusted_evidence"]
         citations = []
 
-        if trusted_evidence:
+        if trusted_evidence and not type(self).return_invalid_grounding:
             evidence = trusted_evidence[0]
             citations.append(
                 AgentDynamicAnswerCitation(
@@ -292,13 +293,19 @@ class FakeAgentDynamicSynthesisClient:
                 )
             )
 
+        answer_text = (
+            "UNTRUSTED_CLAUDE_OUTPUT_SHOULD_NOT_BE_EXPOSED"
+            if type(self).return_invalid_grounding
+            else (
+                "The payment service runbook says to roll back when "
+                "authorization failures exceed the release threshold, "
+                "then validate transaction success and error-rate recovery."
+            )
+        )
+
         return ClaudeDynamicSynthesisResult(
             answer=AgentDynamicAnswer(
-                answer=(
-                    "The payment service runbook says to roll back when "
-                    "authorization failures exceed the release threshold, "
-                    "then validate transaction success and error-rate recovery."
-                ),
+                answer=answer_text,
                 confidence=0.95,
                 citations=citations,
                 requires_human_review=False,
@@ -389,6 +396,7 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
 
     FakeAgentExecutionPlannerClient.call_count = 0
     FakeAgentDynamicSynthesisClient.call_count = 0
+    FakeAgentDynamicSynthesisClient.return_invalid_grounding = False
     FakeAgentGitHubRiskCollector.call_count = 0
     FakeAgentJiraRiskCollector.call_count = 0
     FakeAgentSlackAlertSender.call_count = 0
@@ -1604,3 +1612,66 @@ async def test_dynamic_query_blocks_slack_side_effect_intent(
     )
     assert FakeAgentExecutionPlannerClient.call_count == 0
     assert FakeAgentSlackAlertSender.call_count == 0
+
+
+
+@pytest.mark.anyio
+async def test_dynamic_query_hides_invalid_synthesis_output(
+    agent_query_api_client: AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Grounding failures must return a safe response without Claude output."""
+    ingestion_response = await agent_query_api_client.post(
+        "/api/v1/engineering-documents/ingest",
+        json={
+            "title": "Payment Grounding Failure Runbook",
+            "source_type": "runbook",
+            "source_uri": "docs/payment-grounding-failure.md",
+            "raw_content": (
+                "Rollback the payment service after the documented "
+                "authorization failure threshold is exceeded."
+            ),
+            "metadata_json": {"service": "payment-service"},
+        },
+    )
+
+    assert ingestion_response.status_code == 201
+
+    FakeAgentDynamicSynthesisClient.return_invalid_grounding = True
+    caplog.set_level(
+        "ERROR",
+        logger="app.api.routes.agent_queries",
+    )
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query-dynamic",
+        json={
+            "query": "What does the payment runbook say about rollback?",
+        },
+    )
+
+    assert response.status_code == 502
+    assert (
+        "Dynamic agent synthesis failed grounding verification."
+        in response.text
+    )
+    assert "UNTRUSTED_CLAUDE_OUTPUT_SHOULD_NOT_BE_EXPOSED" not in response.text
+    assert FakeAgentDynamicSynthesisClient.call_count == 1
+
+    failure_records = [
+        record
+        for record in caplog.records
+        if record.getMessage()
+        == "agent_dynamic_synthesis_grounding_verification_failed"
+    ]
+
+    assert len(failure_records) == 1
+    failure_record = failure_records[0]
+    assert failure_record.intent == "knowledge_doc_question"
+    assert failure_record.error_type == (
+        "AgentDynamicSynthesisCitationVerificationError"
+    )
+    assert (
+        "UNTRUSTED_CLAUDE_OUTPUT_SHOULD_NOT_BE_EXPOSED"
+        not in caplog.text
+    )
