@@ -172,3 +172,87 @@ async def test_anthropic_dependency_builds_synthesis_client(
 
     await dependency.aclose()
     get_settings.cache_clear()
+
+@pytest.mark.anyio
+async def test_dynamic_planner_dependency_returns_none_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disabled dynamic planning should preserve deterministic execution."""
+    from app.api.routes.agent_queries import (
+        get_agent_execution_planner_client,
+    )
+
+    monkeypatch.setenv("AGENT_DYNAMIC_PLANNING_ENABLED", "false")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    get_settings.cache_clear()
+
+    dependency = cast(
+        AsyncGenerator[object, None],
+        get_agent_execution_planner_client(_request()),
+    )
+    planner_client = await anext(dependency)
+
+    assert planner_client is None
+
+    await dependency.aclose()
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_dynamic_planner_dependency_rejects_missing_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enabled dynamic planning must require a secret API key."""
+    from app.api.routes.agent_queries import (
+        get_agent_execution_planner_client,
+    )
+
+    monkeypatch.setenv("AGENT_DYNAMIC_PLANNING_ENABLED", "true")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    get_settings.cache_clear()
+
+    dependency = cast(
+        AsyncGenerator[object, None],
+        get_agent_execution_planner_client(_request()),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await anext(dependency)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == (
+        "Dynamic agent planning is enabled but not configured. "
+        "Set ANTHROPIC_API_KEY."
+    )
+
+    await dependency.aclose()
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_dynamic_planner_dependency_builds_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Configured dynamic planning should build the real Claude client."""
+    from app.api.routes.agent_queries import (
+        get_agent_execution_planner_client,
+    )
+    from app.integrations.anthropic_execution_planner_client import (
+        AnthropicExecutionPlannerClient,
+    )
+
+    monkeypatch.setenv("AGENT_DYNAMIC_PLANNING_ENABLED", "true")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "test-claude-model")
+    get_settings.cache_clear()
+
+    dependency = cast(
+        AsyncGenerator[object, None],
+        get_agent_execution_planner_client(_request()),
+    )
+    planner_client = await anext(dependency)
+
+    assert isinstance(planner_client, AnthropicExecutionPlannerClient)
+
+    await dependency.aclose()
+    get_settings.cache_clear()

@@ -57,6 +57,7 @@ def test_settings_use_safe_default_anthropic_configuration(
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
     assert settings.anthropic_enabled is False
+    assert settings.agent_dynamic_planning_enabled is False
     assert settings.anthropic_api_key is None
     assert settings.anthropic_model == "claude-sonnet-5"
     assert settings.anthropic_max_tokens == 4_096
@@ -69,6 +70,7 @@ def test_settings_allow_anthropic_environment_overrides(
 ) -> None:
     """Claude configuration should load securely from environment variables."""
     monkeypatch.setenv("ANTHROPIC_ENABLED", "true")
+    monkeypatch.setenv("AGENT_DYNAMIC_PLANNING_ENABLED", "true")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-secret-key")
     monkeypatch.setenv("ANTHROPIC_MODEL", "test-claude-model")
     monkeypatch.setenv("ANTHROPIC_MAX_TOKENS", "2048")
@@ -78,6 +80,7 @@ def test_settings_allow_anthropic_environment_overrides(
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
     assert settings.anthropic_enabled is True
+    assert settings.agent_dynamic_planning_enabled is True
     assert settings.anthropic_api_key is not None
     assert (
         settings.anthropic_api_key.get_secret_value()

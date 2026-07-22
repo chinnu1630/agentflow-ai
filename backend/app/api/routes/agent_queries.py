@@ -14,6 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.db.session import get_db_session
+from app.integrations.anthropic_client import AnthropicClientConfig
+from app.integrations.anthropic_execution_planner_client import (
+    AnthropicExecutionPlannerClient,
+)
 from app.integrations.github_client import GitHubClient, GitHubClientConfig
 from app.integrations.jira_client import JiraClient, JiraClientConfig
 from app.integrations.slack_client import SlackClient, SlackClientConfig
@@ -122,6 +126,46 @@ def get_agent_query_router() -> AgentQueryRouter:
     """Return the deterministic AgentFlow query router."""
 
     return AgentQueryRouter()
+
+
+async def get_agent_execution_planner_client(
+    request: Request,
+) -> AsyncIterator[AnthropicExecutionPlannerClient | None]:
+    """Create the optional bounded Claude execution-planner client."""
+
+    settings = get_settings()
+
+    if not settings.agent_dynamic_planning_enabled:
+        yield None
+        return
+
+    api_key = settings.anthropic_api_key
+
+    if api_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Dynamic agent planning is enabled but not configured. "
+                "Set ANTHROPIC_API_KEY."
+            ),
+        )
+
+    request_id = str(
+        getattr(request.state, "request_id", "unknown-request-id")
+    )
+    config = AnthropicClientConfig(
+        api_key=api_key,
+        model=settings.anthropic_model,
+        max_tokens=settings.anthropic_max_tokens,
+        timeout_seconds=settings.anthropic_timeout_seconds,
+        max_retries=settings.anthropic_max_retries,
+    )
+
+    async with AnthropicExecutionPlannerClient(
+        config=config,
+        run_id=request_id,
+    ) as planner_client:
+        yield planner_client
 
 
 AgentQueryRouterDependency = Annotated[

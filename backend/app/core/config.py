@@ -68,6 +68,12 @@ class Settings(BaseSettings):
         le=5,
         description="Maximum retries for transient Claude API failures.",
     )
+    agent_dynamic_planning_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable bounded Claude execution planning for agent queries."
+        ),
+    )
     knowledge_embedding_model_name: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2",
         min_length=1,
