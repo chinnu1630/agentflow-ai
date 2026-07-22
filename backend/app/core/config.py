@@ -74,6 +74,32 @@ class Settings(BaseSettings):
             "Enable bounded Claude execution planning for agent queries."
         ),
     )
+    agent_dynamic_planner_model: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Optional lower-cost Claude model used only for dynamic planning."
+        ),
+    )
+    agent_dynamic_planner_max_tokens: int = Field(
+        default=1_024,
+        ge=256,
+        le=4_096,
+        description="Maximum output-token budget for dynamic planning.",
+    )
+    agent_dynamic_synthesis_model: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Optional Claude model used only for dynamic answer synthesis."
+        ),
+    )
+    agent_dynamic_synthesis_max_tokens: int = Field(
+        default=2_048,
+        ge=256,
+        le=8_192,
+        description="Maximum output-token budget for dynamic synthesis.",
+    )
     knowledge_embedding_model_name: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2",
         min_length=1,

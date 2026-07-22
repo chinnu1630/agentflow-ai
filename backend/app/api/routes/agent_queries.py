@@ -187,8 +187,11 @@ async def get_agent_execution_planner_client(
     )
     config = AnthropicClientConfig(
         api_key=api_key,
-        model=settings.anthropic_model,
-        max_tokens=settings.anthropic_max_tokens,
+        model=(
+            settings.agent_dynamic_planner_model
+            or settings.anthropic_model
+        ),
+        max_tokens=settings.agent_dynamic_planner_max_tokens,
         timeout_seconds=settings.anthropic_timeout_seconds,
         max_retries=settings.anthropic_max_retries,
     )
@@ -233,8 +236,11 @@ async def get_agent_dynamic_synthesis_client(
     )
     config = AnthropicClientConfig(
         api_key=api_key,
-        model=settings.anthropic_model,
-        max_tokens=settings.anthropic_max_tokens,
+        model=(
+            settings.agent_dynamic_synthesis_model
+            or settings.anthropic_model
+        ),
+        max_tokens=settings.agent_dynamic_synthesis_max_tokens,
         timeout_seconds=settings.anthropic_timeout_seconds,
         max_retries=settings.anthropic_max_retries,
     )

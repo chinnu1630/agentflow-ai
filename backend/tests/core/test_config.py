@@ -61,6 +61,10 @@ def test_settings_use_safe_default_anthropic_configuration(
     assert settings.anthropic_api_key is None
     assert settings.anthropic_model == "claude-sonnet-5"
     assert settings.anthropic_max_tokens == 4_096
+    assert settings.agent_dynamic_planner_model is None
+    assert settings.agent_dynamic_planner_max_tokens == 1_024
+    assert settings.agent_dynamic_synthesis_model is None
+    assert settings.agent_dynamic_synthesis_max_tokens == 2_048
     assert settings.anthropic_timeout_seconds == 30.0
     assert settings.anthropic_max_retries == 2
 
@@ -74,6 +78,16 @@ def test_settings_allow_anthropic_environment_overrides(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-secret-key")
     monkeypatch.setenv("ANTHROPIC_MODEL", "test-claude-model")
     monkeypatch.setenv("ANTHROPIC_MAX_TOKENS", "2048")
+    monkeypatch.setenv(
+        "AGENT_DYNAMIC_PLANNER_MODEL",
+        "test-planner-model",
+    )
+    monkeypatch.setenv("AGENT_DYNAMIC_PLANNER_MAX_TOKENS", "768")
+    monkeypatch.setenv(
+        "AGENT_DYNAMIC_SYNTHESIS_MODEL",
+        "test-synthesis-model",
+    )
+    monkeypatch.setenv("AGENT_DYNAMIC_SYNTHESIS_MAX_TOKENS", "3072")
     monkeypatch.setenv("ANTHROPIC_TIMEOUT_SECONDS", "45")
     monkeypatch.setenv("ANTHROPIC_MAX_RETRIES", "3")
 
@@ -88,6 +102,10 @@ def test_settings_allow_anthropic_environment_overrides(
     )
     assert settings.anthropic_model == "test-claude-model"
     assert settings.anthropic_max_tokens == 2_048
+    assert settings.agent_dynamic_planner_model == "test-planner-model"
+    assert settings.agent_dynamic_planner_max_tokens == 768
+    assert settings.agent_dynamic_synthesis_model == "test-synthesis-model"
+    assert settings.agent_dynamic_synthesis_max_tokens == 3_072
     assert settings.anthropic_timeout_seconds == 45.0
     assert settings.anthropic_max_retries == 3
 
@@ -96,6 +114,8 @@ def test_settings_allow_anthropic_environment_overrides(
     ("environment_name", "invalid_value"),
     [
         ("ANTHROPIC_MAX_TOKENS", "100"),
+        ("AGENT_DYNAMIC_PLANNER_MAX_TOKENS", "100"),
+        ("AGENT_DYNAMIC_SYNTHESIS_MAX_TOKENS", "9000"),
         ("ANTHROPIC_TIMEOUT_SECONDS", "0"),
         ("ANTHROPIC_MAX_RETRIES", "6"),
     ],
