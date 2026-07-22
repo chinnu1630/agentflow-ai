@@ -89,6 +89,10 @@ from app.services.agent_jira_ticket_resolver import (
     AgentJiraTicketNotFoundError,
     AgentJiraTicketResolver,
 )
+from app.services.agent_llm_cost_estimator import (
+    AgentLLMCostEstimator,
+    AgentLLMCostRates,
+)
 from app.services.agent_query_context_resolver import (
     AgentQueryContextConflictError,
     AgentQueryContextRequiredError,
@@ -556,11 +560,29 @@ async def execute_dynamic_agent_query(
         client=synthesis_client,
         request_id=request_id,
     )
+    settings = get_settings()
+    cost_estimator = AgentLLMCostEstimator(
+        rates=AgentLLMCostRates(
+            planning_input_per_million_usd=(
+                settings.agent_dynamic_planner_input_cost_per_million_usd
+            ),
+            planning_output_per_million_usd=(
+                settings.agent_dynamic_planner_output_cost_per_million_usd
+            ),
+            synthesis_input_per_million_usd=(
+                settings.agent_dynamic_synthesis_input_cost_per_million_usd
+            ),
+            synthesis_output_per_million_usd=(
+                settings.agent_dynamic_synthesis_output_cost_per_million_usd
+            ),
+        )
+    )
     service = AgentDynamicQueryService(
         planner=planner,
         executor=executor,
         synthesizer=synthesizer,
         request_id=request_id,
+        cost_estimator=cost_estimator,
     )
 
     try:

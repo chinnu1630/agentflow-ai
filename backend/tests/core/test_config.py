@@ -65,6 +65,22 @@ def test_settings_use_safe_default_anthropic_configuration(
     assert settings.agent_dynamic_planner_max_tokens == 1_024
     assert settings.agent_dynamic_synthesis_model is None
     assert settings.agent_dynamic_synthesis_max_tokens == 2_048
+    assert (
+        settings.agent_dynamic_planner_input_cost_per_million_usd
+        == 0
+    )
+    assert (
+        settings.agent_dynamic_planner_output_cost_per_million_usd
+        == 0
+    )
+    assert (
+        settings.agent_dynamic_synthesis_input_cost_per_million_usd
+        == 0
+    )
+    assert (
+        settings.agent_dynamic_synthesis_output_cost_per_million_usd
+        == 0
+    )
     assert settings.anthropic_timeout_seconds == 30.0
     assert settings.anthropic_max_retries == 2
 
@@ -88,6 +104,22 @@ def test_settings_allow_anthropic_environment_overrides(
         "test-synthesis-model",
     )
     monkeypatch.setenv("AGENT_DYNAMIC_SYNTHESIS_MAX_TOKENS", "3072")
+    monkeypatch.setenv(
+        "AGENT_DYNAMIC_PLANNER_INPUT_COST_PER_MILLION_USD",
+        "3.25",
+    )
+    monkeypatch.setenv(
+        "AGENT_DYNAMIC_PLANNER_OUTPUT_COST_PER_MILLION_USD",
+        "15.50",
+    )
+    monkeypatch.setenv(
+        "AGENT_DYNAMIC_SYNTHESIS_INPUT_COST_PER_MILLION_USD",
+        "4.00",
+    )
+    monkeypatch.setenv(
+        "AGENT_DYNAMIC_SYNTHESIS_OUTPUT_COST_PER_MILLION_USD",
+        "20.00",
+    )
     monkeypatch.setenv("ANTHROPIC_TIMEOUT_SECONDS", "45")
     monkeypatch.setenv("ANTHROPIC_MAX_RETRIES", "3")
 
@@ -106,6 +138,22 @@ def test_settings_allow_anthropic_environment_overrides(
     assert settings.agent_dynamic_planner_max_tokens == 768
     assert settings.agent_dynamic_synthesis_model == "test-synthesis-model"
     assert settings.agent_dynamic_synthesis_max_tokens == 3_072
+    assert (
+        settings.agent_dynamic_planner_input_cost_per_million_usd
+        == 3.25
+    )
+    assert (
+        settings.agent_dynamic_planner_output_cost_per_million_usd
+        == 15.50
+    )
+    assert (
+        settings.agent_dynamic_synthesis_input_cost_per_million_usd
+        == 4
+    )
+    assert (
+        settings.agent_dynamic_synthesis_output_cost_per_million_usd
+        == 20
+    )
     assert settings.anthropic_timeout_seconds == 45.0
     assert settings.anthropic_max_retries == 3
 
@@ -116,6 +164,14 @@ def test_settings_allow_anthropic_environment_overrides(
         ("ANTHROPIC_MAX_TOKENS", "100"),
         ("AGENT_DYNAMIC_PLANNER_MAX_TOKENS", "100"),
         ("AGENT_DYNAMIC_SYNTHESIS_MAX_TOKENS", "9000"),
+        (
+            "AGENT_DYNAMIC_PLANNER_INPUT_COST_PER_MILLION_USD",
+            "-1",
+        ),
+        (
+            "AGENT_DYNAMIC_SYNTHESIS_OUTPUT_COST_PER_MILLION_USD",
+            "-0.01",
+        ),
         ("ANTHROPIC_TIMEOUT_SECONDS", "0"),
         ("ANTHROPIC_MAX_RETRIES", "6"),
     ],

@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from decimal import Decimal
 from uuid import UUID
 
 import pytest
@@ -38,6 +39,10 @@ from app.services.agent_dynamic_synthesis_citation_verifier import (
 )
 from app.services.agent_execution_planner_service import (
     AgentExecutionPlannerResult,
+)
+from app.services.agent_llm_cost_estimator import (
+    AgentLLMCostEstimator,
+    AgentLLMCostRates,
 )
 
 
@@ -187,6 +192,14 @@ async def test_executes_read_only_dynamic_pipeline() -> None:
         executor=executor,
         synthesizer=synthesizer,
         request_id="request-123",
+        cost_estimator=AgentLLMCostEstimator(
+            rates=AgentLLMCostRates(
+                planning_input_per_million_usd=Decimal("3"),
+                planning_output_per_million_usd=Decimal("15"),
+                synthesis_input_per_million_usd=Decimal("3"),
+                synthesis_output_per_million_usd=Decimal("15"),
+            )
+        ),
     )
     request = AgentQueryRequest(
         query="How do I rollback the payment service?"
@@ -217,6 +230,9 @@ async def test_executes_read_only_dynamic_pipeline() -> None:
     assert response.answer.confidence == 0.94
     assert response.synthesis_prompt_version == (
         "agent-dynamic-synthesis-v1"
+    )
+    assert response.cost_estimate.total_cost_usd == Decimal(
+        "0.004950"
     )
 
 
@@ -400,6 +416,7 @@ async def test_dynamic_pipeline_span_records_safe_success_metadata(
         "step_count": 1,
         "citation_count": 0,
         "requires_human_review": False,
+        "estimated_cost_usd": "0.000000",
     }
     assert "query" not in span.attributes
     assert "answer" not in span.attributes

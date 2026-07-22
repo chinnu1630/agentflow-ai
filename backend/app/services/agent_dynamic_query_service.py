@@ -24,6 +24,7 @@ from app.services.agent_dynamic_synthesis_citation_verifier import (
 from app.services.agent_execution_planner_service import (
     AgentExecutionPlannerResult,
 )
+from app.services.agent_llm_cost_estimator import AgentLLMCostEstimator
 
 logger = structlog.get_logger(__name__)
 
@@ -83,12 +84,14 @@ class AgentDynamicQueryService:
         executor: DynamicExecutorProtocol,
         synthesizer: DynamicSynthesizerProtocol,
         request_id: str,
+        cost_estimator: AgentLLMCostEstimator | None = None,
     ) -> None:
         """Initialize the dynamic query orchestration service."""
         self._planner = planner
         self._executor = executor
         self._synthesizer = synthesizer
         self._request_id = request_id
+        self._cost_estimator = cost_estimator or AgentLLMCostEstimator()
 
     async def execute(
         self,
@@ -190,6 +193,22 @@ class AgentDynamicQueryService:
                 },
             )
 
+            cost_estimate = self._cost_estimator.estimate(
+                planning_input_tokens=planner_result.input_tokens,
+                planning_output_tokens=planner_result.output_tokens,
+                synthesis_input_tokens=synthesis_result.input_tokens,
+                synthesis_output_tokens=synthesis_result.output_tokens,
+            )
+
+            set_safe_span_attributes(
+                span,
+                {
+                    "estimated_cost_usd": str(
+                        cost_estimate.total_cost_usd
+                    ),
+                },
+            )
+
             response = AgentDynamicQueryResponse(
                 query_plan=query_plan,
                 execution_plan=planner_result.plan,
@@ -207,6 +226,7 @@ class AgentDynamicQueryService:
                 synthesis_input_tokens=synthesis_result.input_tokens,
                 synthesis_output_tokens=synthesis_result.output_tokens,
                 synthesis_duration_ms=synthesis_result.duration_ms,
+                cost_estimate=cost_estimate,
             )
 
             logger.info(
@@ -227,6 +247,7 @@ class AgentDynamicQueryService:
                 synthesis_citation_count=len(
                     synthesis_result.answer.citations
                 ),
+                estimated_cost_usd=str(cost_estimate.total_cost_usd),
             )
 
             return response

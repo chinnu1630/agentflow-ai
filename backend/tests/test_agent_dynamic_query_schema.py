@@ -1,9 +1,14 @@
 """Tests for bounded dynamic agent API response contracts."""
 
+from decimal import Decimal
+
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.agent_dynamic_query import AgentDynamicQueryResponse
+from app.schemas.agent_dynamic_query import (
+    AgentDynamicQueryCostEstimate,
+    AgentDynamicQueryResponse,
+)
 from app.schemas.agent_dynamic_synthesis import AgentDynamicAnswer
 from app.schemas.agent_execution_plan import (
     AgentExecutionPlan,
@@ -94,6 +99,13 @@ def test_accepts_auditable_dynamic_query_response() -> None:
         synthesis_input_tokens=300,
         synthesis_output_tokens=120,
         synthesis_duration_ms=20.5,
+        cost_estimate=AgentDynamicQueryCostEstimate(
+            planning_input_cost_usd="0.000750",
+            planning_output_cost_usd="0.001500",
+            synthesis_input_cost_usd="0.000900",
+            synthesis_output_cost_usd="0.001800",
+            total_cost_usd="0.004950",
+        ),
     )
 
     assert response.query_plan.intent is (
@@ -106,6 +118,9 @@ def test_accepts_auditable_dynamic_query_response() -> None:
         AgentExecutionStatus.SUCCESS
     )
     assert response.input_tokens == 250
+    assert response.cost_estimate.total_cost_usd == Decimal(
+        "0.004950"
+    )
 
 
 
@@ -181,4 +196,11 @@ def test_rejects_mismatched_execution_intent() -> None:
             synthesis_input_tokens=300,
             synthesis_output_tokens=120,
             synthesis_duration_ms=20.5,
+        cost_estimate=AgentDynamicQueryCostEstimate(
+            planning_input_cost_usd="0.000750",
+            planning_output_cost_usd="0.001500",
+            synthesis_input_cost_usd="0.000900",
+            synthesis_output_cost_usd="0.001800",
+            total_cost_usd="0.004950",
+        ),
         )

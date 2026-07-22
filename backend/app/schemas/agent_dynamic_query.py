@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.agent_dynamic_synthesis import AgentDynamicAnswer
 from app.schemas.agent_execution_plan import AgentExecutionPlan
 from app.schemas.agent_execution_result import AgentExecutionResult
 from app.schemas.agent_query import AgentQueryPlan
+
+
+class AgentDynamicQueryCostEstimate(BaseModel):
+    """Estimated dynamic-agent LLM cost using configured pricing rates."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    currency: Literal["USD"] = "USD"
+    planning_input_cost_usd: Decimal = Field(ge=0, decimal_places=6)
+    planning_output_cost_usd: Decimal = Field(ge=0, decimal_places=6)
+    synthesis_input_cost_usd: Decimal = Field(ge=0, decimal_places=6)
+    synthesis_output_cost_usd: Decimal = Field(ge=0, decimal_places=6)
+    total_cost_usd: Decimal = Field(ge=0, decimal_places=6)
 
 
 class AgentDynamicQueryResponse(BaseModel):
@@ -35,6 +51,7 @@ class AgentDynamicQueryResponse(BaseModel):
     synthesis_input_tokens: int = Field(ge=0)
     synthesis_output_tokens: int = Field(ge=0)
     synthesis_duration_ms: float = Field(ge=0.0)
+    cost_estimate: AgentDynamicQueryCostEstimate
 
     @model_validator(mode="after")
     def validate_pipeline_consistency(self) -> AgentDynamicQueryResponse:

@@ -1,3 +1,4 @@
+from decimal import Decimal
 from functools import lru_cache
 
 from pydantic import Field, SecretStr
@@ -99,6 +100,26 @@ class Settings(BaseSettings):
         ge=256,
         le=8_192,
         description="Maximum output-token budget for dynamic synthesis.",
+    )
+    agent_dynamic_planner_input_cost_per_million_usd: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+        description="Configured planner input-token price per million in USD.",
+    )
+    agent_dynamic_planner_output_cost_per_million_usd: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+        description="Configured planner output-token price per million in USD.",
+    )
+    agent_dynamic_synthesis_input_cost_per_million_usd: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+        description="Configured synthesis input-token price per million in USD.",
+    )
+    agent_dynamic_synthesis_output_cost_per_million_usd: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+        description="Configured synthesis output-token price per million in USD.",
     )
     knowledge_embedding_model_name: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2",
