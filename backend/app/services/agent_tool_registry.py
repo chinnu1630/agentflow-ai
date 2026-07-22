@@ -12,6 +12,21 @@ from app.schemas.agent_tool import (
     AgentToolName,
 )
 
+_PLANNER_EXECUTABLE_TOOL_NAMES: Final[frozenset[AgentToolName]] = (
+    frozenset(
+        {
+            AgentToolName.LOAD_CURRENT_RISK_SNAPSHOT,
+            AgentToolName.LOOKUP_GITHUB_PULL_REQUEST,
+            AgentToolName.LOOKUP_JIRA_ISSUE,
+            AgentToolName.SEARCH_ENGINEERING_KNOWLEDGE,
+            AgentToolName.LOOKUP_RELEASE_HISTORY,
+            AgentToolName.LOOKUP_SIMILAR_RELEASE,
+            AgentToolName.LOOKUP_APPROVAL_STATUS,
+            AgentToolName.LOOKUP_SLACK_STATUS,
+        }
+    )
+)
+
 
 class AgentToolNotRegisteredError(LookupError):
     """Raised when a requested tool is absent from the trusted registry."""
@@ -185,4 +200,18 @@ class AgentToolRegistry:
                 definitions,
                 key=lambda definition: definition.name.value,
             )
+        )
+
+    def list_planner_definitions(
+        self,
+    ) -> tuple[AgentToolDefinition, ...]:
+        """List only read-only tools with implemented runtime adapters.
+
+        Returns:
+            Deterministically ordered definitions safe for automatic planning.
+        """
+        return tuple(
+            definition
+            for definition in self.list_definitions()
+            if definition.name in _PLANNER_EXECUTABLE_TOOL_NAMES
         )

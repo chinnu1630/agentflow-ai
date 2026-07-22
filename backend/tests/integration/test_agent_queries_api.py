@@ -15,14 +15,27 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import StaticPool
 
 from app.api.routes.agent_queries import (
+    get_agent_execution_planner_client,
     get_agent_github_risk_collector,
     get_agent_jira_risk_collector,
     get_agent_slack_alert_sender,
 )
 from app.db.base import Base
 from app.db.session import get_db_session
+from app.integrations.anthropic_execution_planner_client import (
+    ClaudeExecutionPlanResult,
+)
 from app.integrations.slack_client import SlackPostMessageResult
 from app.main import app
+from app.schemas.agent_execution_plan import (
+    AgentExecutionPlan,
+    AgentExecutionStep,
+)
+from app.schemas.agent_query import AgentIntent, ResponseDepth
+from app.schemas.agent_tool import (
+    AgentToolInvocation,
+    AgentToolName,
+)
 from app.schemas.jira import (
     JiraIssue,
     JiraIssuePriority,
@@ -184,6 +197,57 @@ class FakeAgentJiraRiskCollector:
         )
 
 
+class FakeAgentExecutionPlannerClient:
+    """Return deterministic structured plans without calling Claude."""
+
+    call_count = 0
+
+    async def create_execution_plan(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        prompt_version: str,
+    ) -> ClaudeExecutionPlanResult:
+        """Return one bounded engineering-knowledge execution plan."""
+        del system_prompt, user_prompt
+        type(self).call_count += 1
+
+        plan = AgentExecutionPlan(
+            objective="Search trusted payment rollback guidance.",
+            intent=AgentIntent.KNOWLEDGE_DOC_QUESTION,
+            response_depth=ResponseDepth.STANDARD,
+            steps=[
+                AgentExecutionStep(
+                    step_id="search_knowledge",
+                    invocation=AgentToolInvocation(
+                        step_id="search_knowledge",
+                        tool_name=(
+                            AgentToolName.SEARCH_ENGINEERING_KNOWLEDGE
+                        ),
+                        arguments={
+                            "query": "payment service rollback",
+                            "top_k": 5,
+                        },
+                        timeout_seconds=30,
+                    ),
+                )
+            ],
+            plan_reason_code="search_engineering_knowledge",
+        )
+
+        return ClaudeExecutionPlanResult(
+            plan=plan,
+            message_id="msg_dynamic_integration",
+            model="test-claude-model",
+            input_tokens=200,
+            output_tokens=80,
+            stop_reason="end_turn",
+            duration_ms=20.0,
+            prompt_version=prompt_version,
+        )
+
+
 class FakeAgentSlackAlertSender:
     """Fake Slack sender for natural-language action tests."""
 
@@ -231,6 +295,12 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
         async with session_factory() as session:
             yield session
 
+    async def override_get_execution_planner(
+    ) -> FakeAgentExecutionPlannerClient:
+        """Return the deterministic dynamic execution planner."""
+
+        return FakeAgentExecutionPlannerClient()
+
     async def override_get_github_collector() -> FakeAgentGitHubRiskCollector:
         """Return the fake GitHub collector."""
 
@@ -246,11 +316,15 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
 
         return FakeAgentSlackAlertSender()
 
+    FakeAgentExecutionPlannerClient.call_count = 0
     FakeAgentGitHubRiskCollector.call_count = 0
     FakeAgentJiraRiskCollector.call_count = 0
     FakeAgentSlackAlertSender.call_count = 0
     FakeAgentSlackAlertSender.sent_payloads = []
 
+    app.dependency_overrides[
+        get_agent_execution_planner_client
+    ] = override_get_execution_planner
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_agent_github_risk_collector] = override_get_github_collector
     app.dependency_overrides[get_agent_jira_risk_collector] = override_get_jira_collector
@@ -1313,5 +1387,59 @@ async def test_knowledge_document_question_uses_ingested_documents(
         payload["citations"][0]["source_url"]
         == "docs/payment-service-runbook.md"
     )
+    assert FakeAgentGitHubRiskCollector.call_count == 0
+    assert FakeAgentJiraRiskCollector.call_count == 0
+
+
+
+@pytest.mark.anyio
+async def test_dynamic_knowledge_query_executes_read_only_tool_plan(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Dynamic queries should plan and execute trusted knowledge retrieval."""
+    ingestion_response = await agent_query_api_client.post(
+        "/api/v1/engineering-documents/ingest",
+        json={
+            "title": "Payment Service Dynamic Runbook",
+            "source_type": "runbook",
+            "source_uri": "docs/payment-dynamic-runbook.md",
+            "raw_content": (
+                "Rollback the payment service when authorization failures "
+                "exceed the release threshold. Validate transaction success "
+                "and error-rate recovery after rollback."
+            ),
+            "metadata_json": {
+                "service": "payment-service",
+            },
+        },
+    )
+
+    assert ingestion_response.status_code == 201
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query-dynamic",
+        json={
+            "query": "What does the payment service runbook say about rollback?",
+        },
+    )
+
+    assert response.status_code == 200, response.json()
+
+    payload = response.json()
+    tool_result = payload["execution_result"]["tool_results"][0]
+
+    assert payload["query_plan"]["intent"] == "knowledge_doc_question"
+    assert payload["execution_plan"]["steps"][0]["invocation"][
+        "tool_name"
+    ] == "search_engineering_knowledge"
+    assert payload["execution_result"]["status"] == "success"
+    assert tool_result["status"] == "success"
+    assert tool_result["output"]["result_count"] >= 1
+    assert tool_result["evidence"][0]["source_type"] == (
+        "engineering_document_chunk"
+    )
+    assert payload["prompt_version"] == "agent-execution-planner-v1"
+    assert payload["model"] == "test-claude-model"
+    assert FakeAgentExecutionPlannerClient.call_count == 1
     assert FakeAgentGitHubRiskCollector.call_count == 0
     assert FakeAgentJiraRiskCollector.call_count == 0

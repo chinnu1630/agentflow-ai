@@ -85,9 +85,7 @@ class AgentExecutionPlannerPromptBuilder:
         Returns:
             Bounded prompt containing only approved read-only tools.
         """
-        approved_tools = self._registry.list_definitions(
-            include_side_effects=False
-        )
+        approved_tools = self._registry.list_planner_definitions()
 
         payload = {
             "manager_request": {

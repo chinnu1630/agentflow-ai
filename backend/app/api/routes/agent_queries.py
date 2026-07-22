@@ -14,7 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.db.session import get_db_session
-from app.integrations.anthropic_client import AnthropicClientConfig
+from app.integrations.anthropic_client import (
+    AnthropicClientConfig,
+    AnthropicClientRateLimitError,
+    AnthropicClientResponseError,
+    AnthropicClientTimeoutError,
+    AnthropicClientUnavailableError,
+)
 from app.integrations.anthropic_execution_planner_client import (
     AnthropicExecutionPlannerClient,
 )
@@ -46,6 +52,7 @@ from app.repositories.release_run_slack_alert_repository import (
     ReleaseRunSlackAlertRepository,
     ReleaseRunSlackAlertRepositoryError,
 )
+from app.schemas.agent_dynamic_query import AgentDynamicQueryResponse
 from app.schemas.agent_query import (
     AgentIntent,
     AgentQueryPlan,
@@ -53,6 +60,18 @@ from app.schemas.agent_query import (
     AgentQueryResponse,
 )
 from app.schemas.github import GitHubRepositoryConfig
+from app.services.agent_dynamic_execution_service import (
+    AgentDynamicExecutionService,
+)
+from app.services.agent_dynamic_query_service import AgentDynamicQueryService
+from app.services.agent_execution_plan_validator import (
+    AgentExecutionPlanValidationError,
+    AgentExecutionPlanValidator,
+)
+from app.services.agent_execution_planner_service import (
+    AgentExecutionPlannerService,
+    AgentExecutionPlannerServiceError,
+)
 from app.services.agent_github_pr_resolver import (
     AgentGitHubPRNotFoundError,
     AgentGitHubPRResolver,
@@ -76,6 +95,9 @@ from app.services.agent_query_executor import (
     UnsupportedAgentQueryIntentError,
 )
 from app.services.agent_query_router import AgentQueryRouter
+from app.services.agent_read_only_tool_adapters import (
+    build_read_only_tool_adapters,
+)
 from app.services.agent_response_composer import AgentResponseComposer
 from app.services.agent_risk_filter import AgentRiskFilter
 from app.services.agent_similar_release_matcher import (
@@ -85,6 +107,7 @@ from app.services.agent_specific_risk_matcher import (
     AgentSpecificRiskMatcher,
     AgentSpecificRiskNotFoundError,
 )
+from app.services.agent_tool_registry import AgentToolRegistry
 from app.services.engineering_document_embedding_provider import (
     SentenceTransformerEmbeddingProvider,
     get_engineering_document_embedding_provider,
@@ -166,6 +189,12 @@ async def get_agent_execution_planner_client(
         run_id=request_id,
     ) as planner_client:
         yield planner_client
+
+
+AgentExecutionPlannerClientDependency = Annotated[
+    AnthropicExecutionPlannerClient | None,
+    Depends(get_agent_execution_planner_client),
+]
 
 
 AgentQueryRouterDependency = Annotated[
@@ -363,6 +392,156 @@ async def create_agent_query_plan(
     )
 
     return plan
+
+
+@router.post(
+    "/query-dynamic",
+    response_model=AgentDynamicQueryResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def execute_dynamic_agent_query(
+    payload: AgentQueryRequest,
+    request: Request,
+    plan: ExecutableAgentQueryPlanDependency,
+    planner_client: AgentExecutionPlannerClientDependency,
+    session: AsyncSession = Depends(get_db_session),
+    embedding_provider: SentenceTransformerEmbeddingProvider = Depends(
+        get_engineering_document_embedding_provider
+    ),
+    reranker: CrossEncoderEngineeringDocumentReranker = Depends(
+        get_engineering_document_reranker
+    ),
+) -> AgentDynamicQueryResponse:
+    """Execute a bounded read-only dynamic agent plan."""
+
+    if planner_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dynamic agent planning is disabled.",
+        )
+
+    if plan.intent in {
+        AgentIntent.RELEASE_RISK_SUMMARY,
+        AgentIntent.ACTION_REQUEST,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "This intent is not available through read-only "
+                "dynamic execution."
+            ),
+        )
+
+    request_id = str(
+        getattr(request.state, "request_id", "unknown-request-id")
+    )
+
+    risk_snapshot_repository = ReleaseRunRiskSnapshotRepository(
+        session=session,
+        request_id=request_id,
+    )
+    approval_repository = ReleaseRunApprovalRepository(
+        session=session,
+        request_id=request_id,
+    )
+    slack_alert_repository = ReleaseRunSlackAlertRepository(
+        session=session,
+        request_id=request_id,
+    )
+    engineering_document_repository = EngineeringDocumentRepository(
+        session=session,
+    )
+    context_resolver = AgentQueryContextResolver(
+        snapshot_repository=risk_snapshot_repository,
+        request_id=request_id,
+    )
+    knowledge_service = EngineeringDocumentRetrievalService(
+        repository=engineering_document_repository,
+        embedding_provider=embedding_provider,
+        reranker=reranker,
+    )
+    registry = AgentToolRegistry()
+    plan_validator = AgentExecutionPlanValidator(
+        registry=registry,
+        request_id=request_id,
+    )
+    planner = AgentExecutionPlannerService(
+        planner_client=planner_client,
+        plan_validator=plan_validator,
+        request_id=request_id,
+    )
+    adapters = build_read_only_tool_adapters(
+        request=payload,
+        query_plan=plan,
+        context_resolver=context_resolver,
+        knowledge_retrieval_service=knowledge_service,
+        approval_repository=approval_repository,
+        slack_alert_repository=slack_alert_repository,
+        request_id=request_id,
+    )
+    executor = AgentDynamicExecutionService(
+        adapters=adapters,
+        plan_validator=plan_validator,
+        request_id=request_id,
+    )
+    service = AgentDynamicQueryService(
+        planner=planner,
+        executor=executor,
+        request_id=request_id,
+    )
+
+    try:
+        response = await service.execute(
+            request=payload,
+            query_plan=plan,
+        )
+        await session.commit()
+        return response
+
+    except AnthropicClientTimeoutError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Dynamic agent planning timed out.",
+        ) from exc
+
+    except AnthropicClientRateLimitError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Dynamic agent planning was rate limited.",
+        ) from exc
+
+    except AnthropicClientUnavailableError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dynamic agent planning is unavailable.",
+        ) from exc
+
+    except (
+        AnthropicClientResponseError,
+        AgentExecutionPlannerServiceError,
+        AgentExecutionPlanValidationError,
+    ) as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Dynamic agent planning returned an invalid plan.",
+        ) from exc
+
+    except (
+        EngineeringDocumentRepositoryError,
+        ReleaseRunApprovalRepositoryError,
+        ReleaseRunRiskSnapshotRepositoryError,
+        ReleaseRunSlackAlertRepositoryError,
+        SQLAlchemyError,
+    ) as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to execute the dynamic AgentFlow query.",
+        ) from exc
 
 
 @router.post(

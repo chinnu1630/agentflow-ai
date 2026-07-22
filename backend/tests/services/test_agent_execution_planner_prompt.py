@@ -64,6 +64,10 @@ def test_builds_versioned_prompt_with_read_only_tools() -> None:
     }
 
     assert AgentToolName.SEARCH_ENGINEERING_KNOWLEDGE.value in tool_names
+    assert (
+        AgentToolName.RUN_FRESH_RELEASE_RISK_ANALYSIS.value
+        not in tool_names
+    )
     assert AgentToolName.SEND_APPROVED_SLACK_ALERT.value not in tool_names
 
 

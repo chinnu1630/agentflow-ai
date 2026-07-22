@@ -83,3 +83,19 @@ def test_raises_for_unregistered_tool() -> None:
         match="Agent tool is not registered",
     ):
         registry.get_definition(unknown_tool)
+
+
+
+def test_planner_listing_excludes_tools_without_runtime_adapters() -> None:
+    """Claude should see only tools executable by the dynamic engine."""
+    registry = AgentToolRegistry()
+
+    definitions = registry.list_planner_definitions()
+    tool_names = {definition.name for definition in definitions}
+
+    assert len(definitions) == 8
+    assert (
+        AgentToolName.RUN_FRESH_RELEASE_RISK_ANALYSIS
+        not in tool_names
+    )
+    assert AgentToolName.SEND_APPROVED_SLACK_ALERT not in tool_names
