@@ -25,6 +25,9 @@ from app.schemas.agent_tool import (
     AgentToolName,
     AgentToolResult,
 )
+from app.services.agent_dynamic_synthesis_citation_verifier import (
+    AgentDynamicSynthesisCitationVerificationError,
+)
 from app.services.agent_dynamic_synthesis_service import (
     AgentDynamicSynthesisService,
 )
@@ -137,3 +140,101 @@ async def test_synthesizes_and_verifies_dynamic_answer() -> None:
     assert result.answer is answer
     assert result.message_id == "msg-synthesis-123"
     assert result.input_tokens == 300
+
+
+@pytest.mark.anyio
+async def test_fails_closed_when_trusted_evidence_is_not_cited() -> None:
+    """Service must reject an uncited answer when evidence exists."""
+    answer = AgentDynamicAnswer(
+        answer="Follow the documented rollback procedure.",
+        confidence=0.9,
+        requires_human_review=False,
+    )
+    client = FakeDynamicSynthesisClient(answer)
+    service = AgentDynamicSynthesisService(
+        client=client,
+        request_id="request-uncited",
+    )
+
+    with pytest.raises(
+        AgentDynamicSynthesisCitationVerificationError,
+        match="must include at least one verified citation",
+    ):
+        await service.synthesize(
+            request=AgentQueryRequest(
+                query="How do I rollback the payment service?"
+            ),
+            query_plan=_build_query_plan(),
+            execution_result=_build_execution_result(),
+        )
+
+    assert client.call_count == 1
+
+
+@pytest.mark.anyio
+async def test_fails_closed_when_degraded_step_is_hidden() -> None:
+    """Service must reject synthesis that hides a failed tool step."""
+    execution_result = AgentExecutionResult(
+        intent=AgentIntent.KNOWLEDGE_DOC_QUESTION,
+        objective="Answer using available engineering evidence.",
+        plan_reason_code="knowledge_lookup_required",
+        status=AgentExecutionStatus.PARTIAL,
+        tool_results=[
+            AgentToolResult(
+                step_id="search_docs",
+                tool_name=AgentToolName.SEARCH_ENGINEERING_KNOWLEDGE,
+                status=AgentToolExecutionStatus.SUCCESS,
+                output={"result_count": 1},
+                evidence=[
+                    AgentToolEvidence(
+                        source_type="engineering_document_chunk",
+                        source_id="chunk-123",
+                        title="Payment Service Runbook",
+                    )
+                ],
+                duration_ms=3,
+            ),
+            AgentToolResult(
+                step_id="load_snapshot",
+                tool_name=AgentToolName.LOAD_CURRENT_RISK_SNAPSHOT,
+                status=AgentToolExecutionStatus.FAILED,
+                error_code="snapshot_unavailable",
+                error_message="Snapshot service unavailable.",
+                duration_ms=4,
+            ),
+        ],
+        requires_synthesis=True,
+        duration_ms=7,
+    )
+    answer = AgentDynamicAnswer(
+        answer="Use the documented rollback procedure.",
+        confidence=0.6,
+        citations=[
+            AgentDynamicAnswerCitation(
+                source_type="engineering_document_chunk",
+                source_id="chunk-123",
+                title="Payment Service Runbook",
+                supporting_fact="The runbook contains rollback guidance.",
+            )
+        ],
+        requires_human_review=True,
+    )
+    client = FakeDynamicSynthesisClient(answer)
+    service = AgentDynamicSynthesisService(
+        client=client,
+        request_id="request-hidden-degradation",
+    )
+
+    with pytest.raises(
+        AgentDynamicSynthesisCitationVerificationError,
+        match="must exactly match degraded execution steps",
+    ):
+        await service.synthesize(
+            request=AgentQueryRequest(
+                query="Explain the release procedure."
+            ),
+            query_plan=_build_query_plan(),
+            execution_result=execution_result,
+        )
+
+    assert client.call_count == 1
