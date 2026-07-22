@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.agent_dynamic_query import AgentDynamicQueryResponse
+from app.schemas.agent_dynamic_synthesis import AgentDynamicAnswer
 from app.schemas.agent_execution_plan import (
     AgentExecutionPlan,
     AgentExecutionStep,
@@ -82,6 +83,17 @@ def test_accepts_auditable_dynamic_query_response() -> None:
         input_tokens=250,
         output_tokens=100,
         planning_duration_ms=25.5,
+        answer=AgentDynamicAnswer(
+            answer="Follow the trusted payment rollback procedure.",
+            confidence=0.94,
+            requires_human_review=False,
+        ),
+        synthesis_prompt_version="agent-dynamic-synthesis-v1",
+        synthesis_model="test-claude-model",
+        synthesis_message_id="msg_synthesis_123",
+        synthesis_input_tokens=300,
+        synthesis_output_tokens=120,
+        synthesis_duration_ms=20.5,
     )
 
     assert response.query_plan.intent is (
@@ -158,4 +170,15 @@ def test_rejects_mismatched_execution_intent() -> None:
             input_tokens=250,
             output_tokens=100,
             planning_duration_ms=25.5,
+            answer=AgentDynamicAnswer(
+                answer="Follow the trusted payment rollback procedure.",
+                confidence=0.94,
+                requires_human_review=False,
+            ),
+            synthesis_prompt_version="agent-dynamic-synthesis-v1",
+            synthesis_model="test-claude-model",
+            synthesis_message_id="msg_synthesis_123",
+            synthesis_input_tokens=300,
+            synthesis_output_tokens=120,
+            synthesis_duration_ms=20.5,
         )

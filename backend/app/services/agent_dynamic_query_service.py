@@ -6,6 +6,9 @@ from typing import Protocol
 
 import structlog
 
+from app.integrations.anthropic_dynamic_synthesis_client import (
+    ClaudeDynamicSynthesisResult,
+)
 from app.schemas.agent_dynamic_query import AgentDynamicQueryResponse
 from app.schemas.agent_execution_plan import AgentExecutionPlan
 from app.schemas.agent_execution_result import AgentExecutionResult
@@ -47,6 +50,21 @@ class DynamicExecutorProtocol(Protocol):
         ...
 
 
+class DynamicSynthesizerProtocol(Protocol):
+    """Synthesis capability required by the dynamic query service."""
+
+    async def synthesize(
+        self,
+        *,
+        request: AgentQueryRequest,
+        query_plan: AgentQueryPlan,
+        execution_result: AgentExecutionResult,
+    ) -> ClaudeDynamicSynthesisResult:
+        """Produce one verified evidence-grounded manager answer."""
+
+        ...
+
+
 class AgentDynamicQueryService:
     """Run the complete bounded dynamic query pipeline."""
 
@@ -55,11 +73,13 @@ class AgentDynamicQueryService:
         *,
         planner: DynamicPlannerProtocol,
         executor: DynamicExecutorProtocol,
+        synthesizer: DynamicSynthesizerProtocol,
         request_id: str,
     ) -> None:
         """Initialize the dynamic query orchestration service."""
         self._planner = planner
         self._executor = executor
+        self._synthesizer = synthesizer
         self._request_id = request_id
 
     async def execute(
@@ -85,16 +105,29 @@ class AgentDynamicQueryService:
             human_approval_granted=False,
         )
 
+        synthesis_result = await self._synthesizer.synthesize(
+            request=request,
+            query_plan=query_plan,
+            execution_result=execution_result,
+        )
+
         response = AgentDynamicQueryResponse(
             query_plan=query_plan,
             execution_plan=planner_result.plan,
             execution_result=execution_result,
+            answer=synthesis_result.answer,
             prompt_version=planner_result.prompt_version,
             model=planner_result.model,
             message_id=planner_result.message_id,
             input_tokens=planner_result.input_tokens,
             output_tokens=planner_result.output_tokens,
             planning_duration_ms=planner_result.duration_ms,
+            synthesis_prompt_version=synthesis_result.prompt_version,
+            synthesis_model=synthesis_result.model,
+            synthesis_message_id=synthesis_result.message_id,
+            synthesis_input_tokens=synthesis_result.input_tokens,
+            synthesis_output_tokens=synthesis_result.output_tokens,
+            synthesis_duration_ms=synthesis_result.duration_ms,
         )
 
         logger.info(
@@ -108,6 +141,13 @@ class AgentDynamicQueryService:
             model=planner_result.model,
             input_tokens=planner_result.input_tokens,
             output_tokens=planner_result.output_tokens,
+            synthesis_prompt_version=synthesis_result.prompt_version,
+            synthesis_model=synthesis_result.model,
+            synthesis_input_tokens=synthesis_result.input_tokens,
+            synthesis_output_tokens=synthesis_result.output_tokens,
+            synthesis_citation_count=len(
+                synthesis_result.answer.citations
+            ),
         )
 
         return response

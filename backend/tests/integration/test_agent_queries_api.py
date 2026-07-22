@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import StaticPool
 
 from app.api.routes.agent_queries import (
+    get_agent_dynamic_synthesis_client,
     get_agent_execution_planner_client,
     get_agent_github_risk_collector,
     get_agent_jira_risk_collector,
@@ -22,11 +24,18 @@ from app.api.routes.agent_queries import (
 )
 from app.db.base import Base
 from app.db.session import get_db_session
+from app.integrations.anthropic_dynamic_synthesis_client import (
+    ClaudeDynamicSynthesisResult,
+)
 from app.integrations.anthropic_execution_planner_client import (
     ClaudeExecutionPlanResult,
 )
 from app.integrations.slack_client import SlackPostMessageResult
 from app.main import app
+from app.schemas.agent_dynamic_synthesis import (
+    AgentDynamicAnswer,
+    AgentDynamicAnswerCitation,
+)
 from app.schemas.agent_execution_plan import (
     AgentExecutionPlan,
     AgentExecutionStep,
@@ -248,6 +257,62 @@ class FakeAgentExecutionPlannerClient:
         )
 
 
+
+class FakeAgentDynamicSynthesisClient:
+    """Return grounded dynamic answers without calling Claude."""
+
+    call_count = 0
+
+    async def synthesize_dynamic_answer(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        prompt_version: str,
+    ) -> ClaudeDynamicSynthesisResult:
+        """Build a citation from the exact trusted prompt evidence."""
+        assert system_prompt
+
+        type(self).call_count += 1
+        evidence_payload = json.loads(user_prompt.split("\n\n", 1)[1])
+        trusted_evidence = evidence_payload["trusted_evidence"]
+        citations = []
+
+        if trusted_evidence:
+            evidence = trusted_evidence[0]
+            citations.append(
+                AgentDynamicAnswerCitation(
+                    source_type=evidence["source_type"],
+                    source_id=evidence["source_id"],
+                    title=evidence["title"],
+                    source_url=evidence["source_url"],
+                    supporting_fact=(
+                        "The executed AgentFlow tool returned this evidence."
+                    ),
+                )
+            )
+
+        return ClaudeDynamicSynthesisResult(
+            answer=AgentDynamicAnswer(
+                answer=(
+                    "The payment service runbook says to roll back when "
+                    "authorization failures exceed the release threshold, "
+                    "then validate transaction success and error-rate recovery."
+                ),
+                confidence=0.95,
+                citations=citations,
+                requires_human_review=False,
+            ),
+            message_id="msg_dynamic_synthesis_integration",
+            model="test-claude-model",
+            input_tokens=300,
+            output_tokens=120,
+            stop_reason="end_turn",
+            duration_ms=25.0,
+            prompt_version=prompt_version,
+        )
+
+
 class FakeAgentSlackAlertSender:
     """Fake Slack sender for natural-language action tests."""
 
@@ -301,6 +366,12 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
 
         return FakeAgentExecutionPlannerClient()
 
+    async def override_get_dynamic_synthesis(
+    ) -> FakeAgentDynamicSynthesisClient:
+        """Return deterministic dynamic answer synthesis."""
+
+        return FakeAgentDynamicSynthesisClient()
+
     async def override_get_github_collector() -> FakeAgentGitHubRiskCollector:
         """Return the fake GitHub collector."""
 
@@ -317,6 +388,7 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
         return FakeAgentSlackAlertSender()
 
     FakeAgentExecutionPlannerClient.call_count = 0
+    FakeAgentDynamicSynthesisClient.call_count = 0
     FakeAgentGitHubRiskCollector.call_count = 0
     FakeAgentJiraRiskCollector.call_count = 0
     FakeAgentSlackAlertSender.call_count = 0
@@ -325,6 +397,9 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
     app.dependency_overrides[
         get_agent_execution_planner_client
     ] = override_get_execution_planner
+    app.dependency_overrides[
+        get_agent_dynamic_synthesis_client
+    ] = override_get_dynamic_synthesis
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_agent_github_risk_collector] = override_get_github_collector
     app.dependency_overrides[get_agent_jira_risk_collector] = override_get_jira_collector
@@ -1440,7 +1515,16 @@ async def test_dynamic_knowledge_query_executes_read_only_tool_plan(
     )
     assert payload["prompt_version"] == "agent-execution-planner-v1"
     assert payload["model"] == "test-claude-model"
+    assert "roll back" in payload["answer"]["answer"].lower()
+    assert payload["answer"]["citations"][0]["source_type"] == (
+        "engineering_document_chunk"
+    )
+    assert payload["synthesis_prompt_version"] == (
+        "agent-dynamic-synthesis-v1"
+    )
+    assert payload["synthesis_model"] == "test-claude-model"
     assert FakeAgentExecutionPlannerClient.call_count == 1
+    assert FakeAgentDynamicSynthesisClient.call_count == 1
     assert FakeAgentGitHubRiskCollector.call_count == 0
     assert FakeAgentJiraRiskCollector.call_count == 0
 

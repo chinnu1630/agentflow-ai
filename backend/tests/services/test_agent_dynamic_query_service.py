@@ -4,6 +4,10 @@ from uuid import UUID
 
 import pytest
 
+from app.integrations.anthropic_dynamic_synthesis_client import (
+    ClaudeDynamicSynthesisResult,
+)
+from app.schemas.agent_dynamic_synthesis import AgentDynamicAnswer
 from app.schemas.agent_execution_plan import (
     AgentExecutionPlan,
     AgentExecutionStep,
@@ -130,15 +134,53 @@ class FakeDynamicExecutor:
         )
 
 
+
+class FakeDynamicSynthesizer:
+    """Return one deterministic evidence-grounded answer."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def synthesize(
+        self,
+        *,
+        request: AgentQueryRequest,
+        query_plan: AgentQueryPlan,
+        execution_result: AgentExecutionResult,
+    ) -> ClaudeDynamicSynthesisResult:
+        """Return synthesis metadata for the executed result."""
+        del request
+
+        assert query_plan.intent is execution_result.intent
+        self.call_count += 1
+
+        return ClaudeDynamicSynthesisResult(
+            answer=AgentDynamicAnswer(
+                answer="Follow the trusted payment rollback procedure.",
+                confidence=0.94,
+                requires_human_review=False,
+            ),
+            message_id="msg-synthesis-123",
+            model="test-claude-model",
+            input_tokens=300,
+            output_tokens=120,
+            stop_reason="end_turn",
+            duration_ms=20.5,
+            prompt_version="agent-dynamic-synthesis-v1",
+        )
+
+
 @pytest.mark.anyio
 async def test_executes_read_only_dynamic_pipeline() -> None:
     """The service should preserve metadata and disable side effects."""
     plan = _build_execution_plan()
     planner = FakeDynamicPlanner(plan)
     executor = FakeDynamicExecutor(plan)
+    synthesizer = FakeDynamicSynthesizer()
     service = AgentDynamicQueryService(
         planner=planner,
         executor=executor,
+        synthesizer=synthesizer,
         request_id="request-123",
     )
     request = AgentQueryRequest(
@@ -158,6 +200,7 @@ async def test_executes_read_only_dynamic_pipeline() -> None:
 
     assert planner.call_count == 1
     assert executor.call_count == 1
+    assert synthesizer.call_count == 1
     assert executor.has_release_run_context is False
     assert executor.allow_side_effects is False
     assert executor.human_approval_granted is False
@@ -166,6 +209,10 @@ async def test_executes_read_only_dynamic_pipeline() -> None:
         AgentExecutionStatus.SUCCESS
     )
     assert response.prompt_version == "agent-execution-planner-v1"
+    assert response.answer.confidence == 0.94
+    assert response.synthesis_prompt_version == (
+        "agent-dynamic-synthesis-v1"
+    )
 
 
 @pytest.mark.anyio
@@ -174,9 +221,11 @@ async def test_forwards_release_context_availability() -> None:
     plan = _build_execution_plan()
     planner = FakeDynamicPlanner(plan)
     executor = FakeDynamicExecutor(plan)
+    synthesizer = FakeDynamicSynthesizer()
     service = AgentDynamicQueryService(
         planner=planner,
         executor=executor,
+        synthesizer=synthesizer,
         request_id="request-456",
     )
     release_run_id = UUID("11111111-1111-1111-1111-111111111111")

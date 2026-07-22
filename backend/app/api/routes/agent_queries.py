@@ -21,6 +21,9 @@ from app.integrations.anthropic_client import (
     AnthropicClientTimeoutError,
     AnthropicClientUnavailableError,
 )
+from app.integrations.anthropic_dynamic_synthesis_client import (
+    AnthropicDynamicSynthesisClient,
+)
 from app.integrations.anthropic_execution_planner_client import (
     AnthropicExecutionPlannerClient,
 )
@@ -64,6 +67,9 @@ from app.services.agent_dynamic_execution_service import (
     AgentDynamicExecutionService,
 )
 from app.services.agent_dynamic_query_service import AgentDynamicQueryService
+from app.services.agent_dynamic_synthesis_service import (
+    AgentDynamicSynthesisService,
+)
 from app.services.agent_execution_plan_validator import (
     AgentExecutionPlanValidationError,
     AgentExecutionPlanValidator,
@@ -194,6 +200,52 @@ async def get_agent_execution_planner_client(
 AgentExecutionPlannerClientDependency = Annotated[
     AnthropicExecutionPlannerClient | None,
     Depends(get_agent_execution_planner_client),
+]
+
+
+async def get_agent_dynamic_synthesis_client(
+    request: Request,
+) -> AsyncIterator[AnthropicDynamicSynthesisClient | None]:
+    """Create the optional Claude dynamic-answer synthesis client."""
+
+    settings = get_settings()
+
+    if not settings.agent_dynamic_planning_enabled:
+        yield None
+        return
+
+    api_key = settings.anthropic_api_key
+
+    if api_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Dynamic agent synthesis is enabled but not configured. "
+                "Set ANTHROPIC_API_KEY."
+            ),
+        )
+
+    request_id = str(
+        getattr(request.state, "request_id", "unknown-request-id")
+    )
+    config = AnthropicClientConfig(
+        api_key=api_key,
+        model=settings.anthropic_model,
+        max_tokens=settings.anthropic_max_tokens,
+        timeout_seconds=settings.anthropic_timeout_seconds,
+        max_retries=settings.anthropic_max_retries,
+    )
+
+    async with AnthropicDynamicSynthesisClient(
+        config=config,
+        run_id=request_id,
+    ) as synthesis_client:
+        yield synthesis_client
+
+
+AgentDynamicSynthesisClientDependency = Annotated[
+    AnthropicDynamicSynthesisClient | None,
+    Depends(get_agent_dynamic_synthesis_client),
 ]
 
 
@@ -404,6 +456,7 @@ async def execute_dynamic_agent_query(
     request: Request,
     plan: ExecutableAgentQueryPlanDependency,
     planner_client: AgentExecutionPlannerClientDependency,
+    synthesis_client: AgentDynamicSynthesisClientDependency,
     session: AsyncSession = Depends(get_db_session),
     embedding_provider: SentenceTransformerEmbeddingProvider = Depends(
         get_engineering_document_embedding_provider
@@ -418,6 +471,12 @@ async def execute_dynamic_agent_query(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Dynamic agent planning is disabled.",
+        )
+
+    if synthesis_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dynamic agent synthesis is disabled.",
         )
 
     if plan.intent in {
@@ -484,9 +543,14 @@ async def execute_dynamic_agent_query(
         plan_validator=plan_validator,
         request_id=request_id,
     )
+    synthesizer = AgentDynamicSynthesisService(
+        client=synthesis_client,
+        request_id=request_id,
+    )
     service = AgentDynamicQueryService(
         planner=planner,
         executor=executor,
+        synthesizer=synthesizer,
         request_id=request_id,
     )
 
