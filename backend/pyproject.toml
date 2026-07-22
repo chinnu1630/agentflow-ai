@@ -288,6 +288,10 @@ dev = [
     # CI fails if coverage drops below the threshold (80% set below).
     "pytest-cov>=5.0.0",
 
+    # aiosqlite: async SQLite driver used by deterministic repository,
+    # service, and API tests in local development and CI.
+    "aiosqlite>=0.20.0",
+
     # respx: mock library for httpx.
     # When testing the GitHub agent or Jira agent, you do NOT want to make
     # real API calls in CI. respx intercepts httpx requests and returns
