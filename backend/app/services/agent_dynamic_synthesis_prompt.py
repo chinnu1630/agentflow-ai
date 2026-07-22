@@ -11,9 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from app.schemas.agent_execution_result import AgentExecutionResult
 from app.schemas.agent_query import AgentQueryPlan, AgentQueryRequest
 from app.schemas.agent_tool import AgentToolResult
-
-AGENT_DYNAMIC_SYNTHESIS_PROMPT_VERSION: Final[str] = (
-    "agent-dynamic-synthesis-v1"
+from app.services.llm_prompt_registry import (
+    AGENT_DYNAMIC_SYNTHESIS_PROMPT_VERSION,
 )
 
 _SYSTEM_PROMPT: Final[str] = """

@@ -11,9 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.agent_query import AgentQueryPlan, AgentQueryRequest
 from app.schemas.agent_tool import AgentToolDefinition
 from app.services.agent_tool_registry import AgentToolRegistry
-
-AGENT_EXECUTION_PLANNER_PROMPT_VERSION: Final[str] = (
-    "agent-execution-planner-v1"
+from app.services.llm_prompt_registry import (
+    AGENT_EXECUTION_PLANNER_PROMPT_VERSION,
 )
 
 _SYSTEM_PROMPT: Final[str] = """

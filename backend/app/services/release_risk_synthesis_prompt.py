@@ -9,9 +9,8 @@ from typing import Any, Final
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.risk import ReleaseRunRiskResponse
-
-RELEASE_RISK_SYNTHESIS_PROMPT_VERSION: Final[str] = (
-    "release-risk-synthesis-v1"
+from app.services.llm_prompt_registry import (
+    RELEASE_RISK_SYNTHESIS_PROMPT_VERSION,
 )
 
 _SYSTEM_PROMPT: Final[str] = """
