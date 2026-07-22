@@ -121,6 +121,14 @@ class Settings(BaseSettings):
         ge=0,
         description="Configured synthesis output-token price per million in USD.",
     )
+    agent_dynamic_max_estimated_cost_usd: Decimal | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional fail-closed maximum estimated USD cost for one "
+            "dynamic query."
+        ),
+    )
     knowledge_embedding_model_name: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2",
         min_length=1,

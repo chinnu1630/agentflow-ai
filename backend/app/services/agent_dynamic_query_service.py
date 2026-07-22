@@ -25,6 +25,10 @@ from app.services.agent_execution_planner_service import (
     AgentExecutionPlannerResult,
 )
 from app.services.agent_llm_cost_estimator import AgentLLMCostEstimator
+from app.services.agent_llm_cost_policy import (
+    AgentLLMCostLimitExceededError,
+    AgentLLMCostPolicy,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -85,6 +89,7 @@ class AgentDynamicQueryService:
         synthesizer: DynamicSynthesizerProtocol,
         request_id: str,
         cost_estimator: AgentLLMCostEstimator | None = None,
+        cost_policy: AgentLLMCostPolicy | None = None,
     ) -> None:
         """Initialize the dynamic query orchestration service."""
         self._planner = planner
@@ -92,6 +97,7 @@ class AgentDynamicQueryService:
         self._synthesizer = synthesizer
         self._request_id = request_id
         self._cost_estimator = cost_estimator or AgentLLMCostEstimator()
+        self._cost_policy = cost_policy or AgentLLMCostPolicy()
 
     async def execute(
         self,
@@ -200,14 +206,40 @@ class AgentDynamicQueryService:
                 synthesis_output_tokens=synthesis_result.output_tokens,
             )
 
-            set_safe_span_attributes(
-                span,
-                {
-                    "estimated_cost_usd": str(
+            cost_attributes: dict[str, object] = {
+                "estimated_cost_usd": str(
+                    cost_estimate.total_cost_usd
+                ),
+            }
+            if self._cost_policy.max_estimated_cost_usd is not None:
+                cost_attributes["max_estimated_cost_usd"] = str(
+                    self._cost_policy.max_estimated_cost_usd
+                )
+
+            set_safe_span_attributes(span, cost_attributes)
+
+            try:
+                self._cost_policy.enforce(cost_estimate)
+            except AgentLLMCostLimitExceededError as exc:
+                record_business_span_failure(
+                    span,
+                    failure_stage="cost_policy",
+                    exception=exc,
+                    execution_status=execution_result.status.value,
+                )
+                logger.warning(
+                    "agent_dynamic_query_cost_limit_exceeded",
+                    run_id=self._request_id,
+                    intent=query_plan.intent.value,
+                    execution_id=str(execution_result.execution_id),
+                    estimated_cost_usd=str(
                         cost_estimate.total_cost_usd
                     ),
-                },
-            )
+                    max_estimated_cost_usd=str(
+                        self._cost_policy.max_estimated_cost_usd
+                    ),
+                )
+                raise
 
             response = AgentDynamicQueryResponse(
                 query_plan=query_plan,

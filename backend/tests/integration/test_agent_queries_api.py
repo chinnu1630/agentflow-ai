@@ -22,6 +22,7 @@ from app.api.routes.agent_queries import (
     get_agent_jira_risk_collector,
     get_agent_slack_alert_sender,
 )
+from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.integrations.anthropic_dynamic_synthesis_client import (
@@ -1535,6 +1536,57 @@ async def test_dynamic_knowledge_query_executes_read_only_tool_plan(
     assert FakeAgentDynamicSynthesisClient.call_count == 1
     assert FakeAgentGitHubRiskCollector.call_count == 0
     assert FakeAgentJiraRiskCollector.call_count == 0
+
+
+@pytest.mark.anyio
+async def test_dynamic_query_fails_closed_when_cost_limit_is_exceeded(
+    agent_query_api_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The endpoint should hide results that exceed configured cost policy."""
+    monkeypatch.setenv(
+        "AGENT_DYNAMIC_PLANNER_INPUT_COST_PER_MILLION_USD",
+        "1000",
+    )
+    monkeypatch.setenv(
+        "AGENT_DYNAMIC_PLANNER_OUTPUT_COST_PER_MILLION_USD",
+        "1000",
+    )
+    monkeypatch.setenv(
+        "AGENT_DYNAMIC_SYNTHESIS_INPUT_COST_PER_MILLION_USD",
+        "1000",
+    )
+    monkeypatch.setenv(
+        "AGENT_DYNAMIC_SYNTHESIS_OUTPUT_COST_PER_MILLION_USD",
+        "1000",
+    )
+    monkeypatch.setenv(
+        "AGENT_DYNAMIC_MAX_ESTIMATED_COST_USD",
+        "0.001",
+    )
+    get_settings.cache_clear()
+
+    try:
+        response = await agent_query_api_client.post(
+            "/api/v1/agent/query-dynamic",
+            json={
+                "query": (
+                    "What does the payment service runbook say "
+                    "about rollback?"
+                ),
+            },
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 422
+    assert (
+        "Dynamic agent query exceeded the configured cost limit."
+        in response.text
+    )
+    assert FakeAgentExecutionPlannerClient.call_count == 1
+    assert FakeAgentDynamicSynthesisClient.call_count == 1
+
 
 
 @pytest.mark.anyio

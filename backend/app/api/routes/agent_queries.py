@@ -93,6 +93,10 @@ from app.services.agent_llm_cost_estimator import (
     AgentLLMCostEstimator,
     AgentLLMCostRates,
 )
+from app.services.agent_llm_cost_policy import (
+    AgentLLMCostLimitExceededError,
+    AgentLLMCostPolicy,
+)
 from app.services.agent_query_context_resolver import (
     AgentQueryContextConflictError,
     AgentQueryContextRequiredError,
@@ -577,12 +581,18 @@ async def execute_dynamic_agent_query(
             ),
         )
     )
+    cost_policy = AgentLLMCostPolicy(
+        max_estimated_cost_usd=(
+            settings.agent_dynamic_max_estimated_cost_usd
+        )
+    )
     service = AgentDynamicQueryService(
         planner=planner,
         executor=executor,
         synthesizer=synthesizer,
         request_id=request_id,
         cost_estimator=cost_estimator,
+        cost_policy=cost_policy,
     )
 
     try:
@@ -592,6 +602,15 @@ async def execute_dynamic_agent_query(
         )
         await session.commit()
         return response
+
+    except AgentLLMCostLimitExceededError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "Dynamic agent query exceeded the configured cost limit."
+            ),
+        ) from exc
 
     except AgentDynamicSynthesisCitationVerificationError as exc:
         await session.rollback()
