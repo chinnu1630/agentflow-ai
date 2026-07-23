@@ -55,3 +55,40 @@ jobs:
 
       - name: Run tests with coverage gate
         run: pytest -q
+
+  container-smoke-test:
+    name: Build and smoke-test container
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build production image
+        run: docker build --tag agentflow-ai-backend:ci backend
+
+      - name: Run container
+        run: |
+          docker run --detach \
+            --name agentflow-backend-ci \
+            --publish 8000:8000 \
+            agentflow-ai-backend:ci
+
+      - name: Verify health endpoint
+        run: |
+          for attempt in {1..20}; do
+            if curl --fail --silent \
+              http://127.0.0.1:8000/api/v1/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker logs agentflow-backend-ci
+          exit 1
+
+      - name: Stop container
+        if: always()
+        run: docker rm --force agentflow-backend-ci || true
