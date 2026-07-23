@@ -426,6 +426,7 @@ async def release_run_api_client() -> AsyncIterator[AsyncClient]:
                     "release:write",
                     "release:approve",
                     "release:notify",
+                    "knowledge:write",
                 }
             ),
         )

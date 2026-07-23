@@ -108,9 +108,17 @@ from app.services.slack_release_alert_service import (
 
 router = APIRouter(prefix="/release-runs", tags=["release-runs"])
 
+ReleaseReadPrincipalDependency = Annotated[
+    AuthenticatedPrincipal,
+    Depends(require_scopes("release:read")),
+]
 ReleaseWritePrincipalDependency = Annotated[
     AuthenticatedPrincipal,
     Depends(require_scopes("release:write")),
+]
+ReleaseNotifyPrincipalDependency = Annotated[
+    AuthenticatedPrincipal,
+    Depends(require_scopes("release:notify")),
 ]
 ReleaseApprovalPrincipalDependency = Annotated[
     AuthenticatedPrincipal,
@@ -330,6 +338,7 @@ async def start_release_run(
 )
 async def list_pending_release_run_approvals(
     request: Request,
+    _principal: ReleaseReadPrincipalDependency,
     session: AsyncSession = Depends(get_db_session),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -376,6 +385,7 @@ async def list_pending_release_run_approvals(
 async def get_release_run(
     release_run_id: UUID,
     request: Request,
+    _principal: ReleaseReadPrincipalDependency,
     session: AsyncSession = Depends(get_db_session),
 ) -> ReleaseRunResult:
     """Fetch a release-risk workflow run by ID."""
@@ -424,6 +434,7 @@ async def get_release_run(
 async def list_release_run_events(
     release_run_id: UUID,
     request: Request,
+    _principal: ReleaseReadPrincipalDependency,
     session: AsyncSession = Depends(get_db_session),
 ) -> ReleaseRunEventListResponse:
     """List audit events for a release-risk workflow run.
@@ -477,6 +488,7 @@ async def list_release_run_events(
 async def list_release_run_approvals(
     release_run_id: UUID,
     request: Request,
+    _principal: ReleaseReadPrincipalDependency,
     session: AsyncSession = Depends(get_db_session),
 ) -> ReleaseRunApprovalListResponse:
     """List HITL approval requests for a release-risk workflow run."""
@@ -637,6 +649,7 @@ async def decide_release_run_approval(
 async def send_release_run_slack_alert(
     release_run_id: UUID,
     request: Request,
+    _principal: ReleaseNotifyPrincipalDependency,
     session: AsyncSession = Depends(get_db_session),
     sender: SlackClient = Depends(get_slack_alert_sender),
 ) -> SlackReleaseAlertResult:
@@ -753,6 +766,7 @@ async def send_release_run_slack_alert(
 async def collect_release_risks(
     release_run_id: UUID,
     request: Request,
+    _principal: ReleaseWritePrincipalDependency,
     session: AsyncSession = Depends(get_db_session),
     risk_collector: RiskCollector = Depends(get_risk_collector),
     jira_risk_collector: JiraRiskCollector = Depends(get_jira_risk_collector),
@@ -806,6 +820,7 @@ async def collect_release_risks(
 async def collect_github_risks(
     release_run_id: UUID,
     request: Request,
+    _principal: ReleaseWritePrincipalDependency,
     session: AsyncSession = Depends(get_db_session),
     risk_collector: RiskCollector = Depends(get_risk_collector),
     jira_risk_collector: JiraRiskCollector = Depends(get_jira_risk_collector),

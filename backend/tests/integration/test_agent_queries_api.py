@@ -382,6 +382,7 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
                     "release:read",
                     "release:approve",
                     "release:notify",
+                    "knowledge:write",
                 }
             ),
         )

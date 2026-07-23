@@ -9,10 +9,14 @@ FastAPI route -> Knowledge services -> EngineeringDocumentRepository -> database
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies.security import require_scopes
+from app.core.security import AuthenticatedPrincipal
 from app.db.session import get_db_session
 from app.repositories.engineering_document_repository import (
     EngineeringDocumentRepository,
@@ -39,6 +43,15 @@ from app.services.engineering_document_retrieval_service import (
 
 router = APIRouter(prefix="/engineering-documents", tags=["engineering-documents"])
 
+KnowledgeReadPrincipalDependency = Annotated[
+    AuthenticatedPrincipal,
+    Depends(require_scopes("knowledge:read")),
+]
+KnowledgeWritePrincipalDependency = Annotated[
+    AuthenticatedPrincipal,
+    Depends(require_scopes("knowledge:write")),
+]
+
 
 @router.post(
     "/ingest",
@@ -48,6 +61,7 @@ async def ingest_engineering_document(
     command: EngineeringDocumentIngestionRequest,
     request: Request,
     response: Response,
+    _principal: KnowledgeWritePrincipalDependency,
     session: AsyncSession = Depends(get_db_session),
     embedding_provider: SentenceTransformerEmbeddingProvider = Depends(
         get_engineering_document_embedding_provider
@@ -112,6 +126,7 @@ async def ingest_engineering_document(
 async def retrieve_engineering_document_chunks(
     command: EngineeringDocumentRetrievalRequest,
     request: Request,
+    _principal: KnowledgeReadPrincipalDependency,
     session: AsyncSession = Depends(get_db_session),
     embedding_provider: SentenceTransformerEmbeddingProvider = Depends(
         get_engineering_document_embedding_provider

@@ -445,6 +445,7 @@ AgentSlackAlertSenderDependency = Annotated[
 async def create_agent_query_plan(
     payload: AgentQueryRequest,
     request: Request,
+    _principal: AgentQueryPrincipalDependency,
     query_router: AgentQueryRouterDependency,
 ) -> AgentQueryPlan:
     """Convert a natural-language question into a safe workflow plan."""
@@ -477,6 +478,7 @@ async def create_agent_query_plan(
 async def execute_dynamic_agent_query(
     payload: AgentQueryRequest,
     request: Request,
+    _principal: AgentQueryPrincipalDependency,
     plan: ExecutableAgentQueryPlanDependency,
     planner_client: AgentExecutionPlannerClientDependency,
     synthesis_client: AgentDynamicSynthesisClientDependency,
