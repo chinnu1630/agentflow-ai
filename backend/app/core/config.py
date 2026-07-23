@@ -1,7 +1,8 @@
 from decimal import Decimal
 from functools import lru_cache
+from typing import Literal, Self
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +39,36 @@ class Settings(BaseSettings):
     jira_project_key: str | None = None
     slack_bot_token: SecretStr | None = None
     slack_channel_id: str | None = None
+    auth_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable verification of externally issued JWT access tokens."
+        ),
+    )
+    auth_jwt_algorithm: Literal["RS256"] = Field(
+        default="RS256",
+        description=(
+            "Asymmetric JWT signature algorithm accepted by AgentFlow."
+        ),
+    )
+    auth_jwt_issuer: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2_000,
+        description="Trusted identity-provider JWT issuer.",
+    )
+    auth_jwt_audience: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description="Expected AgentFlow API audience claim.",
+    )
+    auth_jwt_public_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "PEM public key used only to verify identity-provider JWTs."
+        ),
+    )
     anthropic_enabled: bool = Field(
         default=False,
         description="Enable Claude-based structured release-risk synthesis.",
@@ -165,6 +196,55 @@ class Settings(BaseSettings):
         le=1.0,
         description="Trace sampling ratio between 0.0 and 1.0.",
     )
+
+    @model_validator(mode="after")
+    def validate_authentication_configuration(self) -> Self:
+        """Enforce fail-closed authentication configuration.
+
+        Local and test environments may explicitly run without authentication
+        for developer productivity. Every deployed environment must enable
+        authentication, and enabled authentication must include all values
+        needed for deterministic JWT verification.
+        """
+        environment = self.environment.strip().lower()
+        local_environments = {
+            "local",
+            "test",
+            "testing",
+            "development",
+            "dev",
+        }
+
+        if not self.auth_enabled:
+            if environment not in local_environments:
+                raise ValueError(
+                    "Authentication must be enabled outside local and test "
+                    "environments."
+                )
+            return self
+
+        missing_fields: list[str] = []
+
+        if not self.auth_jwt_issuer or not self.auth_jwt_issuer.strip():
+            missing_fields.append("AUTH_JWT_ISSUER")
+
+        if not self.auth_jwt_audience or not self.auth_jwt_audience.strip():
+            missing_fields.append("AUTH_JWT_AUDIENCE")
+
+        if (
+            self.auth_jwt_public_key is None
+            or not self.auth_jwt_public_key.get_secret_value().strip()
+        ):
+            missing_fields.append("AUTH_JWT_PUBLIC_KEY")
+
+        if missing_fields:
+            missing_names = ", ".join(missing_fields)
+            raise ValueError(
+                "Enabled authentication requires: "
+                f"{missing_names}."
+            )
+
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",

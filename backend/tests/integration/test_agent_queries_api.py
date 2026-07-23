@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app.api.dependencies.security import get_current_principal
 from app.api.routes.agent_queries import (
     get_agent_dynamic_synthesis_client,
     get_agent_execution_planner_client,
@@ -23,6 +24,7 @@ from app.api.routes.agent_queries import (
     get_agent_slack_alert_sender,
 )
 from app.core.config import get_settings
+from app.core.security import AuthenticatedPrincipal
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.integrations.anthropic_dynamic_synthesis_client import (
@@ -368,6 +370,22 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
         async with session_factory() as session:
             yield session
 
+    async def override_get_current_principal() -> AuthenticatedPrincipal:
+        """Return a trusted release manager for protected API tests."""
+        return AuthenticatedPrincipal(
+            subject="director-123",
+            email="director@example.com",
+            roles=frozenset({"release_manager"}),
+            scopes=frozenset(
+                {
+                    "agent:query",
+                    "release:read",
+                    "release:approve",
+                    "release:notify",
+                }
+            ),
+        )
+
     async def override_get_execution_planner(
     ) -> FakeAgentExecutionPlannerClient:
         """Return the deterministic dynamic execution planner."""
@@ -403,6 +421,9 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
     FakeAgentSlackAlertSender.call_count = 0
     FakeAgentSlackAlertSender.sent_payloads = []
 
+    app.dependency_overrides[
+        get_current_principal
+    ] = override_get_current_principal
     app.dependency_overrides[
         get_agent_execution_planner_client
     ] = override_get_execution_planner
@@ -955,7 +976,6 @@ async def test_approval_status_question_uses_latest_durable_decision(
         ),
         json={
             "approval_status": "approved",
-            "decided_by": "director@example.com",
             "decision_note": "Approved after reviewing the rollback plan.",
         },
     )
@@ -1312,7 +1332,6 @@ async def test_slack_action_sends_approved_persisted_release(
         ),
         json={
             "approval_status": "approved",
-            "decided_by": "director@example.com",
             "decision_note": "Approved after reviewing rollback plan.",
         },
     )
@@ -1395,7 +1414,6 @@ async def test_slack_action_blocks_duplicate_delivery(
         ),
         json={
             "approval_status": "approved",
-            "decided_by": "director@example.com",
             "decision_note": "Approved after reviewing rollback plan.",
         },
     )
@@ -1719,8 +1737,10 @@ async def test_dynamic_query_hides_invalid_synthesis_output(
 
     assert len(failure_records) == 1
     failure_record = failure_records[0]
-    assert failure_record.intent == "knowledge_doc_question"
-    assert failure_record.error_type == (
+    assert getattr(failure_record, "intent", None) == (
+        "knowledge_doc_question"
+    )
+    assert getattr(failure_record, "error_type", None) == (
         "AgentDynamicSynthesisCitationVerificationError"
     )
     assert (

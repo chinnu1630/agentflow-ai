@@ -10,6 +10,7 @@ FastAPI route -> ReleaseRunService -> LangGraph workflow -> GitHub/Jira collecto
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Annotated
 from uuid import UUID
 
 import httpx
@@ -18,7 +19,9 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies.security import require_scopes
 from app.core.config import get_settings
+from app.core.security import AuthenticatedPrincipal
 from app.db.session import get_db_session
 from app.integrations.anthropic_client import (
     AnthropicClientConfig,
@@ -103,6 +106,11 @@ from app.services.slack_release_alert_service import (
 )
 
 router = APIRouter(prefix="/release-runs", tags=["release-runs"])
+
+ReleaseApprovalPrincipalDependency = Annotated[
+    AuthenticatedPrincipal,
+    Depends(require_scopes("release:approve")),
+]
 
 
 async def get_risk_collector(request: Request) -> AsyncIterator[RiskCollector]:
@@ -511,6 +519,7 @@ async def decide_release_run_approval(
     approval_id: UUID,
     decision_request: ReleaseRunApprovalDecisionRequest,
     request: Request,
+    principal: ReleaseApprovalPrincipalDependency,
     session: AsyncSession = Depends(get_db_session),
 ) -> ReleaseRunApprovalResponse:
     """Approve or reject a pending HITL release approval request."""
@@ -551,7 +560,7 @@ async def decide_release_run_approval(
             DecideReleaseRunApprovalCommand(
                 approval_id=approval_id,
                 approval_status=ReleaseRunApprovalStatus(decision_request.approval_status.value),
-                decided_by=decision_request.decided_by,
+                decided_by=principal.audit_identity,
                 decision_note=decision_request.decision_note,
             )
         )

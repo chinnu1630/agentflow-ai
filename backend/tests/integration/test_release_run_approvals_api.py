@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.api.dependencies.security import get_current_principal
+from app.core.security import AuthenticatedPrincipal
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
@@ -48,7 +50,19 @@ async def release_run_approvals_api_client() -> AsyncIterator[AsyncClient]:
             finally:
                 await session.close()
 
+    async def override_get_current_principal() -> AuthenticatedPrincipal:
+        """Return a trusted release manager for protected API tests."""
+        return AuthenticatedPrincipal(
+            subject="director-123",
+            email="director@example.com",
+            roles=frozenset({"release_manager"}),
+            scopes=frozenset({"release:read", "release:approve"}),
+        )
+
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[
+        get_current_principal
+    ] = override_get_current_principal
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
@@ -88,7 +102,7 @@ async def _create_pending_approval(release_run_id: str) -> str:
         )
         approval = await repository.create_pending(
             CreateReleaseRunApprovalCommand(
-                release_run_id=release_run_id,
+                release_run_id=UUID(release_run_id),
                 approval_reason="High release risk requires manager approval.",
                 approval_policy_version="hitl_policy_v1",
                 requested_by="manager@example.com",
@@ -150,7 +164,6 @@ async def test_decide_release_run_approval_api_approves_pending_request(
         f"/api/v1/release-runs/{release_run_id}/approvals/{approval_id}/decision",
         json={
             "approval_status": "approved",
-            "decided_by": "director@example.com",
             "decision_note": "Approved after reviewing rollback plan.",
         },
     )
@@ -181,6 +194,31 @@ async def test_decide_release_run_approval_api_approves_pending_request(
 
 
 @pytest.mark.anyio
+async def test_decide_release_run_approval_api_rejects_spoofed_actor(
+    release_run_approvals_api_client: AsyncClient,
+) -> None:
+    """Approval identity must come only from the authenticated principal."""
+    release_run_id = await _create_release_run(
+        release_run_approvals_api_client
+    )
+    approval_id = await _create_pending_approval(release_run_id)
+
+    response = await release_run_approvals_api_client.post(
+        (
+            f"/api/v1/release-runs/{release_run_id}"
+            f"/approvals/{approval_id}/decision"
+        ),
+        json={
+            "approval_status": "approved",
+            "decided_by": "attacker@example.com",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.anyio
 async def test_decide_release_run_approval_api_rejects_pending_status(
     release_run_approvals_api_client: AsyncClient,
 ) -> None:
@@ -192,7 +230,6 @@ async def test_decide_release_run_approval_api_rejects_pending_status(
         f"/api/v1/release-runs/{release_run_id}/approvals/{approval_id}/decision",
         json={
             "approval_status": "pending",
-            "decided_by": "director@example.com",
         },
     )
 
@@ -211,7 +248,6 @@ async def test_decide_release_run_approval_api_rejects_double_decision(
         f"/api/v1/release-runs/{release_run_id}/approvals/{approval_id}/decision",
         json={
             "approval_status": "approved",
-            "decided_by": "director@example.com",
         },
     )
 
@@ -221,7 +257,6 @@ async def test_decide_release_run_approval_api_rejects_double_decision(
         f"/api/v1/release-runs/{release_run_id}/approvals/{approval_id}/decision",
         json={
             "approval_status": "rejected",
-            "decided_by": "director@example.com",
         },
     )
 
@@ -244,7 +279,6 @@ async def test_decide_release_run_approval_api_returns_404_for_wrong_release_run
         f"/api/v1/release-runs/{release_run_id}/approvals/{approval_id}/decision",
         json={
             "approval_status": "approved",
-            "decided_by": "director@example.com",
         },
     )
 
@@ -274,7 +308,6 @@ async def test_list_pending_release_run_approvals_api_returns_only_pending(
         ),
         json={
             "approval_status": "approved",
-            "decided_by": "director@example.com",
         },
     )
 

@@ -12,12 +12,14 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.api.dependencies.security import get_current_principal
 from app.api.routes.release_runs import (
     get_jira_risk_collector,
     get_risk_collector,
     get_risk_synthesis_service,
     get_slack_alert_sender,
 )
+from app.core.security import AuthenticatedPrincipal
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.integrations.anthropic_client import ClaudeSynthesisResult
@@ -33,7 +35,7 @@ from app.schemas.llm_risk_synthesis import (
     SynthesisEvidenceSource,
     SynthesizedReleaseRisk,
 )
-from app.schemas.risk import (
+from app.schemas.risk_enums import (
     RiskSeverityResponse,
     RiskSummaryActionResponse,
 )
@@ -412,7 +414,26 @@ async def release_run_api_client() -> AsyncIterator[AsyncClient]:
             finally:
                 await session.close()
 
+    async def override_get_current_principal() -> AuthenticatedPrincipal:
+        """Return a trusted release manager for protected API tests."""
+        return AuthenticatedPrincipal(
+            subject="director-123",
+            email="director@example.com",
+            roles=frozenset({"release_manager"}),
+            scopes=frozenset(
+                {
+                    "release:read",
+                    "release:write",
+                    "release:approve",
+                    "release:notify",
+                }
+            ),
+        )
+
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[
+        get_current_principal
+    ] = override_get_current_principal
     app.dependency_overrides[
         get_engineering_document_embedding_provider
     ] = FakeReleaseRunEmbeddingProvider
@@ -1377,7 +1398,6 @@ async def test_send_release_run_slack_alert_api_sends_after_approval(
         ),
         json={
             "approval_status": "approved",
-            "decided_by": "director@example.com",
             "decision_note": "Approved after reviewing rollback plan.",
         },
     )
@@ -1461,7 +1481,6 @@ async def test_send_release_run_slack_alert_api_blocks_duplicate_send(
         ),
         json={
             "approval_status": "approved",
-            "decided_by": "director@example.com",
             "decision_note": "Approved after reviewing rollback plan.",
         },
     )

@@ -43,8 +43,12 @@ class ReleaseRunApprovalListResponse(BaseModel):
 class ReleaseRunApprovalDecisionRequest(BaseModel):
     """API request model for approving or rejecting a release approval."""
 
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
     approval_status: ReleaseRunApprovalDecisionStatus
-    decided_by: str = Field(min_length=1, max_length=255)
     decision_note: str | None = Field(default=None, max_length=1_000)
 
 

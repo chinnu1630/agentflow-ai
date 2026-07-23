@@ -1,2 +1,19 @@
 agentflow_alembic.db
 *.db
+
+# Environment files and local secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environments and generated artifacts
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/

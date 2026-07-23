@@ -193,3 +193,81 @@ def test_settings_reject_invalid_anthropic_limits(
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+def test_settings_use_safe_default_authentication_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local development should keep authentication explicitly disabled."""
+    monkeypatch.delenv("AUTH_ENABLED", raising=False)
+    monkeypatch.delenv("AUTH_JWT_ISSUER", raising=False)
+    monkeypatch.delenv("AUTH_JWT_AUDIENCE", raising=False)
+    monkeypatch.delenv("AUTH_JWT_PUBLIC_KEY", raising=False)
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.auth_enabled is False
+    assert settings.auth_jwt_algorithm == "RS256"
+    assert settings.auth_jwt_issuer is None
+    assert settings.auth_jwt_audience is None
+    assert settings.auth_jwt_public_key is None
+
+
+def test_settings_allow_complete_authentication_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Authentication settings should load from environment variables."""
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_JWT_ISSUER", "https://identity.example.com/")
+    monkeypatch.setenv("AUTH_JWT_AUDIENCE", "agentflow-api")
+    monkeypatch.setenv(
+        "AUTH_JWT_PUBLIC_KEY",
+        "-----BEGIN PUBLIC KEY-----\ntest-key\n-----END PUBLIC KEY-----",
+    )
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.auth_enabled is True
+    assert settings.auth_jwt_algorithm == "RS256"
+    assert settings.auth_jwt_issuer == "https://identity.example.com/"
+    assert settings.auth_jwt_audience == "agentflow-api"
+    assert settings.auth_jwt_public_key is not None
+    assert "test-key" in settings.auth_jwt_public_key.get_secret_value()
+
+
+@pytest.mark.parametrize(
+    "missing_environment_variable",
+    [
+        "AUTH_JWT_ISSUER",
+        "AUTH_JWT_AUDIENCE",
+        "AUTH_JWT_PUBLIC_KEY",
+    ],
+)
+def test_settings_reject_incomplete_enabled_authentication(
+    monkeypatch: pytest.MonkeyPatch,
+    missing_environment_variable: str,
+) -> None:
+    """Enabled authentication must include every JWT verification setting."""
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_JWT_ISSUER", "https://identity.example.com/")
+    monkeypatch.setenv("AUTH_JWT_AUDIENCE", "agentflow-api")
+    monkeypatch.setenv(
+        "AUTH_JWT_PUBLIC_KEY",
+        "-----BEGIN PUBLIC KEY-----\ntest-key\n-----END PUBLIC KEY-----",
+    )
+    monkeypatch.delenv(missing_environment_variable, raising=False)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("environment", ["staging", "production", "prod"])
+def test_settings_reject_disabled_authentication_outside_local_environments(
+    monkeypatch: pytest.MonkeyPatch,
+    environment: str,
+) -> None:
+    """Deployed environments must fail closed when authentication is disabled."""
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    monkeypatch.setenv("AUTH_ENABLED", "false")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
