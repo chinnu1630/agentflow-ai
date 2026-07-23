@@ -8,6 +8,9 @@ from app.schemas.agent_execution_result import (
     AgentExecutionStatus,
 )
 from app.schemas.agent_tool import AgentToolExecutionStatus
+from app.services.agent_dynamic_synthesis_evidence_index import (
+    AgentDynamicSynthesisEvidenceIndex,
+)
 
 
 class AgentDynamicSynthesisCitationVerificationError(ValueError):
@@ -16,6 +19,16 @@ class AgentDynamicSynthesisCitationVerificationError(ValueError):
 
 class AgentDynamicSynthesisCitationVerifier:
     """Validate synthesized answers against executed AgentFlow evidence."""
+
+    def __init__(
+        self,
+        *,
+        evidence_index: AgentDynamicSynthesisEvidenceIndex | None = None,
+    ) -> None:
+        """Initialize the verifier with the trusted evidence index."""
+        self._evidence_index = (
+            evidence_index or AgentDynamicSynthesisEvidenceIndex()
+        )
 
     def verify(
         self,
@@ -26,15 +39,12 @@ class AgentDynamicSynthesisCitationVerifier:
         """Return the answer only when every grounding rule is satisfied.
 
         Complexity:
-            Time: O(e + c + t), where e is evidence, c is citations, and
-            t is executed tool results.
-            Space: O(e + t) for trusted citations and degraded step IDs.
+            Time: O(e + c + t + j), where e is evidence, c is citations,
+            t is tool results, and j is traversed bounded JSON output.
+            Space: O(e + t + j) for trusted evidence and degraded step IDs.
         """
-        trusted_citations = {
-            (evidence.source_type, evidence.source_id)
-            for result in execution_result.tool_results
-            for evidence in result.evidence
-        }
+        trusted_evidence = self._evidence_index.build(execution_result)
+        trusted_citations = set(trusted_evidence)
 
         if trusted_citations and not answer.citations:
             raise AgentDynamicSynthesisCitationVerificationError(
