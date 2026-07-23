@@ -6,12 +6,16 @@ on:
       - main
     paths:
       - "backend/**"
+      - "docker-compose.yml"
+      - ".env.example"
       - ".github/workflows/backend-ci.yml"
   pull_request:
     branches:
       - main
     paths:
       - "backend/**"
+      - "docker-compose.yml"
+      - ".env.example"
       - ".github/workflows/backend-ci.yml"
 
 permissions:
@@ -57,28 +61,28 @@ jobs:
         run: pytest -q
 
   container-smoke-test:
-    name: Build and smoke-test container
+    name: PostgreSQL pgvector integration test
     needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
+    env:
+      POSTGRES_USER: agentflow
+      POSTGRES_PASSWORD: agentflow-ci-password
+      POSTGRES_DB: agentflow
+      POSTGRES_PORT: "5433"
+      BACKEND_PORT: "8000"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Build production image
-        run: docker build --tag agentflow-ai-backend:ci backend
+      - name: Start production stack
+        run: docker compose up --build --detach
 
-      - name: Run container
+      - name: Verify backend health
         run: |
-          docker run --detach \
-            --name agentflow-backend-ci \
-            --publish 8000:8000 \
-            agentflow-ai-backend:ci
-
-      - name: Verify health endpoint
-        run: |
-          for attempt in {1..20}; do
+          for attempt in {1..30}; do
             if curl --fail --silent \
               http://127.0.0.1:8000/api/v1/health; then
               exit 0
@@ -86,9 +90,21 @@ jobs:
             sleep 2
           done
 
-          docker logs agentflow-backend-ci
+          docker compose logs
           exit 1
 
-      - name: Stop container
+      - name: Verify migrations and pgvector
+        run: |
+          docker compose exec -T postgres \
+            psql -U agentflow -d agentflow -tAc \
+            "SELECT version_num FROM alembic_version;" \
+            | grep -Fx "808eea38fb4f"
+
+          docker compose exec -T postgres \
+            psql -U agentflow -d agentflow -tAc \
+            "SELECT extname FROM pg_extension WHERE extname = 'vector';" \
+            | grep -Fx "vector"
+
+      - name: Stop production stack
         if: always()
-        run: docker rm --force agentflow-backend-ci || true
+        run: docker compose down --volumes --remove-orphans
