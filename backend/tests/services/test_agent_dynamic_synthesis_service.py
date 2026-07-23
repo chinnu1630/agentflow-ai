@@ -82,7 +82,20 @@ def _build_execution_result() -> AgentExecutionResult:
                 step_id="search_docs",
                 tool_name=AgentToolName.SEARCH_ENGINEERING_KNOWLEDGE,
                 status=AgentToolExecutionStatus.SUCCESS,
-                output={"result_count": 1},
+                output={
+                    "result_count": 1,
+                    "results": [
+                        {
+                            "chunk_id": "chunk-123",
+                            "title": "Payment Service Runbook",
+                            "content": (
+                                "The payment service runbook defines rollback "
+                                "steps and a documented payment rollback "
+                                "procedure."
+                            ),
+                        }
+                    ],
+                },
                 evidence=[
                     AgentToolEvidence(
                         source_type="engineering_document_chunk",
@@ -143,6 +156,40 @@ async def test_synthesizes_and_verifies_dynamic_answer() -> None:
     assert result.answer is answer
     assert result.message_id == "msg-synthesis-123"
     assert result.input_tokens == 300
+
+
+@pytest.mark.anyio
+async def test_escalates_lexically_unsupported_answer_to_human_review() -> None:
+    """Weak lexical grounding should be non-fatal but require review."""
+    answer = AgentDynamicAnswer(
+        answer="Deploy the unrelated analytics database immediately.",
+        confidence=0.9,
+        citations=[
+            AgentDynamicAnswerCitation(
+                source_type="engineering_document_chunk",
+                source_id="chunk-123",
+                title="Payment Service Runbook",
+                supporting_fact="The runbook defines rollback steps.",
+            )
+        ],
+        requires_human_review=False,
+    )
+    service = AgentDynamicSynthesisService(
+        client=FakeDynamicSynthesisClient(answer),
+        request_id="request-groundedness-review",
+    )
+
+    result = await service.synthesize(
+        request=AgentQueryRequest(
+            query="How do I rollback the payment service?"
+        ),
+        query_plan=_build_query_plan(),
+        execution_result=_build_execution_result(),
+    )
+
+    assert result.answer.requires_human_review is True
+    assert result.answer.answer == answer.answer
+    assert result.answer.citations == answer.citations
 
 
 @pytest.mark.anyio
@@ -323,6 +370,10 @@ async def test_synthesis_span_records_safe_usage_metadata(
         "output_token_count": 120,
         "citation_count": 1,
         "requires_human_review": False,
+        "groundedness_passed": True,
+        "citation_validity_rate": 1.0,
+        "citation_groundedness_rate": 1.0,
+        "answer_overlap_score": 0.8,
     }
     assert "query" not in span.attributes
     assert "answer" not in span.attributes

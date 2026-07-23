@@ -20,6 +20,9 @@ from app.services.agent_dynamic_synthesis_citation_verifier import (
     AgentDynamicSynthesisCitationVerificationError,
     AgentDynamicSynthesisCitationVerifier,
 )
+from app.services.agent_dynamic_synthesis_groundedness_evaluation_service import (
+    AgentDynamicSynthesisGroundednessEvaluationService,
+)
 from app.services.agent_dynamic_synthesis_prompt import (
     AgentDynamicSynthesisPromptBuilder,
 )
@@ -52,6 +55,9 @@ class AgentDynamicSynthesisService:
         request_id: str,
         prompt_builder: AgentDynamicSynthesisPromptBuilder | None = None,
         citation_verifier: AgentDynamicSynthesisCitationVerifier | None = None,
+        groundedness_evaluator: (
+            AgentDynamicSynthesisGroundednessEvaluationService | None
+        ) = None,
     ) -> None:
         """Initialize the dynamic synthesis service."""
         self._client = client
@@ -61,6 +67,10 @@ class AgentDynamicSynthesisService:
         )
         self._citation_verifier = (
             citation_verifier or AgentDynamicSynthesisCitationVerifier()
+        )
+        self._groundedness_evaluator = (
+            groundedness_evaluator
+            or AgentDynamicSynthesisGroundednessEvaluationService()
         )
 
     async def synthesize(
@@ -126,18 +136,62 @@ class AgentDynamicSynthesisService:
                 )
                 raise
 
+            groundedness_report = self._groundedness_evaluator.evaluate(
+                answer=verified_answer,
+                execution_result=execution_result,
+                run_id=self._request_id,
+            )
+
+            guarded_answer = verified_answer
+            if (
+                not groundedness_report.passed
+                and not verified_answer.requires_human_review
+            ):
+                guarded_answer = verified_answer.model_copy(
+                    update={"requires_human_review": True}
+                )
+
+                logger.warning(
+                    "agent_dynamic_synthesis_groundedness_review_required",
+                    run_id=self._request_id,
+                    intent=query_plan.intent.value,
+                    execution_id=str(execution_result.execution_id),
+                    citation_validity_rate=(
+                        groundedness_report.citation_validity_rate
+                    ),
+                    citation_groundedness_rate=(
+                        groundedness_report.citation_groundedness_rate
+                    ),
+                    answer_overlap_score=(
+                        groundedness_report.answer_overlap_score
+                    ),
+                    failure_count=len(
+                        groundedness_report.failure_details
+                    ),
+                )
+
             set_safe_span_attributes(
                 span,
                 {
-                    "citation_count": len(verified_answer.citations),
+                    "citation_count": len(guarded_answer.citations),
                     "requires_human_review": (
-                        verified_answer.requires_human_review
+                        guarded_answer.requires_human_review
+                    ),
+                    "groundedness_passed": groundedness_report.passed,
+                    "citation_validity_rate": (
+                        groundedness_report.citation_validity_rate
+                    ),
+                    "citation_groundedness_rate": (
+                        groundedness_report.citation_groundedness_rate
+                    ),
+                    "answer_overlap_score": (
+                        groundedness_report.answer_overlap_score
                     ),
                 },
             )
 
             verified_result = result.model_copy(
-                update={"answer": verified_answer}
+                update={"answer": guarded_answer}
             )
 
         logger.info(
@@ -150,8 +204,18 @@ class AgentDynamicSynthesisService:
             model=verified_result.model,
             input_tokens=verified_result.input_tokens,
             output_tokens=verified_result.output_tokens,
-            citation_count=len(verified_answer.citations),
-            requires_human_review=verified_answer.requires_human_review,
+            citation_count=len(verified_result.answer.citations),
+            requires_human_review=(
+                verified_result.answer.requires_human_review
+            ),
+            groundedness_passed=groundedness_report.passed,
+            citation_validity_rate=(
+                groundedness_report.citation_validity_rate
+            ),
+            citation_groundedness_rate=(
+                groundedness_report.citation_groundedness_rate
+            ),
+            answer_overlap_score=groundedness_report.answer_overlap_score,
         )
 
         return verified_result
