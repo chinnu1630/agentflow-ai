@@ -14,7 +14,5 @@ __pycache__
 tests
 docs
 scripts
-alembic
-alembic.ini
 agentflow_ai_backend.egg-info
 .DS_Store

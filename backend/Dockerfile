@@ -31,6 +31,8 @@ RUN groupadd --system agentflow && \
 
 COPY --from=builder /opt/venv /opt/venv
 COPY app ./app
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
 
 RUN chown -R agentflow:agentflow /app
 
