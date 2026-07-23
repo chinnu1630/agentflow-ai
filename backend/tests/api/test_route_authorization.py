@@ -216,3 +216,34 @@ def test_business_endpoints_reject_insufficient_scope(
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "AUTHORIZATION_FAILED"
+
+
+def test_agent_slack_action_requires_release_notify_scope() -> None:
+    """Query permission alone must not authorize a Slack side effect."""
+
+    async def override_get_current_principal() -> AuthenticatedPrincipal:
+        """Return a caller allowed to query but not send notifications."""
+        return AuthenticatedPrincipal(
+            subject="analyst-123",
+            email="analyst@example.com",
+            roles=frozenset({"release_analyst"}),
+            scopes=frozenset({"agent:query"}),
+        )
+
+    app.dependency_overrides[
+        get_current_principal
+    ] = override_get_current_principal
+
+    try:
+        response = TestClient(app).post(
+            "/api/v1/agent/query",
+            json={
+                "query": "Can you send this to Slack?",
+                "release_run_id": str(uuid4()),
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_current_principal, None)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "AUTHORIZATION_FAILED"

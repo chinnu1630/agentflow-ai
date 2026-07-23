@@ -315,6 +315,26 @@ ExecutableAgentQueryPlanDependency = Annotated[
     Depends(get_executable_agent_query_plan),
 ]
 
+_release_notify_authorizer = require_scopes("release:notify")
+
+
+async def authorize_agent_query_execution(
+    request: Request,
+    principal: AgentQueryPrincipalDependency,
+    plan: ExecutableAgentQueryPlanDependency,
+) -> AuthenticatedPrincipal:
+    """Require notification permission only for side-effecting agent actions."""
+    if plan.intent is AgentIntent.ACTION_REQUEST:
+        return await _release_notify_authorizer(request, principal)
+
+    return principal
+
+
+AgentExecutionPrincipalDependency = Annotated[
+    AuthenticatedPrincipal,
+    Depends(authorize_agent_query_execution),
+]
+
 
 async def get_agent_github_risk_collector(
     request: Request,
@@ -400,6 +420,7 @@ AgentJiraRiskCollectorDependency = Annotated[
 async def get_agent_slack_alert_sender(
     request: Request,
     plan: ExecutableAgentQueryPlanDependency,
+    _principal: AgentExecutionPrincipalDependency,
 ) -> AsyncIterator[SlackClient | None]:
     """Create a Slack sender only for approved action requests."""
 
