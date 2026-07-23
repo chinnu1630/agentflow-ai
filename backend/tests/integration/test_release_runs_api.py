@@ -213,19 +213,20 @@ class FakeRiskSynthesisService:
             risks=[
                 SynthesizedReleaseRisk(
                     rank=1,
-                    title="Payment deployment risk",
+                    title="Payment API has failing CI",
                     severity=RiskSeverityResponse.HIGH,
                     confidence=0.94,
                     explanation=(
-                        "Deterministic evidence indicates elevated release risk."
+                        "The Payment API has failing CI on a "
+                        "release-critical service."
                     ),
                     evidence=[
                         SynthesisEvidenceCitation(
                             source=SynthesisEvidenceSource.GITHUB_PULL_REQUEST,
                             source_id="1",
-                            title="CI failure rule",
+                            title="Payment API has failing CI",
                             supporting_fact=(
-                                "A deterministic release-risk rule was triggered."
+                                "CI failed on a release-critical service."
                             ),
                         )
                     ],

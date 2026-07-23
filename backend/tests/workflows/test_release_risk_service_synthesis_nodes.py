@@ -100,6 +100,61 @@ class FakeRiskSynthesisService:
         )
 
 
+class UnsupportedGroundednessSynthesisService:
+    """Return valid citations with claims unsupported by trusted evidence."""
+
+    async def synthesize_release_risk(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        prompt_version: str,
+    ) -> ClaudeSynthesisResult:
+        """Return structurally valid but lexically unsupported synthesis."""
+        report = ClaudeReleaseRiskReport(
+            recommendation=RiskSummaryActionResponse.REVIEW_REQUIRED,
+            confidence=0.9,
+            executive_summary="The release requires human review.",
+            risks=[
+                SynthesizedReleaseRisk(
+                    rank=1,
+                    title="Unrelated analytics deployment",
+                    severity=RiskSeverityResponse.HIGH,
+                    confidence=0.9,
+                    explanation=(
+                        "The analytics database must be replaced immediately."
+                    ),
+                    evidence=[
+                        SynthesisEvidenceCitation(
+                            source=(
+                                SynthesisEvidenceSource.GITHUB_PULL_REQUEST
+                            ),
+                            source_id="1",
+                            title="Payment API has failing CI",
+                            source_url="https://github.example/pr/1",
+                            supporting_fact=(
+                                "The analytics database has corrupted backups."
+                            ),
+                        )
+                    ],
+                    mitigations=["Replace the analytics database."],
+                )
+            ],
+            requires_human_review=True,
+        )
+
+        return ClaudeSynthesisResult(
+            report=report,
+            message_id="msg-unsupported-groundedness",
+            model="test-claude-model",
+            input_tokens=410,
+            output_tokens=190,
+            stop_reason="end_turn",
+            duration_ms=510.0,
+            prompt_version=prompt_version,
+        )
+
+
 class HallucinatedCitationSynthesisService:
     """Return structured output containing an invented evidence citation."""
 
@@ -227,6 +282,29 @@ async def test_synthesis_node_stores_structured_report_and_usage() -> None:
         synthesis_service.prompt_version
         == "release-risk-synthesis-v1"
     )
+
+
+@pytest.mark.anyio
+async def test_synthesis_node_rejects_unsupported_groundedness() -> None:
+    """Unsupported claims should trigger safe deterministic fallback."""
+    node = create_synthesize_release_risk_node(
+        UnsupportedGroundednessSynthesisService()
+    )
+    initial_state = build_scored_workflow_state()
+
+    result = await node(initial_state)
+    final_state = ReleaseRiskState.model_validate(result)
+
+    assert final_state.status is ReleaseRiskWorkflowStatus.PARTIAL
+    assert final_state.synthesis_status is RiskSynthesisStatus.FAILED
+    assert final_state.synthesis_report is None
+    assert final_state.synthesis_error == "Claude risk synthesis failed."
+    assert final_state.risk_score == initial_state.risk_score
+    assert final_state.errors[-1].source == "release_risk_synthesis"
+    assert final_state.errors[-1].recoverable is True
+    assert final_state.errors[-1].details == {
+        "error_type": "ReleaseRiskSynthesisGroundednessError"
+    }
 
 
 @pytest.mark.anyio

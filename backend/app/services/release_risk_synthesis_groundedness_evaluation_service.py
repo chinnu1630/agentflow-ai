@@ -21,6 +21,11 @@ from app.services.release_risk_synthesis_evidence_index import (
 
 logger = get_logger(__name__)
 
+
+class ReleaseRiskSynthesisGroundednessError(RuntimeError):
+    """Raised when a release-risk synthesis fails runtime groundedness checks."""
+
+
 GroundednessFailureReason = Literal[
     "unverified_citation",
     "unsupported_supporting_fact",

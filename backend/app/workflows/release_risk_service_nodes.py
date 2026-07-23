@@ -39,6 +39,10 @@ from app.services.release_risk_response_mapper import (
 from app.services.release_risk_synthesis_citation_verifier import (
     ReleaseRiskSynthesisCitationVerifier,
 )
+from app.services.release_risk_synthesis_groundedness_evaluation_service import (
+    ReleaseRiskSynthesisGroundednessError,
+    ReleaseRiskSynthesisGroundednessEvaluationService,
+)
 from app.services.release_risk_synthesis_prompt import (
     ReleaseRiskSynthesisPromptBuilder,
 )
@@ -465,6 +469,9 @@ def create_synthesize_release_risk_node(
     synthesis_service: RiskSynthesisService,
     prompt_builder: ReleaseRiskSynthesisPromptBuilder | None = None,
     citation_verifier: ReleaseRiskSynthesisCitationVerifier | None = None,
+    groundedness_evaluator: (
+        ReleaseRiskSynthesisGroundednessEvaluationService | None
+    ) = None,
 ) -> AsyncWorkflowNode:
     """Create an async LangGraph node for Claude risk synthesis.
 
@@ -474,6 +481,10 @@ def create_synthesize_release_risk_node(
 
     builder = prompt_builder or ReleaseRiskSynthesisPromptBuilder()
     verifier = citation_verifier or ReleaseRiskSynthesisCitationVerifier()
+    evaluator = (
+        groundedness_evaluator
+        or ReleaseRiskSynthesisGroundednessEvaluationService()
+    )
 
     async def synthesize_release_risk_node(
         state: WorkflowStateInput,
@@ -510,6 +521,50 @@ def create_synthesize_release_risk_node(
                     report=result.report,
                     release_risk=release_risk,
                 )
+                groundedness_report = evaluator.evaluate(
+                    report=verified_report,
+                    release_risk=release_risk,
+                    run_id=running_state.run_id,
+                )
+
+                span.set_attribute(
+                    "llm.groundedness_passed",
+                    groundedness_report.passed,
+                )
+                span.set_attribute(
+                    "llm.citation_validity_rate",
+                    groundedness_report.citation_validity_rate,
+                )
+                span.set_attribute(
+                    "llm.citation_groundedness_rate",
+                    groundedness_report.citation_groundedness_rate,
+                )
+                span.set_attribute(
+                    "llm.risk_groundedness_rate",
+                    groundedness_report.risk_groundedness_rate,
+                )
+
+                if not groundedness_report.passed:
+                    logger.warning(
+                        "release_risk_synthesis_groundedness_rejected",
+                        run_id=running_state.run_id,
+                        release_run_id=str(running_state.release_run_id),
+                        citation_validity_rate=(
+                            groundedness_report.citation_validity_rate
+                        ),
+                        citation_groundedness_rate=(
+                            groundedness_report.citation_groundedness_rate
+                        ),
+                        risk_groundedness_rate=(
+                            groundedness_report.risk_groundedness_rate
+                        ),
+                        failure_count=len(
+                            groundedness_report.failure_details
+                        ),
+                    )
+                    raise ReleaseRiskSynthesisGroundednessError(
+                        "Release-risk synthesis failed groundedness checks."
+                    )
 
                 span.set_attribute("llm.model", result.model)
                 span.set_attribute("llm.input_tokens", result.input_tokens)
@@ -547,7 +602,12 @@ def create_synthesize_release_risk_node(
 
             return updated_state.model_dump(mode="python")
 
-        except (AnthropicClientError, TypeError, ValueError) as exc:
+        except (
+            AnthropicClientError,
+            ReleaseRiskSynthesisGroundednessError,
+            TypeError,
+            ValueError,
+        ) as exc:
             logger.warning(
                 "release_risk_synthesis_node_failed",
                 run_id=running_state.run_id,
