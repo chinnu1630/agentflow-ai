@@ -91,7 +91,7 @@ async def test_knowledge_retrieval_quality_gate_passes_for_bm25_baseline(
 
     failure_summary = _format_safe_failure_summary(report)
 
-    assert report.total_cases == 3
+    assert report.total_cases == 6
     assert report.top_1_accuracy >= MIN_TOP_1_ACCURACY, failure_summary
     assert report.top_k_accuracy >= MIN_TOP_K_ACCURACY, failure_summary
     assert report.failed_cases == 0, failure_summary
@@ -167,12 +167,22 @@ async def test_knowledge_retrieval_quality_gate_passes_for_hybrid_pipeline(
         "Redis checkout failure": "Payment Redis Incident Runbook",
         "release approval checklist": "Release Readiness Checklist",
         "rollback after payment outage": "Payment Rollback Procedure",
+        "cache saturation retry storm": "Checkout Retry Storm Postmortem",
+        "which service owns idempotency keys": "Payment Service Architecture",
+        "emergency change freeze exception approval": ("Emergency Change Freeze Policy"),
         "Can we ship?": "Production Deployment Policy",
     }
     expected_markers_by_query = {
         "Redis checkout failure": "redis checkout failure",
         "release approval checklist": "jira p1 review",
         "rollback after payment outage": "payment outage rollback procedure",
+        "cache saturation retry storm": "cache saturation caused",
+        "which service owns idempotency keys": (
+            "payment orchestration service owns idempotency keys"
+        ),
+        "emergency change freeze exception approval": (
+            "emergency change freeze exception requires approval"
+        ),
         "Can we ship?": "manager must authorize the release",
     }
 
@@ -237,13 +247,13 @@ async def test_knowledge_retrieval_quality_gate_passes_for_hybrid_pipeline(
     report = await evaluation_service.evaluate(cases, run_id=uuid4())
     failure_summary = _format_safe_failure_summary(report)
 
-    assert report.total_cases == 4
-    assert report.passed_cases == 4, failure_summary
+    assert report.total_cases == 7
+    assert report.passed_cases == 7, failure_summary
     assert report.failed_cases == 0, failure_summary
     assert report.top_1_accuracy == 1.0, failure_summary
     assert report.top_k_accuracy == 1.0, failure_summary
     assert embedding_provider.calls == [[case.query] for case in cases]
-    assert len(reranker.calls) == 4
+    assert len(reranker.calls) == 7
 
 
 def test_quality_gate_failure_summary_excludes_raw_document_content() -> None:

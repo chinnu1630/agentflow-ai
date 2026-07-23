@@ -33,11 +33,17 @@ def test_reusable_eval_fixtures_define_expected_benchmark_cases() -> None:
         "redis_checkout_failure",
         "release_approval_checklist",
         "rollback_after_payment_outage",
+        "checkout_retry_storm_cause",
+        "payment_idempotency_owner",
+        "emergency_freeze_exception",
     ]
     assert [case.expected_document_title for case in cases] == [
         "Payment Redis Incident Runbook",
         "Release Readiness Checklist",
         "Payment Rollback Procedure",
+        "Checkout Retry Storm Postmortem",
+        "Payment Service Architecture",
+        "Emergency Change Freeze Policy",
     ]
 
 
@@ -49,6 +55,9 @@ def test_reusable_eval_documents_match_expected_titles() -> None:
         "Payment Redis Incident Runbook",
         "Release Readiness Checklist",
         "Payment Rollback Procedure",
+        "Checkout Retry Storm Postmortem",
+        "Payment Service Architecture",
+        "Emergency Change Freeze Policy",
     ]
 
 
@@ -70,8 +79,8 @@ async def test_reusable_eval_fixtures_pass_against_real_retrieval_service(
         run_id=uuid4(),
     )
 
-    assert report.total_cases == 3
-    assert report.passed_cases == 3
+    assert report.total_cases == 6
+    assert report.passed_cases == 6
     assert report.failed_cases == 0
     assert report.top_1_accuracy == 1.0
     assert report.top_k_accuracy == 1.0
