@@ -10,6 +10,8 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.api.dependencies.security import get_current_principal
+from app.core.security import AuthenticatedPrincipal
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
@@ -48,7 +50,26 @@ async def release_run_events_api_client() -> AsyncIterator[AsyncClient]:
             finally:
                 await session.close()
 
+    async def override_get_current_principal() -> AuthenticatedPrincipal:
+        """Return a trusted manager for release API tests."""
+        return AuthenticatedPrincipal(
+            subject="manager-123",
+            email="manager@example.com",
+            roles=frozenset({"release_manager"}),
+            scopes=frozenset(
+                {
+                    "release:read",
+                    "release:write",
+                    "release:approve",
+                    "release:notify",
+                }
+            ),
+        )
+
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[
+        get_current_principal
+    ] = override_get_current_principal
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
@@ -74,7 +95,6 @@ async def test_list_release_run_events_api_returns_audit_timeline(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -144,7 +164,6 @@ async def test_list_release_run_events_api_returns_start_event_after_creation(
         "/api/v1/release-runs",
         json={
             "query": "Check release readiness for this week.",
-            "requested_by": "manager@example.com",
         },
     )
 

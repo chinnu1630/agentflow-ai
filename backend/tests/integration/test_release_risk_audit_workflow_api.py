@@ -10,7 +10,9 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.api.dependencies.security import get_current_principal
 from app.api.routes.release_runs import get_jira_risk_collector, get_risk_collector
+from app.core.security import AuthenticatedPrincipal
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
@@ -135,7 +137,26 @@ async def audit_workflow_api_client() -> AsyncIterator[AsyncClient]:
 
         return FakeJiraRiskCollector()
 
+    async def override_get_current_principal() -> AuthenticatedPrincipal:
+        """Return a trusted manager for release API tests."""
+        return AuthenticatedPrincipal(
+            subject="manager-123",
+            email="manager@example.com",
+            roles=frozenset({"release_manager"}),
+            scopes=frozenset(
+                {
+                    "release:read",
+                    "release:write",
+                    "release:approve",
+                    "release:notify",
+                }
+            ),
+        )
+
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[
+        get_current_principal
+    ] = override_get_current_principal
     app.dependency_overrides[get_risk_collector] = override_get_risk_collector
     app.dependency_overrides[get_jira_risk_collector] = override_get_jira_risk_collector
     app.dependency_overrides[
@@ -169,7 +190,6 @@ async def test_release_risk_workflow_writes_audit_timeline(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 

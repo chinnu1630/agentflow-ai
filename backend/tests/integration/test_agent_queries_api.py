@@ -508,7 +508,7 @@ async def test_execute_agent_query_runs_release_risk_workflow(
     assert release_run["id"] is not None
     assert release_run["run_id"].startswith("release-run-")
     assert release_run["query"] == ("What are the biggest release risks this week?")
-    assert release_run["requested_by"] == "agent-query-api"
+    assert release_run["requested_by"] == "director@example.com"
     assert release_run["status"] in {
         "completed",
         "waiting_for_approval",

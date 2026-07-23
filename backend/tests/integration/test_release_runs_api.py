@@ -465,7 +465,6 @@ async def test_start_release_run_api_creates_release_run(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -476,7 +475,7 @@ async def test_start_release_run_api_creates_release_run(
     assert response_data["id"] is not None
     assert response_data["run_id"].startswith("release-run-")
     assert response_data["query"] == "What are the biggest release risks this week?"
-    assert response_data["requested_by"] == "manager@example.com"
+    assert response_data["requested_by"] == "director@example.com"
     assert response_data["status"] == "created"
     assert response_data["completed_at"] is None
 
@@ -491,7 +490,6 @@ async def test_get_release_run_api_returns_created_release_run(
         "/api/v1/release-runs",
         json={
             "query": "Check release readiness for this week.",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -560,7 +558,6 @@ async def test_collect_release_risks_api_returns_full_release_risk_summary(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -649,7 +646,6 @@ async def test_collect_github_risks_api_returns_github_risk_summary(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -760,7 +756,6 @@ async def test_collect_release_risks_api_uses_langgraph_workflow_path(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -815,7 +810,6 @@ async def test_collect_release_risks_api_exposes_and_persists_claude_synthesis(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -915,7 +909,6 @@ async def test_legacy_github_risks_api_keeps_direct_service_path(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -981,7 +974,6 @@ async def test_collect_release_risks_api_returns_knowledge_context_when_docs_mat
                 "What are the biggest release risks this week for Redis "
                 "checkout failure?"
             ),
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -1078,7 +1070,6 @@ async def test_collect_release_risks_api_audits_knowledge_retrieval_no_results(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -1164,7 +1155,6 @@ async def test_collect_release_risks_api_audits_knowledge_retrieval_failure(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -1251,7 +1241,6 @@ async def test_collect_release_risks_api_persists_release_risk_snapshot(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -1323,7 +1312,6 @@ async def test_collect_release_risks_api_creates_new_snapshot_version_on_second_
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -1371,7 +1359,6 @@ async def test_send_release_run_slack_alert_api_sends_after_approval(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -1458,7 +1445,6 @@ async def test_send_release_run_slack_alert_api_blocks_duplicate_send(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -1533,7 +1519,6 @@ async def test_send_release_run_slack_alert_api_blocks_before_approval(
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 
@@ -1586,7 +1571,6 @@ async def test_collect_release_risks_api_creates_pending_approval_request_when_r
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 

@@ -15,31 +15,33 @@ def test_release_run_create_accepts_valid_payload() -> None:
     """ReleaseRunCreate should accept a valid manager release-risk query."""
     payload = ReleaseRunCreate(
         query="What are the biggest release risks this week?",
-        requested_by="engineering.manager@company.com",
     )
 
     assert payload.query == "What are the biggest release risks this week?"
-    assert payload.requested_by == "engineering.manager@company.com"
 
 
 def test_release_run_create_strips_whitespace() -> None:
-    """ReleaseRunCreate should strip leading and trailing whitespace from strings."""
+    """ReleaseRunCreate should strip leading and trailing query whitespace."""
     payload = ReleaseRunCreate(
         query="   What are the biggest release risks this week?   ",
-        requested_by="   engineering.manager@company.com   ",
     )
 
     assert payload.query == "What are the biggest release risks this week?"
-    assert payload.requested_by == "engineering.manager@company.com"
+
+
+def test_release_run_create_rejects_spoofed_requester() -> None:
+    """Authenticated identity must not be accepted from request JSON."""
+    with pytest.raises(ValidationError):
+        ReleaseRunCreate(
+            query="What are the biggest release risks this week?",
+            requested_by="attacker@example.com",
+        )
 
 
 def test_release_run_create_rejects_short_query() -> None:
     """ReleaseRunCreate should reject queries that are too short to be useful."""
     with pytest.raises(ValidationError):
-        ReleaseRunCreate(
-            query="Risk",
-            requested_by="engineering.manager@company.com",
-        )
+        ReleaseRunCreate(query="Risk")
 
 
 def test_release_run_status_rejects_invalid_value() -> None:

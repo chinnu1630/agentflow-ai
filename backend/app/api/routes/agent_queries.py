@@ -12,7 +12,9 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies.security import require_scopes
 from app.core.config import get_settings
+from app.core.security import AuthenticatedPrincipal
 from app.db.session import get_db_session
 from app.integrations.anthropic_client import (
     AnthropicClientConfig,
@@ -266,6 +268,10 @@ AgentDynamicSynthesisClientDependency = Annotated[
 ]
 
 
+AgentQueryPrincipalDependency = Annotated[
+    AuthenticatedPrincipal,
+    Depends(require_scopes("agent:query")),
+]
 AgentQueryRouterDependency = Annotated[
     AgentQueryRouter,
     Depends(get_agent_query_router),
@@ -683,6 +689,7 @@ async def execute_dynamic_agent_query(
 async def execute_agent_query(
     payload: AgentQueryRequest,
     request: Request,
+    principal: AgentQueryPrincipalDependency,
     plan: ExecutableAgentQueryPlanDependency,
     risk_collector: AgentGitHubRiskCollectorDependency,
     jira_risk_collector: AgentJiraRiskCollectorDependency,
@@ -967,7 +974,7 @@ async def execute_agent_query(
         response = await executor.execute(
             payload,
             plan,
-            requested_by="agent-query-api",
+            requested_by=principal.audit_identity,
         )
 
         response = await finalizer.finalize(

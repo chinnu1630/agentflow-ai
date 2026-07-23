@@ -56,7 +56,9 @@ async def release_run_approvals_api_client() -> AsyncIterator[AsyncClient]:
             subject="director-123",
             email="director@example.com",
             roles=frozenset({"release_manager"}),
-            scopes=frozenset({"release:read", "release:approve"}),
+            scopes=frozenset(
+                {"release:read", "release:write", "release:approve"}
+            ),
         )
 
     app.dependency_overrides[get_db_session] = override_get_db_session
@@ -84,7 +86,6 @@ async def _create_release_run(client: AsyncClient) -> str:
         "/api/v1/release-runs",
         json={
             "query": "What are the biggest release risks this week?",
-            "requested_by": "manager@example.com",
         },
     )
 

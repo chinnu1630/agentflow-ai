@@ -59,6 +59,7 @@ from app.repositories.release_run_slack_alert_repository import (
     ReleaseRunSlackAlertRepositoryError,
 )
 from app.schemas.github import GitHubRepositoryConfig
+from app.schemas.release_run import ReleaseRunCreate
 from app.schemas.release_run_approval import (
     PendingReleaseRunApprovalListResponse,
     ReleaseRunApprovalDecisionRequest,
@@ -107,6 +108,10 @@ from app.services.slack_release_alert_service import (
 
 router = APIRouter(prefix="/release-runs", tags=["release-runs"])
 
+ReleaseWritePrincipalDependency = Annotated[
+    AuthenticatedPrincipal,
+    Depends(require_scopes("release:write")),
+]
 ReleaseApprovalPrincipalDependency = Annotated[
     AuthenticatedPrincipal,
     Depends(require_scopes("release:approve")),
@@ -272,8 +277,9 @@ async def get_slack_alert_sender(request: Request) -> AsyncIterator[SlackClient]
     status_code=status.HTTP_201_CREATED,
 )
 async def start_release_run(
-    command: StartReleaseRunCommand,
+    payload: ReleaseRunCreate,
     request: Request,
+    principal: ReleaseWritePrincipalDependency,
     session: AsyncSession = Depends(get_db_session),
 ) -> ReleaseRunResult:
     """Start a new release-risk workflow run."""
@@ -292,6 +298,10 @@ async def start_release_run(
         repository=repository,
         request_id=request_id,
         event_repository=event_repository,
+    )
+    command = StartReleaseRunCommand(
+        query=payload.query,
+        requested_by=principal.audit_identity,
     )
 
     try:

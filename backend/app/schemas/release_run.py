@@ -17,7 +17,10 @@ class ReleaseRunStatus(StrEnum):
 class ReleaseRunCreate(BaseModel):
     """Request schema for creating a new release risk analysis run."""
 
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
 
     query: str = Field(
         ...,
@@ -25,14 +28,6 @@ class ReleaseRunCreate(BaseModel):
         max_length=2000,
         description="Manager question for release risk analysis.",
         examples=["What are the biggest release risks this week?"],
-    )
-
-    requested_by: str = Field(
-        ...,
-        min_length=3,
-        max_length=255,
-        description="User or service account that requested the analysis.",
-        examples=["engineering.manager@company.com"],
     )
 
 
