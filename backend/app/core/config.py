@@ -2,7 +2,12 @@ from decimal import Decimal
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import (
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +29,23 @@ class Settings(BaseSettings):
     api_v1_prefix: str = Field(
         default="/api/v1",
         description="Base prefix for version 1 API routes.",
+    )
+    cors_allowed_origins: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Explicit browser origins permitted to call the AgentFlow API."
+        ),
+    )
+    trusted_hosts: tuple[str, ...] = Field(
+        default=("localhost", "127.0.0.1", "testserver"),
+        min_length=1,
+        description="Host headers accepted by the AgentFlow API.",
+    )
+    max_request_body_bytes: int = Field(
+        default=1_048_576,
+        ge=1,
+        le=104_857_600,
+        description="Maximum accepted HTTP request-body size in bytes.",
     )
     database_url: str | None = Field(
         default=None,
@@ -197,6 +219,32 @@ class Settings(BaseSettings):
         description="Trace sampling ratio between 0.0 and 1.0.",
     )
 
+    @field_validator(
+        "cors_allowed_origins",
+        "trusted_hosts",
+    )
+    @classmethod
+    def validate_http_boundary_entries(
+        cls,
+        values: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Normalize HTTP boundary entries and reject unsafe wildcards."""
+        normalized_values = tuple(
+            value.strip() for value in values if value.strip()
+        )
+
+        if "*" in normalized_values:
+            raise ValueError(
+                "Wildcard HTTP boundary entries are not permitted."
+            )
+
+        if len(normalized_values) != len(values):
+            raise ValueError(
+                "HTTP boundary entries must not be blank."
+            )
+
+        return normalized_values
+
     @model_validator(mode="after")
     def validate_authentication_configuration(self) -> Self:
         """Enforce fail-closed authentication configuration.
@@ -214,6 +262,19 @@ class Settings(BaseSettings):
             "development",
             "dev",
         }
+        local_only_trusted_hosts = {
+            "localhost",
+            "127.0.0.1",
+            "testserver",
+        }
+
+        if (
+            environment not in local_environments
+            and set(self.trusted_hosts).issubset(local_only_trusted_hosts)
+        ):
+            raise ValueError(
+                "Deployed environments require explicit trusted hosts."
+            )
 
         if not self.auth_enabled:
             if environment not in local_environments:

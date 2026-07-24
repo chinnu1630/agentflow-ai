@@ -271,3 +271,95 @@ def test_settings_reject_disabled_authentication_outside_local_environments(
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_use_safe_default_http_boundary_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP boundary defaults should deny CORS and bound request bodies."""
+    monkeypatch.delenv("CORS_ALLOWED_ORIGINS", raising=False)
+    monkeypatch.delenv("TRUSTED_HOSTS", raising=False)
+    monkeypatch.delenv("MAX_REQUEST_BODY_BYTES", raising=False)
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.cors_allowed_origins == ()
+    assert settings.trusted_hosts == (
+        "localhost",
+        "127.0.0.1",
+        "testserver",
+    )
+    assert settings.max_request_body_bytes == 1_048_576
+
+
+def test_settings_allow_http_boundary_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deployment-specific origins, hosts, and size limits should be configurable."""
+    monkeypatch.setenv(
+        "CORS_ALLOWED_ORIGINS",
+        '["https://agentflow.example.com"]',
+    )
+    monkeypatch.setenv(
+        "TRUSTED_HOSTS",
+        '["api.agentflow.example.com","*.internal.example.com"]',
+    )
+    monkeypatch.setenv("MAX_REQUEST_BODY_BYTES", "2097152")
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.cors_allowed_origins == (
+        "https://agentflow.example.com",
+    )
+    assert settings.trusted_hosts == (
+        "api.agentflow.example.com",
+        "*.internal.example.com",
+    )
+    assert settings.max_request_body_bytes == 2_097_152
+
+
+@pytest.mark.parametrize(
+    ("environment_variable", "invalid_value"),
+    [
+        ("CORS_ALLOWED_ORIGINS", '["*"]'),
+        ("TRUSTED_HOSTS", '["*"]'),
+        ("MAX_REQUEST_BODY_BYTES", "0"),
+        ("MAX_REQUEST_BODY_BYTES", "104857601"),
+    ],
+)
+def test_settings_reject_unsafe_http_boundary_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    environment_variable: str,
+    invalid_value: str,
+) -> None:
+    """Unsafe wildcard and unbounded HTTP settings must fail validation."""
+    monkeypatch.setenv(environment_variable, invalid_value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("environment", ["staging", "production", "prod"])
+def test_settings_reject_local_only_trusted_hosts_in_deployed_environments(
+    monkeypatch: pytest.MonkeyPatch,
+    environment: str,
+) -> None:
+    """Deployed environments must explicitly configure trusted API hosts."""
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    monkeypatch.setenv(
+        "AUTH_JWT_ISSUER",
+        "https://identity.example.com/",
+    )
+    monkeypatch.setenv("AUTH_JWT_AUDIENCE", "agentflow-api")
+    monkeypatch.setenv(
+        "AUTH_JWT_PUBLIC_KEY",
+        "-----BEGIN PUBLIC KEY-----\ntest-key\n-----END PUBLIC KEY-----",
+    )
+    monkeypatch.delenv("TRUSTED_HOSTS", raising=False)
+
+    with pytest.raises(
+        ValidationError,
+        match="Deployed environments require explicit trusted hosts",
+    ):
+        Settings(_env_file=None)  # type: ignore[call-arg]

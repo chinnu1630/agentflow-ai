@@ -445,7 +445,7 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app),
-            base_url="http://test",
+            base_url="http://testserver",
         ) as client:
             yield client
     finally:
