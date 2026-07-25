@@ -72,10 +72,28 @@ jobs:
       POSTGRES_DB: agentflow
       POSTGRES_PORT: "5433"
       BACKEND_PORT: "8000"
+      TRUSTED_HOSTS: '["127.0.0.1","backend"]'
+      AUTH_ENABLED: "true"
+      AUTH_JWT_ISSUER: "https://ci.identity.agentflow.invalid/"
+      AUTH_JWT_AUDIENCE: "agentflow-api"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Generate ephemeral JWT verification key
+        run: |
+          openssl genpkey             -algorithm RSA             -pkeyopt rsa_keygen_bits:2048             -out /tmp/agentflow-ci-private-key.pem
+
+          openssl pkey             -in /tmp/agentflow-ci-private-key.pem             -pubout             -out /tmp/agentflow-ci-public-key.pem
+
+          {
+            echo "AUTH_JWT_PUBLIC_KEY<<AGENTFLOW_CI_PEM"
+            cat /tmp/agentflow-ci-public-key.pem
+            echo "AGENTFLOW_CI_PEM"
+          } >> "$GITHUB_ENV"
+
+          rm -f             /tmp/agentflow-ci-private-key.pem             /tmp/agentflow-ci-public-key.pem
 
       - name: Start production stack
         run: docker compose up --build --detach

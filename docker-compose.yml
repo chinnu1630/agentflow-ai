@@ -38,6 +38,11 @@ services:
     environment:
       ENVIRONMENT: production
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-agentflow}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-agentflow}
+      TRUSTED_HOSTS: ${TRUSTED_HOSTS:?Set TRUSTED_HOSTS in .env}
+      AUTH_ENABLED: ${AUTH_ENABLED:?Set AUTH_ENABLED in .env}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:?Set AUTH_JWT_ISSUER in .env}
+      AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:?Set AUTH_JWT_AUDIENCE in .env}
+      AUTH_JWT_PUBLIC_KEY: ${AUTH_JWT_PUBLIC_KEY:?Set AUTH_JWT_PUBLIC_KEY in .env}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
