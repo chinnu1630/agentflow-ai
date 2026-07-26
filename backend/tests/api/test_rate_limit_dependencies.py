@@ -19,6 +19,7 @@ from app.core.exceptions import (
     RateLimitServiceUnavailableError,
 )
 from app.core.security import AuthenticatedPrincipal
+from app.observability.metrics import RateLimitMetricOutcome
 from app.services.redis_rate_limiter import RateLimitDecision
 
 TEST_RATE_LIMIT_HMAC_SECRET = "test-rate-limit-secret"  # noqa: S105
@@ -328,3 +329,178 @@ async def test_rate_limit_telemetry_does_not_expose_identity(
         assert "director@example.com" not in serialized_attributes
         assert evaluated_key not in serialized_attributes
         assert TEST_RATE_LIMIT_HMAC_SECRET not in serialized_attributes
+
+
+
+@pytest.mark.anyio
+async def test_disabled_rate_limiting_records_disabled_metric() -> None:
+    """Disabled rate limiting should emit one bounded disabled outcome."""
+    dependency = enforce_rate_limit(RateLimitPolicyClass.EXPENSIVE)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    with (
+        patch(
+            "app.api.dependencies.rate_limit.get_settings",
+            return_value=settings,
+        ),
+        patch(
+            "app.api.dependencies.rate_limit.record_rate_limit_outcome",
+        ) as record_outcome,
+    ):
+        await dependency(
+            request=_request(redis_client=None),
+            principal=_principal(),
+        )
+
+    record_outcome.assert_called_once_with(
+        policy="expensive",
+        outcome=RateLimitMetricOutcome.DISABLED,
+    )
+
+
+@pytest.mark.anyio
+async def test_allowed_request_records_allowed_metric() -> None:
+    """Successful Redis evaluation should emit one allowed outcome."""
+    dependency = enforce_rate_limit(RateLimitPolicyClass.EXPENSIVE)
+    limiter = Mock()
+    limiter.evaluate = AsyncMock(
+        return_value=RateLimitDecision(
+            allowed=True,
+            remaining_tokens=4.0,
+            retry_after_seconds=0,
+        )
+    )
+
+    with (
+        patch(
+            "app.api.dependencies.rate_limit.get_settings",
+            return_value=_enabled_settings(),
+        ),
+        patch(
+            "app.api.dependencies.rate_limit.RedisTokenBucketRateLimiter",
+            return_value=limiter,
+        ),
+        patch(
+            "app.api.dependencies.rate_limit.record_rate_limit_outcome",
+        ) as record_outcome,
+    ):
+        await dependency(
+            request=_request(redis_client=Mock()),
+            principal=_principal(),
+        )
+
+    record_outcome.assert_called_once_with(
+        policy="expensive",
+        outcome=RateLimitMetricOutcome.ALLOWED,
+    )
+
+
+@pytest.mark.anyio
+async def test_denied_request_records_denied_metric() -> None:
+    """Exhausted token buckets should emit one denied outcome."""
+    dependency = enforce_rate_limit(RateLimitPolicyClass.EXPENSIVE)
+    limiter = Mock()
+    limiter.evaluate = AsyncMock(
+        return_value=RateLimitDecision(
+            allowed=False,
+            remaining_tokens=0.0,
+            retry_after_seconds=8,
+        )
+    )
+
+    with (
+        patch(
+            "app.api.dependencies.rate_limit.get_settings",
+            return_value=_enabled_settings(),
+        ),
+        patch(
+            "app.api.dependencies.rate_limit.RedisTokenBucketRateLimiter",
+            return_value=limiter,
+        ),
+        patch(
+            "app.api.dependencies.rate_limit.record_rate_limit_outcome",
+        ) as record_outcome,
+        pytest.raises(RateLimitExceededError),
+    ):
+        await dependency(
+            request=_request(redis_client=Mock()),
+            principal=_principal(),
+        )
+
+    record_outcome.assert_called_once_with(
+        policy="expensive",
+        outcome=RateLimitMetricOutcome.DENIED,
+    )
+
+
+@pytest.mark.anyio
+async def test_missing_redis_records_error_and_fail_closed_metrics() -> None:
+    """Expensive traffic should expose safe Redis and fail-closed metrics."""
+    dependency = enforce_rate_limit(RateLimitPolicyClass.EXPENSIVE)
+
+    with (
+        patch(
+            "app.api.dependencies.rate_limit.get_settings",
+            return_value=_enabled_settings(),
+        ),
+        patch(
+            "app.api.dependencies.rate_limit.record_rate_limit_outcome",
+        ) as record_outcome,
+        patch(
+            "app.api.dependencies.rate_limit.record_rate_limit_redis_error",
+        ) as record_redis_error,
+        pytest.raises(RateLimitServiceUnavailableError),
+    ):
+        await dependency(
+            request=_request(redis_client=None),
+            principal=_principal(),
+        )
+
+    record_redis_error.assert_called_once_with(
+        policy="expensive",
+        error_type="RedisClientUnavailable",
+    )
+    record_outcome.assert_called_once_with(
+        policy="expensive",
+        outcome=RateLimitMetricOutcome.FAIL_CLOSED,
+    )
+
+
+@pytest.mark.anyio
+async def test_standard_redis_failure_records_fail_open_metrics() -> None:
+    """Standard traffic should expose safe Redis and fail-open metrics."""
+    dependency = enforce_rate_limit(RateLimitPolicyClass.STANDARD)
+    limiter = Mock()
+    limiter.evaluate = AsyncMock(
+        side_effect=RedisConnectionError("redis unavailable")
+    )
+
+    with (
+        patch(
+            "app.api.dependencies.rate_limit.get_settings",
+            return_value=_enabled_settings(),
+        ),
+        patch(
+            "app.api.dependencies.rate_limit.RedisTokenBucketRateLimiter",
+            return_value=limiter,
+        ),
+        patch(
+            "app.api.dependencies.rate_limit.record_rate_limit_outcome",
+        ) as record_outcome,
+        patch(
+            "app.api.dependencies.rate_limit.record_rate_limit_redis_error",
+        ) as record_redis_error,
+    ):
+        await dependency(
+            request=_request(redis_client=Mock()),
+            principal=_principal(),
+        )
+
+    record_redis_error.assert_called_once_with(
+        policy="standard",
+        error_type="ConnectionError",
+    )
+    record_outcome.assert_called_once_with(
+        policy="standard",
+        outcome=RateLimitMetricOutcome.FAIL_OPEN,
+    )

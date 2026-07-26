@@ -279,6 +279,24 @@ class Settings(BaseSettings):
         le=1.0,
         description="Trace sampling ratio between 0.0 and 1.0.",
     )
+    otel_metrics_enabled: bool = Field(
+        default=False,
+        description="Enable periodic OpenTelemetry metrics export.",
+    )
+    otel_metrics_exporter_otlp_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "Explicit OTLP HTTP endpoint for exporting metrics."
+        ),
+    )
+    otel_metrics_export_interval_milliseconds: int = Field(
+        default=60_000,
+        ge=1_000,
+        le=300_000,
+        description=(
+            "Interval in milliseconds between periodic metric exports."
+        ),
+    )
 
     @field_validator(
         "cors_allowed_origins",
@@ -305,6 +323,32 @@ class Settings(BaseSettings):
             )
 
         return normalized_values
+
+    @field_validator(
+        "otel_metrics_exporter_otlp_endpoint",
+    )
+    @classmethod
+    def validate_otel_metrics_endpoint(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        """Accept only explicit HTTP(S) OTLP metrics endpoints."""
+        if value is None:
+            return None
+
+        normalized_value = value.strip()
+        parsed_url = urlsplit(normalized_value)
+
+        if (
+            parsed_url.scheme not in {"http", "https"}
+            or parsed_url.hostname is None
+        ):
+            raise ValueError(
+                "OTEL_METRICS_EXPORTER_OTLP_ENDPOINT must use "
+                "http:// or https:// with a hostname."
+            )
+
+        return normalized_value
 
     @field_validator("redis_url")
     @classmethod
@@ -406,6 +450,20 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Enabled authentication requires: "
                 f"{missing_names}."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_otel_metrics_configuration(self) -> Self:
+        """Require an explicit exporter endpoint when metrics are enabled."""
+        if (
+            self.otel_metrics_enabled
+            and self.otel_metrics_exporter_otlp_endpoint is None
+        ):
+            raise ValueError(
+                "Enabled OpenTelemetry metrics require: "
+                "OTEL_METRICS_EXPORTER_OTLP_ENDPOINT."
             )
 
         return self

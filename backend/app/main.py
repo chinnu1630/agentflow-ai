@@ -20,6 +20,7 @@ from app.core.redis_client import (
 from app.middleware.request_body_limit import RequestBodyLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.observability.metrics import configure_metrics
 from app.observability.tracing import configure_tracing
 
 logger = get_logger(__name__)
@@ -98,6 +99,17 @@ def create_app() -> FastAPI:
         app_version=settings.app_version,
         otlp_endpoint=settings.otel_exporter_otlp_endpoint,
         sample_ratio=settings.otel_sample_ratio,
+    )
+
+    configure_metrics(
+        enabled=settings.otel_metrics_enabled,
+        service_name=settings.otel_service_name,
+        environment=settings.environment,
+        app_version=settings.app_version,
+        otlp_endpoint=settings.otel_metrics_exporter_otlp_endpoint,
+        export_interval_milliseconds=(
+            settings.otel_metrics_export_interval_milliseconds
+        ),
     )
 
     fastapi_app.add_middleware(

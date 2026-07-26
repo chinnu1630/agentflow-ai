@@ -105,3 +105,32 @@ def test_lifespan_degrades_safely_when_redis_is_unavailable() -> None:
             assert test_app.state.redis_client is None
 
         close_client.assert_awaited_once_with(redis_client)
+
+
+def test_create_app_configures_metrics_from_settings() -> None:
+    """Application creation should activate metrics using validated settings."""
+    settings = Settings(
+        otel_metrics_enabled=True,
+        otel_metrics_exporter_otlp_endpoint=(
+            "http://otel-collector:4318/v1/metrics"
+        ),
+        otel_metrics_export_interval_milliseconds=30_000,
+        _env_file=None,
+    )  # type: ignore[call-arg]
+
+    with (
+        patch("app.main.get_settings", return_value=settings),
+        patch("app.main.configure_metrics") as configure_metrics,
+    ):
+        create_app()
+
+    configure_metrics.assert_called_once_with(
+        enabled=True,
+        service_name=settings.otel_service_name,
+        environment=settings.environment,
+        app_version=settings.app_version,
+        otlp_endpoint=(
+            "http://otel-collector:4318/v1/metrics"
+        ),
+        export_interval_milliseconds=30_000,
+    )

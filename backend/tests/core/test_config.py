@@ -543,3 +543,83 @@ def test_settings_reject_disabled_rate_limiting_in_deployed_environments(
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_use_safe_default_otel_metrics_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local metrics export should remain disabled unless configured."""
+    monkeypatch.delenv("OTEL_METRICS_ENABLED", raising=False)
+    monkeypatch.delenv(
+        "OTEL_METRICS_EXPORTER_OTLP_ENDPOINT",
+        raising=False,
+    )
+    monkeypatch.delenv(
+        "OTEL_METRICS_EXPORT_INTERVAL_MILLISECONDS",
+        raising=False,
+    )
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.otel_metrics_enabled is False
+    assert settings.otel_metrics_exporter_otlp_endpoint is None
+    assert settings.otel_metrics_export_interval_milliseconds == 60_000
+
+
+def test_settings_allow_otel_metrics_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Metrics exporter settings should load from environment variables."""
+    monkeypatch.setenv("OTEL_METRICS_ENABLED", "true")
+    monkeypatch.setenv(
+        "OTEL_METRICS_EXPORTER_OTLP_ENDPOINT",
+        "http://otel-collector:4318/v1/metrics",
+    )
+    monkeypatch.setenv(
+        "OTEL_METRICS_EXPORT_INTERVAL_MILLISECONDS",
+        "30000",
+    )
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.otel_metrics_enabled is True
+    assert (
+        settings.otel_metrics_exporter_otlp_endpoint
+        == "http://otel-collector:4318/v1/metrics"
+    )
+    assert settings.otel_metrics_export_interval_milliseconds == 30_000
+
+
+def test_settings_reject_enabled_metrics_without_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enabled metrics must have an explicit OTLP metrics endpoint."""
+    monkeypatch.setenv("OTEL_METRICS_ENABLED", "true")
+    monkeypatch.delenv(
+        "OTEL_METRICS_EXPORTER_OTLP_ENDPOINT",
+        raising=False,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="Enabled OpenTelemetry metrics require",
+    ):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    "invalid_interval",
+    ["0", "999", "300001"],
+)
+def test_settings_reject_invalid_otel_metrics_export_interval(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_interval: str,
+) -> None:
+    """Metrics export intervals must remain operationally bounded."""
+    monkeypatch.setenv(
+        "OTEL_METRICS_EXPORT_INTERVAL_MILLISECONDS",
+        invalid_interval,
+    )
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]

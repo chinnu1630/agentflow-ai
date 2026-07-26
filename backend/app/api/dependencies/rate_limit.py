@@ -20,6 +20,11 @@ from app.core.exceptions import (
 )
 from app.core.logging import get_logger
 from app.core.security import AuthenticatedPrincipal
+from app.observability.metrics import (
+    RateLimitMetricOutcome,
+    record_rate_limit_outcome,
+    record_rate_limit_redis_error,
+)
 from app.observability.tracing import set_safe_span_attributes
 from app.services.redis_rate_limiter import (
     RateLimiterProtocolError,
@@ -127,6 +132,10 @@ def enforce_rate_limit(
                     "rate_limit.policy": policy_class.value,
                 },
             )
+            record_rate_limit_outcome(
+                policy=policy_class.value,
+                outcome=RateLimitMetricOutcome.DISABLED,
+            )
             return
 
         redis_client = _get_redis_client(request)
@@ -197,6 +206,11 @@ def enforce_rate_limit(
         )
 
         if not decision.allowed:
+            record_rate_limit_outcome(
+                policy=policy.name,
+                outcome=RateLimitMetricOutcome.DENIED,
+            )
+
             retry_after_seconds = max(
                 1,
                 decision.retry_after_seconds,
@@ -217,6 +231,11 @@ def enforce_rate_limit(
             raise RateLimitExceededError(
                 retry_after_seconds=retry_after_seconds,
             )
+
+        record_rate_limit_outcome(
+            policy=policy.name,
+            outcome=RateLimitMetricOutcome.ALLOWED,
+        )
 
         logger.info(
             "api_rate_limit_allowed",
@@ -280,6 +299,19 @@ def _log_unavailable(
     error_type: str,
 ) -> None:
     """Record safe Redis rate-limit failure metadata."""
+    record_rate_limit_redis_error(
+        policy=policy_class.value,
+        error_type=error_type,
+    )
+    record_rate_limit_outcome(
+        policy=policy_class.value,
+        outcome=(
+            RateLimitMetricOutcome.FAIL_CLOSED
+            if policy_class is RateLimitPolicyClass.EXPENSIVE
+            else RateLimitMetricOutcome.FAIL_OPEN
+        ),
+    )
+
     set_safe_span_attributes(
         trace.get_current_span(),
         {
