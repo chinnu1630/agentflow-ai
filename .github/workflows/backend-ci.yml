@@ -31,6 +31,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    services:
+      redis:
+        image: redis:8.0-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      RATE_LIMIT_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+
     defaults:
       run:
         working-directory: backend
@@ -61,7 +75,7 @@ jobs:
         run: pytest -q
 
   container-smoke-test:
-    name: PostgreSQL pgvector integration test
+    name: PostgreSQL pgvector and Redis integration test
     needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -71,6 +85,9 @@ jobs:
       POSTGRES_PASSWORD: agentflow-ci-password
       POSTGRES_DB: agentflow
       POSTGRES_PORT: "5433"
+      REDIS_PASSWORD: agentflow-ci-redis-password
+      REDIS_PORT: "6380"
+      RATE_LIMIT_KEY_HMAC_SECRET: agentflow-ci-rate-limit-hmac-secret
       BACKEND_PORT: "8000"
       TRUSTED_HOSTS: '["127.0.0.1","backend"]'
       AUTH_ENABLED: "true"
@@ -110,6 +127,13 @@ jobs:
 
           docker compose logs
           exit 1
+
+      - name: Verify authenticated Redis
+        run: |
+          docker compose exec -T \
+            -e REDISCLI_AUTH="$REDIS_PASSWORD" \
+            redis redis-cli ping \
+            | grep -Fx "PONG"
 
       - name: Verify migrations and pgvector
         run: |

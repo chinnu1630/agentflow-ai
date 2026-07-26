@@ -363,3 +363,183 @@ def test_settings_reject_local_only_trusted_hosts_in_deployed_environments(
         match="Deployed environments require explicit trusted hosts",
     ):
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+def test_settings_use_safe_default_rate_limit_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local development should keep Redis rate limiting disabled by default."""
+    environment_variables = (
+        "RATE_LIMIT_ENABLED",
+        "REDIS_URL",
+        "REDIS_MAX_CONNECTIONS",
+        "REDIS_CONNECT_TIMEOUT_SECONDS",
+        "REDIS_SOCKET_TIMEOUT_SECONDS",
+        "RATE_LIMIT_KEY_HMAC_SECRET",
+        "RATE_LIMIT_STANDARD_CAPACITY",
+        "RATE_LIMIT_STANDARD_REFILL_RATE_PER_SECOND",
+        "RATE_LIMIT_EXPENSIVE_CAPACITY",
+        "RATE_LIMIT_EXPENSIVE_REFILL_RATE_PER_SECOND",
+    )
+
+    for environment_variable in environment_variables:
+        monkeypatch.delenv(environment_variable, raising=False)
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.rate_limit_enabled is False
+    assert settings.redis_url is None
+    assert settings.redis_max_connections == 20
+    assert settings.redis_connect_timeout_seconds == 1.0
+    assert settings.redis_socket_timeout_seconds == 1.0
+    assert settings.rate_limit_key_hmac_secret is None
+    assert settings.rate_limit_standard_capacity == 60
+    assert settings.rate_limit_standard_refill_rate_per_second == 1.0
+    assert settings.rate_limit_expensive_capacity == 5
+    assert settings.rate_limit_expensive_refill_rate_per_second == 0.1
+
+
+def test_settings_allow_rate_limit_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redis and token-bucket limits should load from environment variables."""
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/1")
+    monkeypatch.setenv("REDIS_MAX_CONNECTIONS", "40")
+    monkeypatch.setenv("REDIS_CONNECT_TIMEOUT_SECONDS", "2")
+    monkeypatch.setenv("REDIS_SOCKET_TIMEOUT_SECONDS", "3")
+    monkeypatch.setenv(
+        "RATE_LIMIT_KEY_HMAC_SECRET",
+        "test-rate-limit-hmac-secret",
+    )
+    monkeypatch.setenv("RATE_LIMIT_STANDARD_CAPACITY", "120")
+    monkeypatch.setenv(
+        "RATE_LIMIT_STANDARD_REFILL_RATE_PER_SECOND",
+        "2.5",
+    )
+    monkeypatch.setenv("RATE_LIMIT_EXPENSIVE_CAPACITY", "8")
+    monkeypatch.setenv(
+        "RATE_LIMIT_EXPENSIVE_REFILL_RATE_PER_SECOND",
+        "0.25",
+    )
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.rate_limit_enabled is True
+    assert settings.redis_url is not None
+    assert (
+        settings.redis_url.get_secret_value()
+        == "redis://localhost:6379/1"
+    )
+    assert settings.redis_max_connections == 40
+    assert settings.redis_connect_timeout_seconds == 2.0
+    assert settings.redis_socket_timeout_seconds == 3.0
+    assert settings.rate_limit_key_hmac_secret is not None
+    assert (
+        settings.rate_limit_key_hmac_secret.get_secret_value()
+        == "test-rate-limit-hmac-secret"
+    )
+    assert settings.rate_limit_standard_capacity == 120
+    assert settings.rate_limit_standard_refill_rate_per_second == 2.5
+    assert settings.rate_limit_expensive_capacity == 8
+    assert settings.rate_limit_expensive_refill_rate_per_second == 0.25
+
+
+@pytest.mark.parametrize(
+    ("environment_variable", "invalid_value"),
+    [
+        ("REDIS_MAX_CONNECTIONS", "0"),
+        ("REDIS_CONNECT_TIMEOUT_SECONDS", "0"),
+        ("REDIS_SOCKET_TIMEOUT_SECONDS", "0"),
+        ("RATE_LIMIT_STANDARD_CAPACITY", "0"),
+        ("RATE_LIMIT_STANDARD_REFILL_RATE_PER_SECOND", "0"),
+        ("RATE_LIMIT_EXPENSIVE_CAPACITY", "0"),
+        ("RATE_LIMIT_EXPENSIVE_REFILL_RATE_PER_SECOND", "0"),
+    ],
+)
+def test_settings_reject_invalid_rate_limit_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    environment_variable: str,
+    invalid_value: str,
+) -> None:
+    """Redis pool and token-bucket values must remain strictly positive."""
+    monkeypatch.setenv(environment_variable, invalid_value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    "invalid_redis_url",
+    [
+        "http://localhost:6379",
+        "redis://",
+        "not-a-url",
+    ],
+)
+def test_settings_reject_invalid_redis_urls(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_redis_url: str,
+) -> None:
+    """Redis configuration should accept only usable redis or rediss URLs."""
+    monkeypatch.setenv("REDIS_URL", invalid_redis_url)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    "missing_environment_variable",
+    [
+        "REDIS_URL",
+        "RATE_LIMIT_KEY_HMAC_SECRET",
+    ],
+)
+def test_settings_reject_incomplete_deployed_rate_limit_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    missing_environment_variable: str,
+) -> None:
+    """Deployed rate limiting requires Redis and a key-derivation secret."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("TRUSTED_HOSTS", '["api.agentflow.example.com"]')
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    monkeypatch.setenv(
+        "AUTH_JWT_ISSUER",
+        "https://identity.example.com/",
+    )
+    monkeypatch.setenv("AUTH_JWT_AUDIENCE", "agentflow-api")
+    monkeypatch.setenv(
+        "AUTH_JWT_PUBLIC_KEY",
+        "-----BEGIN PUBLIC KEY-----\ntest-key\n-----END PUBLIC KEY-----",
+    )
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("REDIS_URL", "redis://redis:6379/0")
+    monkeypatch.setenv(
+        "RATE_LIMIT_KEY_HMAC_SECRET",
+        "production-rate-limit-hmac-secret",
+    )
+    monkeypatch.delenv(missing_environment_variable, raising=False)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_reject_disabled_rate_limiting_in_deployed_environments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deployed environments must enable distributed API rate limiting."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("TRUSTED_HOSTS", '["api.agentflow.example.com"]')
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    monkeypatch.setenv(
+        "AUTH_JWT_ISSUER",
+        "https://identity.example.com/",
+    )
+    monkeypatch.setenv("AUTH_JWT_AUDIENCE", "agentflow-api")
+    monkeypatch.setenv(
+        "AUTH_JWT_PUBLIC_KEY",
+        "-----BEGIN PUBLIC KEY-----\ntest-key\n-----END PUBLIC KEY-----",
+    )
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]

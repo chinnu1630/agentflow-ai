@@ -15,6 +15,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies.rate_limit import (
+    RateLimitPolicyClass,
+    enforce_rate_limit,
+)
 from app.api.dependencies.security import require_scopes
 from app.core.security import AuthenticatedPrincipal
 from app.db.session import get_db_session
@@ -51,6 +55,10 @@ KnowledgeWritePrincipalDependency = Annotated[
     AuthenticatedPrincipal,
     Depends(require_scopes("knowledge:write")),
 ]
+StandardRateLimitDependency = Annotated[
+    None,
+    Depends(enforce_rate_limit(RateLimitPolicyClass.STANDARD)),
+]
 
 
 @router.post(
@@ -62,6 +70,7 @@ async def ingest_engineering_document(
     request: Request,
     response: Response,
     _principal: KnowledgeWritePrincipalDependency,
+    _rate_limit: StandardRateLimitDependency,
     session: AsyncSession = Depends(get_db_session),
     embedding_provider: SentenceTransformerEmbeddingProvider = Depends(
         get_engineering_document_embedding_provider
@@ -127,6 +136,7 @@ async def retrieve_engineering_document_chunks(
     command: EngineeringDocumentRetrievalRequest,
     request: Request,
     _principal: KnowledgeReadPrincipalDependency,
+    _rate_limit: StandardRateLimitDependency,
     session: AsyncSession = Depends(get_db_session),
     embedding_provider: SentenceTransformerEmbeddingProvider = Depends(
         get_engineering_document_embedding_provider

@@ -1,4 +1,27 @@
 services:
+  redis:
+    image: redis:8.0-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "no"
+      - --save
+      - ""
+      - --requirepass
+      - ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -Fx PONG
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   postgres:
     image: pgvector/pgvector:pg16
     environment:
@@ -38,6 +61,16 @@ services:
     environment:
       ENVIRONMENT: production
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-agentflow}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-agentflow}
+      RATE_LIMIT_ENABLED: "true"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379/0
+      REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-20}
+      REDIS_CONNECT_TIMEOUT_SECONDS: ${REDIS_CONNECT_TIMEOUT_SECONDS:-1}
+      REDIS_SOCKET_TIMEOUT_SECONDS: ${REDIS_SOCKET_TIMEOUT_SECONDS:-1}
+      RATE_LIMIT_KEY_HMAC_SECRET: ${RATE_LIMIT_KEY_HMAC_SECRET:?Set RATE_LIMIT_KEY_HMAC_SECRET in .env}
+      RATE_LIMIT_STANDARD_CAPACITY: ${RATE_LIMIT_STANDARD_CAPACITY:-60}
+      RATE_LIMIT_STANDARD_REFILL_RATE_PER_SECOND: ${RATE_LIMIT_STANDARD_REFILL_RATE_PER_SECOND:-1}
+      RATE_LIMIT_EXPENSIVE_CAPACITY: ${RATE_LIMIT_EXPENSIVE_CAPACITY:-5}
+      RATE_LIMIT_EXPENSIVE_REFILL_RATE_PER_SECOND: ${RATE_LIMIT_EXPENSIVE_REFILL_RATE_PER_SECOND:-0.1}
       TRUSTED_HOSTS: ${TRUSTED_HOSTS:?Set TRUSTED_HOSTS in .env}
       AUTH_ENABLED: ${AUTH_ENABLED:?Set AUTH_ENABLED in .env}
       AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:?Set AUTH_JWT_ISSUER in .env}
@@ -48,6 +81,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

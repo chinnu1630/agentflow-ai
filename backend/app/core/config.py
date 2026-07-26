@@ -1,6 +1,7 @@
 from decimal import Decimal
 from functools import lru_cache
 from typing import Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import (
     Field,
@@ -46,6 +47,66 @@ class Settings(BaseSettings):
         ge=1,
         le=104_857_600,
         description="Maximum accepted HTTP request-body size in bytes.",
+    )
+    rate_limit_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable distributed Redis-backed API rate limiting."
+        ),
+    )
+    redis_url: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Redis connection URL used only for distributed rate limiting."
+        ),
+    )
+    redis_max_connections: int = Field(
+        default=20,
+        ge=1,
+        le=1_000,
+        description="Maximum Redis connections available to one API process.",
+    )
+    redis_connect_timeout_seconds: float = Field(
+        default=1.0,
+        gt=0.0,
+        le=30.0,
+        description="Maximum time allowed to establish a Redis connection.",
+    )
+    redis_socket_timeout_seconds: float = Field(
+        default=1.0,
+        gt=0.0,
+        le=30.0,
+        description="Maximum time allowed for one Redis operation.",
+    )
+    rate_limit_key_hmac_secret: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Secret used to derive pseudonymous Redis identity keys."
+        ),
+    )
+    rate_limit_standard_capacity: int = Field(
+        default=60,
+        ge=1,
+        le=100_000,
+        description="Maximum tokens in the standard API token bucket.",
+    )
+    rate_limit_standard_refill_rate_per_second: float = Field(
+        default=1.0,
+        gt=0.0,
+        le=10_000.0,
+        description="Tokens added per second to the standard API bucket.",
+    )
+    rate_limit_expensive_capacity: int = Field(
+        default=5,
+        ge=1,
+        le=10_000,
+        description="Maximum tokens in the expensive workflow bucket.",
+    )
+    rate_limit_expensive_refill_rate_per_second: float = Field(
+        default=0.1,
+        gt=0.0,
+        le=1_000.0,
+        description="Tokens added per second to the expensive workflow bucket.",
     )
     database_url: str | None = Field(
         default=None,
@@ -245,6 +306,48 @@ class Settings(BaseSettings):
 
         return normalized_values
 
+    @field_validator("redis_url")
+    @classmethod
+    def validate_redis_url(
+        cls,
+        value: SecretStr | None,
+    ) -> SecretStr | None:
+        """Accept only network Redis URLs with an explicit hostname."""
+        if value is None:
+            return None
+
+        raw_url = value.get_secret_value().strip()
+        parsed_url = urlsplit(raw_url)
+
+        if (
+            parsed_url.scheme not in {"redis", "rediss"}
+            or parsed_url.hostname is None
+        ):
+            raise ValueError(
+                "REDIS_URL must use redis:// or rediss:// with a hostname."
+            )
+
+        return SecretStr(raw_url)
+
+    @field_validator("rate_limit_key_hmac_secret")
+    @classmethod
+    def validate_rate_limit_hmac_secret(
+        cls,
+        value: SecretStr | None,
+    ) -> SecretStr | None:
+        """Reject blank or weak rate-limit identity-key secrets."""
+        if value is None:
+            return None
+
+        secret_value = value.get_secret_value().strip()
+
+        if len(secret_value) < 16:
+            raise ValueError(
+                "RATE_LIMIT_KEY_HMAC_SECRET must contain at least 16 characters."
+            )
+
+        return SecretStr(secret_value)
+
     @model_validator(mode="after")
     def validate_authentication_configuration(self) -> Self:
         """Enforce fail-closed authentication configuration.
@@ -303,6 +406,42 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Enabled authentication requires: "
                 f"{missing_names}."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_rate_limit_configuration(self) -> Self:
+        """Enforce distributed rate limiting in deployed environments."""
+        environment = self.environment.strip().lower()
+        local_environments = {
+            "local",
+            "test",
+            "testing",
+            "development",
+            "dev",
+        }
+
+        if not self.rate_limit_enabled:
+            if environment not in local_environments:
+                raise ValueError(
+                    "Rate limiting must be enabled outside local and test "
+                    "environments."
+                )
+            return self
+
+        missing_fields: list[str] = []
+
+        if self.redis_url is None:
+            missing_fields.append("REDIS_URL")
+
+        if self.rate_limit_key_hmac_secret is None:
+            missing_fields.append("RATE_LIMIT_KEY_HMAC_SECRET")
+
+        if missing_fields:
+            raise ValueError(
+                "Enabled rate limiting requires: "
+                f"{', '.join(missing_fields)}."
             )
 
         return self

@@ -2,7 +2,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.exception_handlers import register_exception_handlers
-from app.core.exceptions import ExternalServiceError
+from app.core.exceptions import (
+    ExternalServiceError,
+    RateLimitExceededError,
+    RateLimitServiceUnavailableError,
+)
 from app.middleware.request_context import RequestContextMiddleware
 
 
@@ -19,6 +23,16 @@ def create_test_app() -> FastAPI:
             service_name="GitHub",
             message="rate limit exceeded",
         )
+
+    @test_app.get("/rate-limit-exceeded")
+    async def rate_limit_exceeded_route() -> None:
+        """Raise a test AgentFlow rate-limit rejection."""
+        raise RateLimitExceededError(retry_after_seconds=7)
+
+    @test_app.get("/rate-limit-unavailable")
+    async def rate_limit_unavailable_route() -> None:
+        """Raise a test Redis-backed limiter availability failure."""
+        raise RateLimitServiceUnavailableError()
 
     return test_app
 
@@ -51,3 +65,25 @@ def test_not_found_error_returns_standard_error_response() -> None:
     assert response_data["error"]["code"] == "HTTP_ERROR"
     assert response_data["error"]["message"] == "Not Found"
     assert "run_id" in response_data
+
+def test_rate_limit_error_returns_retry_after_header() -> None:
+    """Rate-limit rejection should use the AgentFlow contract and retry hint."""
+    response = TestClient(create_test_app()).get("/rate-limit-exceeded")
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "7"
+    assert response.json()["error"] == {
+        "code": "RATE_LIMIT_EXCEEDED",
+        "message": "API rate limit exceeded.",
+    }
+
+
+def test_rate_limit_service_unavailable_returns_safe_error() -> None:
+    """Redis failure should not expose infrastructure implementation details."""
+    response = TestClient(create_test_app()).get("/rate-limit-unavailable")
+
+    assert response.status_code == 503
+    assert response.json()["error"] == {
+        "code": "RATE_LIMIT_SERVICE_UNAVAILABLE",
+        "message": "API rate limiting is temporarily unavailable.",
+    }

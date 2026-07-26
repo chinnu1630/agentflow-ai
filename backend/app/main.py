@@ -1,15 +1,80 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.types import Lifespan
 
 from app.api.exception_handlers import register_exception_handlers
 from app.api.router import api_router
-from app.core.config import get_settings
-from app.core.logging import setup_logging
+from app.core.config import Settings, get_settings
+from app.core.logging import get_logger, setup_logging
+from app.core.redis_client import (
+    close_redis_client,
+    create_redis_client,
+    ping_redis_client,
+)
 from app.middleware.request_body_limit import RequestBodyLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.observability.tracing import configure_tracing
+
+logger = get_logger(__name__)
+
+def create_application_lifespan(
+    settings: Settings,
+) -> Lifespan[FastAPI]:
+    """Create the FastAPI lifespan handler for shared infrastructure.
+
+    Args:
+        settings: Validated application configuration captured at app creation.
+
+    Returns:
+        Async lifespan context managing the process-wide Redis client.
+    """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        """Initialize and close the shared Redis client safely."""
+        redis_client: Redis[str] | None = None
+        app.state.redis_client = None
+
+        if settings.rate_limit_enabled:
+            try:
+                redis_client = create_redis_client(settings)
+                await ping_redis_client(redis_client)
+                app.state.redis_client = redis_client
+
+                logger.info("redis_lifecycle_startup_succeeded")
+
+            except RedisError as exc:
+                logger.error(
+                    "redis_lifecycle_startup_failed",
+                    extra={
+                        "error_type": type(exc).__name__,
+                    },
+                )
+
+        try:
+            yield
+        finally:
+            app.state.redis_client = None
+
+            if redis_client is not None:
+                try:
+                    await close_redis_client(redis_client)
+                except RedisError as exc:
+                    logger.error(
+                        "redis_lifecycle_shutdown_failed",
+                        extra={
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+
+    return lifespan
 
 
 def create_app() -> FastAPI:
@@ -21,7 +86,9 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description="Backend API for enterprise release risk automation.",
+        lifespan=create_application_lifespan(settings),
     )
+    fastapi_app.state.redis_client = None
 
     configure_tracing(
         fastapi_app,

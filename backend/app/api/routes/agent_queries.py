@@ -12,6 +12,10 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies.rate_limit import (
+    RateLimitPolicyClass,
+    enforce_rate_limit,
+)
 from app.api.dependencies.security import require_scopes
 from app.core.config import get_settings
 from app.core.security import AuthenticatedPrincipal
@@ -272,6 +276,14 @@ AgentQueryPrincipalDependency = Annotated[
     AuthenticatedPrincipal,
     Depends(require_scopes("agent:query")),
 ]
+StandardRateLimitDependency = Annotated[
+    None,
+    Depends(enforce_rate_limit(RateLimitPolicyClass.STANDARD)),
+]
+ExpensiveRateLimitDependency = Annotated[
+    None,
+    Depends(enforce_rate_limit(RateLimitPolicyClass.EXPENSIVE)),
+]
 AgentQueryRouterDependency = Annotated[
     AgentQueryRouter,
     Depends(get_agent_query_router),
@@ -467,6 +479,7 @@ async def create_agent_query_plan(
     payload: AgentQueryRequest,
     request: Request,
     _principal: AgentQueryPrincipalDependency,
+    _rate_limit: StandardRateLimitDependency,
     query_router: AgentQueryRouterDependency,
 ) -> AgentQueryPlan:
     """Convert a natural-language question into a safe workflow plan."""
@@ -500,6 +513,7 @@ async def execute_dynamic_agent_query(
     payload: AgentQueryRequest,
     request: Request,
     _principal: AgentQueryPrincipalDependency,
+    _rate_limit: ExpensiveRateLimitDependency,
     plan: ExecutableAgentQueryPlanDependency,
     planner_client: AgentExecutionPlannerClientDependency,
     synthesis_client: AgentDynamicSynthesisClientDependency,
@@ -713,6 +727,7 @@ async def execute_agent_query(
     payload: AgentQueryRequest,
     request: Request,
     principal: AgentQueryPrincipalDependency,
+    _rate_limit: ExpensiveRateLimitDependency,
     plan: ExecutableAgentQueryPlanDependency,
     risk_collector: AgentGitHubRiskCollectorDependency,
     jira_risk_collector: AgentJiraRiskCollectorDependency,

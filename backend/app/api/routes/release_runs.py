@@ -19,6 +19,10 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies.rate_limit import (
+    RateLimitPolicyClass,
+    enforce_rate_limit,
+)
 from app.api.dependencies.security import require_scopes
 from app.core.config import get_settings
 from app.core.security import AuthenticatedPrincipal
@@ -123,6 +127,14 @@ ReleaseNotifyPrincipalDependency = Annotated[
 ReleaseApprovalPrincipalDependency = Annotated[
     AuthenticatedPrincipal,
     Depends(require_scopes("release:approve")),
+]
+StandardRateLimitDependency = Annotated[
+    None,
+    Depends(enforce_rate_limit(RateLimitPolicyClass.STANDARD)),
+]
+ExpensiveRateLimitDependency = Annotated[
+    None,
+    Depends(enforce_rate_limit(RateLimitPolicyClass.EXPENSIVE)),
 ]
 
 
@@ -288,6 +300,7 @@ async def start_release_run(
     payload: ReleaseRunCreate,
     request: Request,
     principal: ReleaseWritePrincipalDependency,
+    _rate_limit: StandardRateLimitDependency,
     session: AsyncSession = Depends(get_db_session),
 ) -> ReleaseRunResult:
     """Start a new release-risk workflow run."""
@@ -339,6 +352,7 @@ async def start_release_run(
 async def list_pending_release_run_approvals(
     request: Request,
     _principal: ReleaseReadPrincipalDependency,
+    _rate_limit: StandardRateLimitDependency,
     session: AsyncSession = Depends(get_db_session),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -386,6 +400,7 @@ async def get_release_run(
     release_run_id: UUID,
     request: Request,
     _principal: ReleaseReadPrincipalDependency,
+    _rate_limit: StandardRateLimitDependency,
     session: AsyncSession = Depends(get_db_session),
 ) -> ReleaseRunResult:
     """Fetch a release-risk workflow run by ID."""
@@ -435,6 +450,7 @@ async def list_release_run_events(
     release_run_id: UUID,
     request: Request,
     _principal: ReleaseReadPrincipalDependency,
+    _rate_limit: StandardRateLimitDependency,
     session: AsyncSession = Depends(get_db_session),
 ) -> ReleaseRunEventListResponse:
     """List audit events for a release-risk workflow run.
@@ -489,6 +505,7 @@ async def list_release_run_approvals(
     release_run_id: UUID,
     request: Request,
     _principal: ReleaseReadPrincipalDependency,
+    _rate_limit: StandardRateLimitDependency,
     session: AsyncSession = Depends(get_db_session),
 ) -> ReleaseRunApprovalListResponse:
     """List HITL approval requests for a release-risk workflow run."""
@@ -542,6 +559,7 @@ async def decide_release_run_approval(
     decision_request: ReleaseRunApprovalDecisionRequest,
     request: Request,
     principal: ReleaseApprovalPrincipalDependency,
+    _rate_limit: StandardRateLimitDependency,
     session: AsyncSession = Depends(get_db_session),
 ) -> ReleaseRunApprovalResponse:
     """Approve or reject a pending HITL release approval request."""
@@ -650,6 +668,7 @@ async def send_release_run_slack_alert(
     release_run_id: UUID,
     request: Request,
     _principal: ReleaseNotifyPrincipalDependency,
+    _rate_limit: StandardRateLimitDependency,
     session: AsyncSession = Depends(get_db_session),
     sender: SlackClient = Depends(get_slack_alert_sender),
 ) -> SlackReleaseAlertResult:
@@ -767,6 +786,7 @@ async def collect_release_risks(
     release_run_id: UUID,
     request: Request,
     _principal: ReleaseWritePrincipalDependency,
+    _rate_limit: ExpensiveRateLimitDependency,
     session: AsyncSession = Depends(get_db_session),
     risk_collector: RiskCollector = Depends(get_risk_collector),
     jira_risk_collector: JiraRiskCollector = Depends(get_jira_risk_collector),
@@ -821,6 +841,7 @@ async def collect_github_risks(
     release_run_id: UUID,
     request: Request,
     _principal: ReleaseWritePrincipalDependency,
+    _rate_limit: ExpensiveRateLimitDependency,
     session: AsyncSession = Depends(get_db_session),
     risk_collector: RiskCollector = Depends(get_risk_collector),
     jira_risk_collector: JiraRiskCollector = Depends(get_jira_risk_collector),
