@@ -337,6 +337,10 @@ class Settings(BaseSettings):
             return None
 
         normalized_value = value.strip()
+
+        if not normalized_value:
+            return None
+
         parsed_url = urlsplit(normalized_value)
 
         if (

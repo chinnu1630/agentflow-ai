@@ -623,3 +623,19 @@ def test_settings_reject_invalid_otel_metrics_export_interval(
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_treat_blank_otel_metrics_endpoint_as_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disabled metrics should accept Compose-style blank endpoint values."""
+    monkeypatch.setenv("OTEL_METRICS_ENABLED", "false")
+    monkeypatch.setenv(
+        "OTEL_METRICS_EXPORTER_OTLP_ENDPOINT",
+        "",
+    )
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.otel_metrics_enabled is False
+    assert settings.otel_metrics_exporter_otlp_endpoint is None
