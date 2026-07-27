@@ -9,8 +9,15 @@ from pydantic import SecretStr
 from streamlit.testing.v1 import AppTest
 
 import agentflow_frontend.app as app_module
-from agentflow_frontend.api_client import AgentQueryCallResult
-from agentflow_frontend.api_models import AgentQueryRequest, AgentQueryResponse
+from agentflow_frontend.api_client import (
+    AgentQueryCallResult,
+    PendingApprovalsCallResult,
+)
+from agentflow_frontend.api_models import (
+    AgentQueryRequest,
+    AgentQueryResponse,
+    PendingReleaseRunApprovalList,
+)
 from agentflow_frontend.config import FrontendSettings, get_frontend_settings
 
 
@@ -298,5 +305,144 @@ def test_streamlit_app_renders_release_risk_response(
     )
     assert any(
         "frontend-render-test-run-id" in item.value
+        for item in app.caption
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_pending_approvals_uses_typed_api_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Delegate pending approval retrieval to the existing API client."""
+    captured: dict[str, Any] = {}
+
+    pending_response = PendingReleaseRunApprovalList.model_validate(
+        {
+            "approval_status": "pending",
+            "approvals": [],
+        }
+    )
+
+    class FakeAgentFlowAPIClient:
+        """Async context-manager fake for pending approval retrieval."""
+
+        def __init__(
+            self,
+            *,
+            settings: FrontendSettings,
+            bearer_token: SecretStr,
+        ) -> None:
+            captured["settings"] = settings
+            captured["authorization_value"] = (
+                bearer_token.get_secret_value()
+            )
+
+        async def __aenter__(self) -> FakeAgentFlowAPIClient:
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: object | None,
+        ) -> None:
+            return None
+
+        async def list_pending_approvals(
+            self,
+        ) -> PendingApprovalsCallResult:
+            return PendingApprovalsCallResult(
+                response=pending_response,
+                run_id="pending-approval-test-run-id",
+            )
+
+    monkeypatch.setattr(
+        app_module,
+        "AgentFlowAPIClient",
+        FakeAgentFlowAPIClient,
+    )
+
+    settings = FrontendSettings(
+        backend_base_url="https://agentflow.example.test",
+        _env_file=None,
+    )
+
+    result = await app_module.load_pending_approvals(
+        settings=settings,
+        bearer_token=SecretStr("signed-test-jwt"),
+    )
+
+    assert result.response.approval_status == "pending"
+    assert captured["settings"] == settings
+    assert captured["authorization_value"] == "signed-test-jwt"
+
+
+def test_streamlit_app_renders_pending_approval_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Load and render durable pending approval requests."""
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
+        "https://agentflow.example.test",
+    )
+    get_frontend_settings.cache_clear()
+
+    pending_response = PendingReleaseRunApprovalList.model_validate(
+        {
+            "approval_status": "pending",
+            "approvals": [
+                {
+                    "id": "3cc48c03-678b-458e-9418-941e914c220b",
+                    "release_run_id": (
+                        "14326708-c085-4e6d-9c32-47dc92b24841"
+                    ),
+                    "approval_status": "pending",
+                    "approval_reason": (
+                        "Critical release risk requires manager review."
+                    ),
+                    "approval_policy_version": "hitl_policy_v1",
+                    "created_at": "2026-07-27T12:00:00Z",
+                }
+            ],
+        }
+    )
+
+    async def fake_load_pending_approvals(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+    ) -> PendingApprovalsCallResult:
+        assert str(settings.backend_base_url) == (
+            "https://agentflow.example.test/"
+        )
+        assert bearer_token.get_secret_value() == "signed-test-jwt"
+
+        return PendingApprovalsCallResult(
+            response=pending_response,
+            run_id="pending-queue-render-run-id",
+        )
+
+    monkeypatch.setattr(
+        app_module,
+        "load_pending_approvals",
+        fake_load_pending_approvals,
+    )
+
+    app = AppTest.from_file("streamlit_app.py")
+    app.run()
+    app.text_input[0].input("signed-test-jwt")
+    app.button[1].click().run()
+
+    assert not app.exception
+    assert any(
+        item.value == "Manager approval queue"
+        for item in app.subheader
+    )
+    assert any(
+        "Critical release risk requires manager review." in item.value
+        for item in app.markdown
+    )
+    assert any(
+        "pending-queue-render-run-id" in item.value
         for item in app.caption
     )

@@ -13,12 +13,14 @@ from agentflow_frontend.api_client import (
     AgentFlowAPIClient,
     AgentFlowAPIError,
     AgentQueryCallResult,
+    PendingApprovalsCallResult,
 )
 from agentflow_frontend.api_models import AgentQueryRequest, AgentQueryResponse
 from agentflow_frontend.config import FrontendSettings, get_frontend_settings
 
 DEFAULT_RELEASE_RISK_QUERY = "What are the biggest release risks this week?"
 _QUERY_RESULT_STATE_KEY = "agentflow_query_result"
+_PENDING_APPROVALS_STATE_KEY = "agentflow_pending_approvals"
 
 
 def is_safe_http_url(value: str | None) -> TypeGuard[str]:
@@ -60,6 +62,59 @@ async def execute_manager_query(
         bearer_token=bearer_token,
     ) as client:
         return await client.execute_agent_query(request)
+
+
+async def load_pending_approvals(
+    *,
+    settings: FrontendSettings,
+    bearer_token: SecretStr,
+) -> PendingApprovalsCallResult:
+    """Load pending approval requests through the typed FastAPI client.
+
+    Args:
+        settings: Validated frontend runtime configuration.
+        bearer_token: Signed JWT supplied by an authorized manager.
+
+    Returns:
+        Validated pending approval queue and request correlation ID.
+    """
+    async with AgentFlowAPIClient(
+        settings=settings,
+        bearer_token=bearer_token,
+    ) as client:
+        return await client.list_pending_approvals()
+
+
+def render_pending_approvals(
+    result: PendingApprovalsCallResult,
+) -> None:
+    """Render the backend-owned pending approval queue.
+
+    Args:
+        result: Validated pending approvals and correlation identifier.
+    """
+    approvals = result.response.approvals
+
+    st.caption(f"Request correlation ID: {result.run_id}")
+
+    if not approvals:
+        st.info("No release runs are currently waiting for approval.")
+        return
+
+    st.write(f"{len(approvals)} release run(s) require manager review.")
+
+    for approval in approvals:
+        with st.container(border=True):
+            st.write(f"Release run: `{approval.release_run_id}`")
+            st.write(approval.approval_reason)
+            st.caption(
+                f"Status: {approval.approval_status} · "
+                f"Policy: {approval.approval_policy_version}"
+            )
+            st.caption(
+                f"Approval request ID: {approval.id} · "
+                f"Created: {approval.created_at.isoformat()}"
+            )
 
 
 def render_agent_query_response(result: AgentQueryCallResult) -> None:
@@ -281,6 +336,48 @@ def main() -> None:
 
     if isinstance(stored_result, AgentQueryCallResult):
         render_agent_query_response(stored_result)
+
+
+    st.divider()
+    st.subheader("Manager approval queue")
+    st.caption(
+        "Load durable pending approval requests from the AgentFlow backend."
+    )
+
+    load_approvals_clicked = st.button("Load pending approvals")
+
+    if load_approvals_clicked:
+        if not bearer_token.strip():
+            st.error(
+                "Enter a signed access token before loading approvals."
+            )
+        else:
+            try:
+                with st.spinner("Loading pending approval requests..."):
+                    approvals_result = asyncio.run(
+                        load_pending_approvals(
+                            settings=settings,
+                            bearer_token=SecretStr(bearer_token),
+                        )
+                    )
+            except AgentFlowAPIError as exc:
+                st.error(str(exc))
+
+                if exc.run_id:
+                    st.caption(f"Request correlation ID: {exc.run_id}")
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state[_PENDING_APPROVALS_STATE_KEY] = (
+                    approvals_result
+                )
+
+    stored_approvals = st.session_state.get(
+        _PENDING_APPROVALS_STATE_KEY
+    )
+
+    if isinstance(stored_approvals, PendingApprovalsCallResult):
+        render_pending_approvals(stored_approvals)
 
 
 if __name__ == "__main__":
