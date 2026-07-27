@@ -1,0 +1,120 @@
+name: Frontend CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "frontend/**"
+      - "docker-compose.yml"
+      - ".env.example"
+      - ".github/workflows/frontend-ci.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "frontend/**"
+      - "docker-compose.yml"
+      - ".env.example"
+      - ".github/workflows/frontend-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, type-check, and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: frontend/pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run Ruff
+        run: python -m ruff check .
+
+      - name: Run mypy
+        run: python -m mypy src
+
+      - name: Run tests with coverage gate
+        run: python -m pytest -q
+
+  container-smoke-test:
+    name: Build and smoke-test frontend container
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build frontend image
+        run: |
+          docker build \
+            --tag agentflow-frontend:ci \
+            frontend
+
+      - name: Verify hardened image configuration
+        run: |
+          configured_user="$(
+            docker image inspect agentflow-frontend:ci \
+              --format '{{.Config.User}}'
+          )"
+
+          test "$configured_user" = "agentflow"
+
+          docker run --rm \
+            --entrypoint sh \
+            agentflow-frontend:ci \
+            -c 'test "$(id -u)" -ne 0'
+
+      - name: Start frontend container
+        run: |
+          docker run --detach \
+            --name agentflow-frontend-ci \
+            --publish 8501:8501 \
+            --env \
+              AGENTFLOW_FRONTEND_BACKEND_BASE_URL=http://backend:8000 \
+            agentflow-frontend:ci
+
+      - name: Verify Streamlit health
+        run: |
+          for _ in {1..30}; do
+            if curl --fail --silent \
+              http://127.0.0.1:8501/_stcore/health; then
+              exit 0
+            fi
+
+            sleep 2
+          done
+
+          docker logs agentflow-frontend-ci
+          exit 1
+
+      - name: Stop frontend container
+        if: always()
+        run: |
+          docker rm --force agentflow-frontend-ci \
+            >/dev/null 2>&1 || true
