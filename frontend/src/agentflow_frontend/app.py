@@ -6,9 +6,10 @@ import asyncio
 from dataclasses import dataclass
 from typing import TypeGuard
 from urllib.parse import urlsplit
+from uuid import UUID
 
 import streamlit as st
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr, TypeAdapter, ValidationError
 
 from agentflow_frontend.api_client import (
     AgentFlowAPIClient,
@@ -16,6 +17,8 @@ from agentflow_frontend.api_client import (
     AgentQueryCallResult,
     ApprovalDecisionCallResult,
     PendingApprovalsCallResult,
+    ReleaseRunEventsCallResult,
+    ReleaseRunStatusCallResult,
     SlackAlertCallResult,
 )
 from agentflow_frontend.api_models import (
@@ -33,6 +36,10 @@ _PENDING_APPROVALS_STATE_KEY = "agentflow_pending_approvals"
 _APPROVAL_DECISION_RESULT_STATE_KEY = "agentflow_approval_decision_result"
 _APPROVED_RELEASE_RUN_STATE_KEY = "agentflow_approved_release_run"
 _SLACK_ALERT_RESULT_STATE_KEY = "agentflow_slack_alert_result"
+_RELEASE_RUN_STATUS_STATE_KEY = "agentflow_release_run_status"
+_RELEASE_RUN_EVENTS_STATE_KEY = "agentflow_release_run_events"
+
+_RELEASE_RUN_ID_ADAPTER: TypeAdapter[UUID] = TypeAdapter(UUID)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +50,22 @@ class ApprovalDecisionIntent:
     approval_id: str
     approval_status: ReleaseApprovalDecisionStatus
     decision_note: str | None
+
+
+def validate_release_run_id(value: str) -> str:
+    """Validate and normalize a manager-provided release-run UUID.
+
+    Args:
+        value: Raw Streamlit text input.
+
+    Returns:
+        Canonical UUID string accepted by the FastAPI route.
+
+    Raises:
+        ValidationError: If the value is not a valid UUID.
+    """
+    release_run_id = _RELEASE_RUN_ID_ADAPTER.validate_python(value.strip())
+    return str(release_run_id)
 
 
 def is_safe_http_url(value: str | None) -> TypeGuard[str]:
@@ -145,6 +168,56 @@ async def decide_pending_approval(
         )
 
 
+async def load_release_run_status(
+    *,
+    settings: FrontendSettings,
+    bearer_token: SecretStr,
+    release_run_id: str,
+) -> ReleaseRunStatusCallResult:
+    """Load the backend-owned state of one release workflow.
+
+    Args:
+        settings: Validated frontend runtime configuration.
+        bearer_token: Signed JWT containing ``release:read``.
+        release_run_id: Backend release-run UUID.
+
+    Returns:
+        Validated workflow status and request correlation identifier.
+    """
+    async with AgentFlowAPIClient(
+        settings=settings,
+        bearer_token=bearer_token,
+    ) as client:
+        return await client.get_release_run_status(
+            release_run_id=release_run_id,
+        )
+
+
+async def load_release_run_events(
+    *,
+    settings: FrontendSettings,
+    bearer_token: SecretStr,
+    release_run_id: str,
+) -> ReleaseRunEventsCallResult:
+    """Load the append-only audit timeline for one release workflow.
+
+    Args:
+        settings: Validated frontend runtime configuration.
+        bearer_token: Signed JWT containing ``release:read``.
+        release_run_id: Backend release-run UUID.
+
+    Returns:
+        Validated workflow events and request correlation identifier.
+    """
+    async with AgentFlowAPIClient(
+        settings=settings,
+        bearer_token=bearer_token,
+    ) as client:
+        return await client.list_release_run_events(
+            release_run_id=release_run_id,
+        )
+
+
 async def send_approved_release_slack_alert(
     *,
     settings: FrontendSettings,
@@ -168,6 +241,61 @@ async def send_approved_release_slack_alert(
         return await client.send_release_run_slack_alert(
             release_run_id=release_run_id,
         )
+
+
+def render_release_run_status(
+    result: ReleaseRunStatusCallResult,
+) -> None:
+    """Render the persisted state of one release workflow.
+
+    Args:
+        result: Validated workflow status and correlation identifier.
+    """
+    status = result.response
+
+    with st.container(border=True):
+        st.metric("Workflow status", status.status)
+        st.write(status.query)
+        st.caption(
+            f"Requested by: {status.requested_by} · "
+            f"Backend run ID: {status.run_id}"
+        )
+        st.caption(
+            f"Created: {status.created_at.isoformat()} · "
+            f"Completed: "
+            f"{status.completed_at.isoformat() if status.completed_at else 'Pending'}"
+        )
+        st.caption(f"Request correlation ID: {result.run_id}")
+
+
+def render_release_run_events(
+    result: ReleaseRunEventsCallResult,
+) -> None:
+    """Render an append-only release workflow audit timeline.
+
+    Args:
+        result: Validated workflow events and correlation identifier.
+    """
+    events = result.response.events
+
+    st.caption(f"Request correlation ID: {result.run_id}")
+
+    if not events:
+        st.info("No audit events are available for this release run.")
+        return
+
+    st.write(f"{len(events)} audit event(s) recorded.")
+
+    for event in events:
+        with st.container(border=True):
+            st.write(event.message)
+            st.caption(
+                f"{event.event_type} · {event.event_status} · "
+                f"{event.created_at.isoformat()}"
+            )
+
+            if event.metadata_json:
+                st.json(event.metadata_json, expanded=False)
 
 
 def render_slack_alert_result(
@@ -674,6 +802,105 @@ def main() -> None:
                         None,
                     )
                     st.rerun()
+
+    st.divider()
+    st.subheader("Workflow status and audit timeline")
+    st.caption(
+        "Read the persisted workflow state and append-only audit events "
+        "from FastAPI."
+    )
+
+    release_run_lookup = st.text_input(
+        "Release run ID",
+        key="workflow-release-run-id",
+        placeholder="Paste the release-run UUID shown in the assessment",
+    )
+
+    status_column, events_column = st.columns(2)
+    load_status_clicked = status_column.button(
+        "Load workflow status",
+        use_container_width=True,
+    )
+    load_events_clicked = events_column.button(
+        "Load audit timeline",
+        use_container_width=True,
+    )
+
+    if load_status_clicked or load_events_clicked:
+        if not bearer_token.strip():
+            st.error(
+                "Enter a signed access token before loading workflow data."
+            )
+        else:
+            try:
+                validated_release_run_id = validate_release_run_id(
+                    release_run_lookup
+                )
+            except ValidationError:
+                st.error("Enter a valid release-run UUID.")
+            else:
+                if load_status_clicked:
+                    try:
+                        with st.spinner("Loading workflow status..."):
+                            status_result = asyncio.run(
+                                load_release_run_status(
+                                    settings=settings,
+                                    bearer_token=SecretStr(bearer_token),
+                                    release_run_id=validated_release_run_id,
+                                )
+                            )
+                    except AgentFlowAPIError as exc:
+                        st.error(str(exc))
+
+                        if exc.run_id:
+                            st.caption(
+                                f"Request correlation ID: {exc.run_id}"
+                            )
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.session_state[
+                            _RELEASE_RUN_STATUS_STATE_KEY
+                        ] = status_result
+
+                if load_events_clicked:
+                    try:
+                        with st.spinner("Loading audit timeline..."):
+                            events_result = asyncio.run(
+                                load_release_run_events(
+                                    settings=settings,
+                                    bearer_token=SecretStr(bearer_token),
+                                    release_run_id=validated_release_run_id,
+                                )
+                            )
+                    except AgentFlowAPIError as exc:
+                        st.error(str(exc))
+
+                        if exc.run_id:
+                            st.caption(
+                                f"Request correlation ID: {exc.run_id}"
+                            )
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.session_state[
+                            _RELEASE_RUN_EVENTS_STATE_KEY
+                        ] = events_result
+
+    stored_status_result = st.session_state.get(
+        _RELEASE_RUN_STATUS_STATE_KEY
+    )
+
+    if isinstance(stored_status_result, ReleaseRunStatusCallResult):
+        render_release_run_status(stored_status_result)
+
+    stored_events_result = st.session_state.get(
+        _RELEASE_RUN_EVENTS_STATE_KEY
+    )
+
+    if isinstance(stored_events_result, ReleaseRunEventsCallResult):
+        render_release_run_events(stored_events_result)
+
 
 
 if __name__ == "__main__":

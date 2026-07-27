@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from streamlit.testing.v1 import AppTest
 
 import agentflow_frontend.app as app_module
@@ -13,6 +13,8 @@ from agentflow_frontend.api_client import (
     AgentQueryCallResult,
     ApprovalDecisionCallResult,
     PendingApprovalsCallResult,
+    ReleaseRunEventsCallResult,
+    ReleaseRunStatusCallResult,
     SlackAlertCallResult,
 )
 from agentflow_frontend.api_models import (
@@ -22,9 +24,26 @@ from agentflow_frontend.api_models import (
     ReleaseApprovalDecisionStatus,
     ReleaseRunApproval,
     ReleaseRunApprovalDecisionRequest,
+    ReleaseRunEventList,
+    ReleaseRunStatus,
     SlackReleaseAlertResult,
 )
 from agentflow_frontend.config import FrontendSettings, get_frontend_settings
+
+
+def _text_input_by_label(app: AppTest, label: str) -> Any:
+    """Return one Streamlit text input by its stable user-facing label."""
+    return next(item for item in app.text_input if item.label == label)
+
+
+def _text_area_by_label(app: AppTest, label: str) -> Any:
+    """Return one Streamlit text area by its stable user-facing label."""
+    return next(item for item in app.text_area if item.label == label)
+
+
+def _button_by_label(app: AppTest, label: str) -> Any:
+    """Return one Streamlit button by its stable user-facing label."""
+    return next(item for item in app.button if item.label == label)
 
 
 @pytest.mark.parametrize(
@@ -141,9 +160,18 @@ def test_streamlit_app_renders_secure_query_form(
 
     assert not app.exception
     assert app.title[0].value == "AgentFlow AI"
-    assert app.text_input[0].label == "Signed access token"
-    assert app.text_area[0].label == "Manager question"
-    assert app.button[0].label == "Analyze release risks"
+    assert any(
+        item.label == "Signed access token"
+        for item in app.text_input
+    )
+    assert any(
+        item.label == "Manager question"
+        for item in app.text_area
+    )
+    assert any(
+        button.label == "Analyze release risks"
+        for button in app.button
+    )
 
 
 def test_streamlit_app_requires_token_before_query(
@@ -158,7 +186,7 @@ def test_streamlit_app_requires_token_before_query(
 
     app = AppTest.from_file("streamlit_app.py")
     app.run()
-    app.button[0].click().run()
+    _button_by_label(app, "Analyze release risks").click().run()
 
     assert not app.exception
     assert app.error[0].value == (
@@ -285,8 +313,8 @@ def test_streamlit_app_renders_release_risk_response(
 
     app = AppTest.from_file("streamlit_app.py")
     app.run()
-    app.text_input[0].input("signed-test-jwt")
-    app.button[0].click().run()
+    _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
+    _button_by_label(app, "Analyze release risks").click().run()
 
     assert not app.exception
     assert any(
@@ -436,8 +464,8 @@ def test_streamlit_app_renders_pending_approval_queue(
 
     app = AppTest.from_file("streamlit_app.py")
     app.run()
-    app.text_input[0].input("signed-test-jwt")
-    app.button[1].click().run()
+    _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
+    _button_by_label(app, "Load pending approvals").click().run()
 
     assert not app.exception
     assert any(
@@ -558,15 +586,15 @@ async def test_decide_pending_approval_uses_typed_api_client(
 
 
 @pytest.mark.parametrize(
-    ("decision_button_index", "expected_status"),
+    ("decision_button_label", "expected_status"),
     [
-        (2, ReleaseApprovalDecisionStatus.APPROVED),
-        (3, ReleaseApprovalDecisionStatus.REJECTED),
+        ("Approve", ReleaseApprovalDecisionStatus.APPROVED),
+        ("Reject", ReleaseApprovalDecisionStatus.REJECTED),
     ],
 )
 def test_streamlit_app_submits_manager_approval_decision(
     monkeypatch: pytest.MonkeyPatch,
-    decision_button_index: int,
+    decision_button_label: str,
     expected_status: ReleaseApprovalDecisionStatus,
 ) -> None:
     """Persist approved and rejected decisions through the typed helper."""
@@ -665,11 +693,11 @@ def test_streamlit_app_submits_manager_approval_decision(
 
     app = AppTest.from_file("streamlit_app.py")
     app.run()
-    app.text_input[0].input("signed-test-jwt")
-    app.button[1].click().run()
+    _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
+    _button_by_label(app, "Load pending approvals").click().run()
 
-    app.text_area[1].input("Evidence reviewed by manager.")
-    app.button[decision_button_index].click().run()
+    _text_area_by_label(app, "Decision note").input("Evidence reviewed by manager.")
+    _button_by_label(app, decision_button_label).click().run()
 
     assert not app.exception
     assert captured["authorization_value"] == "signed-test-jwt"
@@ -907,9 +935,9 @@ def test_streamlit_app_sends_slack_after_approved_decision(
 
     app = AppTest.from_file("streamlit_app.py")
     app.run()
-    app.text_input[0].input("signed-notify-jwt")
-    app.button[1].click().run()
-    app.text_area[1].input("Approved for Slack notification.")
+    _text_input_by_label(app, "Signed access token").input("signed-notify-jwt")
+    _button_by_label(app, "Load pending approvals").click().run()
+    _text_area_by_label(app, "Decision note").input("Approved for Slack notification.")
 
     approve_button = next(
         button for button in app.button if button.label == "Approve"
@@ -945,4 +973,338 @@ def test_streamlit_app_sends_slack_after_approved_decision(
     assert not any(
         button.label == "Send approved Slack alert"
         for button in app.button
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_release_run_status_uses_typed_api_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Load persisted workflow state through the typed FastAPI client."""
+    captured: dict[str, Any] = {}
+
+    status_response = ReleaseRunStatus.model_validate(
+        {
+            "id": "14326708-c085-4e6d-9c32-47dc92b24841",
+            "run_id": "workflow-status-backend-run-id",
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+            "status": "approved",
+            "created_at": "2026-07-27T12:00:00Z",
+            "completed_at": "2026-07-27T12:05:00Z",
+        }
+    )
+
+    class FakeAgentFlowAPIClient:
+        """Async fake for release-run status retrieval."""
+
+        def __init__(
+            self,
+            *,
+            settings: FrontendSettings,
+            bearer_token: SecretStr,
+        ) -> None:
+            captured["settings"] = settings
+            captured["authorization_value"] = (
+                bearer_token.get_secret_value()
+            )
+
+        async def __aenter__(self) -> FakeAgentFlowAPIClient:
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: object | None,
+        ) -> None:
+            return None
+
+        async def get_release_run_status(
+            self,
+            *,
+            release_run_id: str,
+        ) -> ReleaseRunStatusCallResult:
+            captured["release_run_id"] = release_run_id
+
+            return ReleaseRunStatusCallResult(
+                response=status_response,
+                run_id="status-helper-request-run-id",
+            )
+
+    monkeypatch.setattr(
+        app_module,
+        "AgentFlowAPIClient",
+        FakeAgentFlowAPIClient,
+    )
+
+    settings = FrontendSettings(
+        backend_base_url="https://agentflow.example.test",
+        _env_file=None,
+    )
+
+    result = await app_module.load_release_run_status(
+        settings=settings,
+        bearer_token=SecretStr("signed-read-jwt"),
+        release_run_id="14326708-c085-4e6d-9c32-47dc92b24841",
+    )
+
+    assert captured["settings"] == settings
+    assert captured["authorization_value"] == "signed-read-jwt"
+    assert captured["release_run_id"] == (
+        "14326708-c085-4e6d-9c32-47dc92b24841"
+    )
+    assert result.response.status == "approved"
+    assert result.run_id == "status-helper-request-run-id"
+
+
+@pytest.mark.asyncio
+async def test_load_release_run_events_uses_typed_api_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Load the append-only audit trail through the typed FastAPI client."""
+    captured: dict[str, Any] = {}
+
+    events_response = ReleaseRunEventList.model_validate(
+        {
+            "release_run_id": "14326708-c085-4e6d-9c32-47dc92b24841",
+            "events": [
+                {
+                    "id": "a23cfa16-048d-471a-9219-9370365feb66",
+                    "release_run_id": (
+                        "14326708-c085-4e6d-9c32-47dc92b24841"
+                    ),
+                    "event_type": "approval_decided",
+                    "event_status": "completed",
+                    "message": "Release run approved by manager.",
+                    "metadata_json": {
+                        "approval_policy_version": "hitl_policy_v1"
+                    },
+                    "created_at": "2026-07-27T12:05:00Z",
+                }
+            ],
+        }
+    )
+
+    class FakeAgentFlowAPIClient:
+        """Async fake for release-run event retrieval."""
+
+        def __init__(
+            self,
+            *,
+            settings: FrontendSettings,
+            bearer_token: SecretStr,
+        ) -> None:
+            captured["settings"] = settings
+            captured["authorization_value"] = (
+                bearer_token.get_secret_value()
+            )
+
+        async def __aenter__(self) -> FakeAgentFlowAPIClient:
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: object | None,
+        ) -> None:
+            return None
+
+        async def list_release_run_events(
+            self,
+            *,
+            release_run_id: str,
+        ) -> ReleaseRunEventsCallResult:
+            captured["release_run_id"] = release_run_id
+
+            return ReleaseRunEventsCallResult(
+                response=events_response,
+                run_id="events-helper-request-run-id",
+            )
+
+    monkeypatch.setattr(
+        app_module,
+        "AgentFlowAPIClient",
+        FakeAgentFlowAPIClient,
+    )
+
+    settings = FrontendSettings(
+        backend_base_url="https://agentflow.example.test",
+        _env_file=None,
+    )
+
+    result = await app_module.load_release_run_events(
+        settings=settings,
+        bearer_token=SecretStr("signed-read-jwt"),
+        release_run_id="14326708-c085-4e6d-9c32-47dc92b24841",
+    )
+
+    assert captured["settings"] == settings
+    assert captured["authorization_value"] == "signed-read-jwt"
+    assert captured["release_run_id"] == (
+        "14326708-c085-4e6d-9c32-47dc92b24841"
+    )
+    assert len(result.response.events) == 1
+    assert result.response.events[0].event_type == "approval_decided"
+    assert result.run_id == "events-helper-request-run-id"
+
+
+def test_validate_release_run_id_normalizes_uuid() -> None:
+    """Normalize a valid release-run identifier before API use."""
+    assert app_module.validate_release_run_id(
+        " 14326708-c085-4e6d-9c32-47dc92b24841 "
+    ) == "14326708-c085-4e6d-9c32-47dc92b24841"
+
+
+def test_validate_release_run_id_rejects_invalid_value() -> None:
+    """Reject malformed release-run identifiers at the UI boundary."""
+    with pytest.raises(ValidationError):
+        app_module.validate_release_run_id("not-a-release-run-id")
+
+
+def test_streamlit_app_renders_workflow_status_and_audit_timeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Load and render persisted workflow state and audit events."""
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
+        "https://agentflow.example.test",
+    )
+    get_frontend_settings.cache_clear()
+
+    captured: dict[str, Any] = {}
+
+    status_response = ReleaseRunStatus.model_validate(
+        {
+            "id": "14326708-c085-4e6d-9c32-47dc92b24841",
+            "run_id": "workflow-backend-run-id",
+            "query": "What are the biggest release risks this week?",
+            "requested_by": "manager@example.com",
+            "status": "approved",
+            "created_at": "2026-07-27T12:00:00Z",
+            "completed_at": "2026-07-27T12:05:00Z",
+        }
+    )
+
+    events_response = ReleaseRunEventList.model_validate(
+        {
+            "release_run_id": "14326708-c085-4e6d-9c32-47dc92b24841",
+            "events": [
+                {
+                    "id": "a23cfa16-048d-471a-9219-9370365feb66",
+                    "release_run_id": (
+                        "14326708-c085-4e6d-9c32-47dc92b24841"
+                    ),
+                    "event_type": "approval_decided",
+                    "event_status": "completed",
+                    "message": "Release run approved by manager.",
+                    "metadata_json": {
+                        "approval_policy_version": "hitl_policy_v1"
+                    },
+                    "created_at": "2026-07-27T12:05:00Z",
+                }
+            ],
+        }
+    )
+
+    async def fake_load_release_run_status(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+        release_run_id: str,
+    ) -> ReleaseRunStatusCallResult:
+        captured["status_settings"] = settings
+        captured["status_authorization_value"] = bearer_token.get_secret_value()
+        captured["status_release_run_id"] = release_run_id
+
+        return ReleaseRunStatusCallResult(
+            response=status_response,
+            run_id="workflow-status-ui-run-id",
+        )
+
+    async def fake_load_release_run_events(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+        release_run_id: str,
+    ) -> ReleaseRunEventsCallResult:
+        captured["events_settings"] = settings
+        captured["events_authorization_value"] = bearer_token.get_secret_value()
+        captured["events_release_run_id"] = release_run_id
+
+        return ReleaseRunEventsCallResult(
+            response=events_response,
+            run_id="workflow-events-ui-run-id",
+        )
+
+    monkeypatch.setattr(
+        app_module,
+        "load_release_run_status",
+        fake_load_release_run_status,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "load_release_run_events",
+        fake_load_release_run_events,
+    )
+
+    app = AppTest.from_file("streamlit_app.py")
+    app.run()
+
+    token_input = _text_input_by_label(
+        app,
+        "Signed access token",
+    )
+    release_run_input = _text_input_by_label(
+        app,
+        "Release run ID",
+    )
+
+    token_input.input("signed-read-jwt")
+    release_run_input.input(
+        "14326708-c085-4e6d-9c32-47dc92b24841"
+    )
+
+    status_button = next(
+        button
+        for button in app.button
+        if button.label == "Load workflow status"
+    )
+    status_button.click().run()
+
+    assert not app.exception
+    assert captured["status_authorization_value"] == "signed-read-jwt"
+    assert captured["status_release_run_id"] == (
+        "14326708-c085-4e6d-9c32-47dc92b24841"
+    )
+    assert any(
+        metric.label == "Workflow status"
+        and metric.value == "approved"
+        for metric in app.metric
+    )
+    assert any(
+        "workflow-status-ui-run-id" in item.value
+        for item in app.caption
+    )
+
+    events_button = next(
+        button
+        for button in app.button
+        if button.label == "Load audit timeline"
+    )
+    events_button.click().run()
+
+    assert not app.exception
+    assert captured["events_authorization_value"] == "signed-read-jwt"
+    assert captured["events_release_run_id"] == (
+        "14326708-c085-4e6d-9c32-47dc92b24841"
+    )
+    assert any(
+        "Release run approved by manager." in item.value
+        for item in app.markdown
+    )
+    assert any(
+        "workflow-events-ui-run-id" in item.value
+        for item in app.caption
     )
