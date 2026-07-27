@@ -13,6 +13,7 @@ from agentflow_frontend.api_client import (
     AgentQueryCallResult,
     ApprovalDecisionCallResult,
     PendingApprovalsCallResult,
+    SlackAlertCallResult,
 )
 from agentflow_frontend.api_models import (
     AgentQueryRequest,
@@ -21,6 +22,7 @@ from agentflow_frontend.api_models import (
     ReleaseApprovalDecisionStatus,
     ReleaseRunApproval,
     ReleaseRunApprovalDecisionRequest,
+    SlackReleaseAlertResult,
 )
 from agentflow_frontend.config import FrontendSettings, get_frontend_settings
 
@@ -688,4 +690,259 @@ def test_streamlit_app_submits_manager_approval_decision(
     assert any(
         "approval-ui-decision-run-id" in item.value
         for item in app.caption
+    )
+
+    slack_button_is_visible = any(
+        button.label == "Send approved Slack alert"
+        for button in app.button
+    )
+    assert slack_button_is_visible is (
+        expected_status is ReleaseApprovalDecisionStatus.APPROVED
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_approved_release_slack_alert_uses_typed_api_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Delegate Slack delivery without reproducing backend approval policy."""
+    captured: dict[str, Any] = {}
+
+    slack_response = SlackReleaseAlertResult.model_validate(
+        {
+            "sent": True,
+            "slack_channel": "#release-alerts",
+            "slack_timestamp": "1753632600.000100",
+            "risk_level": "critical",
+            "risk_score": 0.91,
+            "recommended_action": "Delay deployment pending remediation.",
+        }
+    )
+
+    class FakeAgentFlowAPIClient:
+        """Async fake for one approval-gated Slack request."""
+
+        def __init__(
+            self,
+            *,
+            settings: FrontendSettings,
+            bearer_token: SecretStr,
+        ) -> None:
+            captured["settings"] = settings
+            captured["authorization_value"] = (
+                bearer_token.get_secret_value()
+            )
+
+        async def __aenter__(self) -> FakeAgentFlowAPIClient:
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: object | None,
+        ) -> None:
+            return None
+
+        async def send_release_run_slack_alert(
+            self,
+            *,
+            release_run_id: str,
+        ) -> SlackAlertCallResult:
+            captured["release_run_id"] = release_run_id
+
+            return SlackAlertCallResult(
+                response=slack_response,
+                run_id="slack-alert-helper-test-run-id",
+            )
+
+    monkeypatch.setattr(
+        app_module,
+        "AgentFlowAPIClient",
+        FakeAgentFlowAPIClient,
+    )
+
+    settings = FrontendSettings(
+        backend_base_url="https://agentflow.example.test",
+        _env_file=None,
+    )
+
+    result = await app_module.send_approved_release_slack_alert(
+        settings=settings,
+        bearer_token=SecretStr("signed-notify-jwt"),
+        release_run_id="14326708-c085-4e6d-9c32-47dc92b24841",
+    )
+
+    assert captured["settings"] == settings
+    assert captured["authorization_value"] == "signed-notify-jwt"
+    assert captured["release_run_id"] == (
+        "14326708-c085-4e6d-9c32-47dc92b24841"
+    )
+    assert result.response.sent is True
+    assert result.response.slack_channel == "#release-alerts"
+    assert result.run_id == "slack-alert-helper-test-run-id"
+
+
+def test_streamlit_app_sends_slack_after_approved_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Expose Slack delivery only after an approved backend decision."""
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
+        "https://agentflow.example.test",
+    )
+    get_frontend_settings.cache_clear()
+
+    captured: dict[str, Any] = {}
+
+    pending_response = PendingReleaseRunApprovalList.model_validate(
+        {
+            "approval_status": "pending",
+            "approvals": [
+                {
+                    "id": "3cc48c03-678b-458e-9418-941e914c220b",
+                    "release_run_id": (
+                        "14326708-c085-4e6d-9c32-47dc92b24841"
+                    ),
+                    "approval_status": "pending",
+                    "approval_reason": (
+                        "Critical release risk requires manager review."
+                    ),
+                    "approval_policy_version": "hitl_policy_v1",
+                    "created_at": "2026-07-27T12:00:00Z",
+                }
+            ],
+        }
+    )
+
+    async def fake_load_pending_approvals(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+    ) -> PendingApprovalsCallResult:
+        return PendingApprovalsCallResult(
+            response=pending_response,
+            run_id="slack-ui-pending-run-id",
+        )
+
+    async def fake_decide_pending_approval(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+        release_run_id: str,
+        approval_id: str,
+        approval_status: ReleaseApprovalDecisionStatus,
+        decision_note: str | None,
+    ) -> ApprovalDecisionCallResult:
+        assert approval_status is (
+            ReleaseApprovalDecisionStatus.APPROVED
+        )
+
+        approval_response = ReleaseRunApproval.model_validate(
+            {
+                "id": approval_id,
+                "release_run_id": release_run_id,
+                "approval_status": "approved",
+                "approval_reason": (
+                    "Critical release risk requires manager review."
+                ),
+                "approval_policy_version": "hitl_policy_v1",
+                "decided_by": "manager@example.com",
+                "decision_note": decision_note,
+                "created_at": "2026-07-27T12:00:00Z",
+                "decided_at": "2026-07-27T12:05:00Z",
+            }
+        )
+
+        return ApprovalDecisionCallResult(
+            response=approval_response,
+            run_id="slack-ui-approval-run-id",
+        )
+
+    async def fake_send_approved_release_slack_alert(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+        release_run_id: str,
+    ) -> SlackAlertCallResult:
+        captured["settings"] = settings
+        captured["authorization_value"] = (
+            bearer_token.get_secret_value()
+        )
+        captured["release_run_id"] = release_run_id
+
+        response = SlackReleaseAlertResult.model_validate(
+            {
+                "sent": True,
+                "slack_channel": "#release-alerts",
+                "slack_timestamp": "1753632600.000100",
+                "risk_level": "critical",
+                "risk_score": 0.91,
+                "recommended_action": (
+                    "Delay deployment pending remediation."
+                ),
+            }
+        )
+
+        return SlackAlertCallResult(
+            response=response,
+            run_id="slack-ui-delivery-run-id",
+        )
+
+    monkeypatch.setattr(
+        app_module,
+        "load_pending_approvals",
+        fake_load_pending_approvals,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "decide_pending_approval",
+        fake_decide_pending_approval,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "send_approved_release_slack_alert",
+        fake_send_approved_release_slack_alert,
+    )
+
+    app = AppTest.from_file("streamlit_app.py")
+    app.run()
+    app.text_input[0].input("signed-notify-jwt")
+    app.button[1].click().run()
+    app.text_area[1].input("Approved for Slack notification.")
+
+    approve_button = next(
+        button for button in app.button if button.label == "Approve"
+    )
+    approve_button.click().run()
+
+    assert not app.exception
+    assert any(
+        button.label == "Send approved Slack alert"
+        for button in app.button
+    )
+
+    slack_button = next(
+        button
+        for button in app.button
+        if button.label == "Send approved Slack alert"
+    )
+    slack_button.click().run()
+
+    assert not app.exception
+    assert captured["authorization_value"] == "signed-notify-jwt"
+    assert captured["release_run_id"] == (
+        "14326708-c085-4e6d-9c32-47dc92b24841"
+    )
+    assert any(
+        "#release-alerts" in item.value
+        for item in app.success
+    )
+    assert any(
+        "slack-ui-delivery-run-id" in item.value
+        for item in app.caption
+    )
+    assert not any(
+        button.label == "Send approved Slack alert"
+        for button in app.button
     )

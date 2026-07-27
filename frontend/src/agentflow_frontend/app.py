@@ -16,6 +16,7 @@ from agentflow_frontend.api_client import (
     AgentQueryCallResult,
     ApprovalDecisionCallResult,
     PendingApprovalsCallResult,
+    SlackAlertCallResult,
 )
 from agentflow_frontend.api_models import (
     AgentQueryRequest,
@@ -30,6 +31,8 @@ _QUERY_RESULT_STATE_KEY = "agentflow_query_result"
 _PENDING_APPROVALS_STATE_KEY = "agentflow_pending_approvals"
 
 _APPROVAL_DECISION_RESULT_STATE_KEY = "agentflow_approval_decision_result"
+_APPROVED_RELEASE_RUN_STATE_KEY = "agentflow_approved_release_run"
+_SLACK_ALERT_RESULT_STATE_KEY = "agentflow_slack_alert_result"
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +143,61 @@ async def decide_pending_approval(
             approval_id=approval_id,
             decision=decision,
         )
+
+
+async def send_approved_release_slack_alert(
+    *,
+    settings: FrontendSettings,
+    bearer_token: SecretStr,
+    release_run_id: str,
+) -> SlackAlertCallResult:
+    """Request an approval-gated Slack alert through FastAPI.
+
+    Args:
+        settings: Validated frontend runtime configuration.
+        bearer_token: Signed JWT containing ``release:notify``.
+        release_run_id: Backend release-run UUID to notify about.
+
+    Returns:
+        Validated Slack delivery result and request correlation identifier.
+    """
+    async with AgentFlowAPIClient(
+        settings=settings,
+        bearer_token=bearer_token,
+    ) as client:
+        return await client.send_release_run_slack_alert(
+            release_run_id=release_run_id,
+        )
+
+
+def render_slack_alert_result(
+    result: SlackAlertCallResult,
+) -> None:
+    """Render a validated backend Slack delivery result.
+
+    Args:
+        result: Slack delivery response and request correlation identifier.
+    """
+    response = result.response
+
+    if response.sent:
+        st.success(
+            f"Approved release alert sent to "
+            f"`{response.slack_channel}`."
+        )
+    else:
+        st.warning("The backend did not send the Slack alert.")
+
+    metric_columns = st.columns(2)
+    metric_columns[0].metric("Risk level", response.risk_level)
+    metric_columns[1].metric(
+        "Risk score",
+        f"{response.risk_score:.2f}",
+    )
+
+    st.write(response.recommended_action)
+    st.caption(f"Slack timestamp: {response.slack_timestamp}")
+    st.caption(f"Request correlation ID: {result.run_id}")
 
 
 def render_pending_approvals(
@@ -461,6 +519,27 @@ def main() -> None:
             f"{stored_decision_result.run_id}"
         )
 
+        if (
+            decided_approval.approval_status
+            == ReleaseApprovalDecisionStatus.APPROVED
+        ):
+            st.session_state[_APPROVED_RELEASE_RUN_STATE_KEY] = str(
+                decided_approval.release_run_id
+            )
+        else:
+            st.session_state.pop(
+                _APPROVED_RELEASE_RUN_STATE_KEY,
+                None,
+            )
+
+    stored_slack_result = st.session_state.pop(
+        _SLACK_ALERT_RESULT_STATE_KEY,
+        None,
+    )
+
+    if isinstance(stored_slack_result, SlackAlertCallResult):
+        render_slack_alert_result(stored_slack_result)
+
     load_approvals_clicked = st.button("Load pending approvals")
 
     if load_approvals_clicked:
@@ -540,6 +619,61 @@ def main() -> None:
                     None,
                 )
                 st.rerun()
+
+    approved_release_run_id = st.session_state.get(
+        _APPROVED_RELEASE_RUN_STATE_KEY
+    )
+
+    if isinstance(approved_release_run_id, str):
+        st.divider()
+        st.subheader("Approved release notification")
+        st.caption(
+            "FastAPI will revalidate approval, authorization, trusted "
+            "risk evidence, and duplicate-send protection."
+        )
+
+        send_slack_clicked = st.button(
+            "Send approved Slack alert",
+            key=f"send-slack-{approved_release_run_id}",
+            type="primary",
+        )
+
+        if send_slack_clicked:
+            if not bearer_token.strip():
+                st.error(
+                    "Enter a signed access token before sending "
+                    "the Slack alert."
+                )
+            else:
+                try:
+                    with st.spinner(
+                        "Requesting approval-gated Slack delivery..."
+                    ):
+                        slack_result = asyncio.run(
+                            send_approved_release_slack_alert(
+                                settings=settings,
+                                bearer_token=SecretStr(bearer_token),
+                                release_run_id=approved_release_run_id,
+                            )
+                        )
+                except AgentFlowAPIError as exc:
+                    st.error(str(exc))
+
+                    if exc.run_id:
+                        st.caption(
+                            f"Request correlation ID: {exc.run_id}"
+                        )
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state[
+                        _SLACK_ALERT_RESULT_STATE_KEY
+                    ] = slack_result
+                    st.session_state.pop(
+                        _APPROVED_RELEASE_RUN_STATE_KEY,
+                        None,
+                    )
+                    st.rerun()
 
 
 if __name__ == "__main__":
