@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import TypeGuard
 from urllib.parse import urlsplit
 
@@ -13,14 +14,32 @@ from agentflow_frontend.api_client import (
     AgentFlowAPIClient,
     AgentFlowAPIError,
     AgentQueryCallResult,
+    ApprovalDecisionCallResult,
     PendingApprovalsCallResult,
 )
-from agentflow_frontend.api_models import AgentQueryRequest, AgentQueryResponse
+from agentflow_frontend.api_models import (
+    AgentQueryRequest,
+    AgentQueryResponse,
+    ReleaseApprovalDecisionStatus,
+    ReleaseRunApprovalDecisionRequest,
+)
 from agentflow_frontend.config import FrontendSettings, get_frontend_settings
 
 DEFAULT_RELEASE_RISK_QUERY = "What are the biggest release risks this week?"
 _QUERY_RESULT_STATE_KEY = "agentflow_query_result"
 _PENDING_APPROVALS_STATE_KEY = "agentflow_pending_approvals"
+
+_APPROVAL_DECISION_RESULT_STATE_KEY = "agentflow_approval_decision_result"
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalDecisionIntent:
+    """Manager decision selected in the Streamlit approval queue."""
+
+    release_run_id: str
+    approval_id: str
+    approval_status: ReleaseApprovalDecisionStatus
+    decision_note: str | None
 
 
 def is_safe_http_url(value: str | None) -> TypeGuard[str]:
@@ -85,13 +104,54 @@ async def load_pending_approvals(
         return await client.list_pending_approvals()
 
 
+async def decide_pending_approval(
+    *,
+    settings: FrontendSettings,
+    bearer_token: SecretStr,
+    release_run_id: str,
+    approval_id: str,
+    approval_status: ReleaseApprovalDecisionStatus,
+    decision_note: str | None,
+) -> ApprovalDecisionCallResult:
+    """Submit one authorized manager approval decision to FastAPI.
+
+    Args:
+        settings: Validated frontend runtime configuration.
+        bearer_token: Signed JWT containing ``release:approve``.
+        release_run_id: Release-run UUID owning the approval request.
+        approval_id: Pending approval request UUID.
+        approval_status: Approved or rejected terminal decision.
+        decision_note: Optional manager-provided audit note.
+
+    Returns:
+        Persisted backend approval decision and correlation identifier.
+    """
+    decision = ReleaseRunApprovalDecisionRequest(
+        approval_status=approval_status,
+        decision_note=decision_note,
+    )
+
+    async with AgentFlowAPIClient(
+        settings=settings,
+        bearer_token=bearer_token,
+    ) as client:
+        return await client.decide_release_run_approval(
+            release_run_id=release_run_id,
+            approval_id=approval_id,
+            decision=decision,
+        )
+
+
 def render_pending_approvals(
     result: PendingApprovalsCallResult,
-) -> None:
-    """Render the backend-owned pending approval queue.
+) -> ApprovalDecisionIntent | None:
+    """Render pending approvals and capture one manager decision.
 
     Args:
         result: Validated pending approvals and correlation identifier.
+
+    Returns:
+        Selected approval decision, or ``None`` when no action was taken.
     """
     approvals = result.response.approvals
 
@@ -99,7 +159,7 @@ def render_pending_approvals(
 
     if not approvals:
         st.info("No release runs are currently waiting for approval.")
-        return
+        return None
 
     st.write(f"{len(approvals)} release run(s) require manager review.")
 
@@ -115,6 +175,47 @@ def render_pending_approvals(
                 f"Approval request ID: {approval.id} · "
                 f"Created: {approval.created_at.isoformat()}"
             )
+
+            decision_note = st.text_area(
+                "Decision note",
+                key=f"approval-note-{approval.id}",
+                placeholder="Optional audit note for this decision",
+                max_chars=2_000,
+            )
+            normalized_note = decision_note.strip() or None
+
+            approve_column, reject_column = st.columns(2)
+
+            if approve_column.button(
+                "Approve",
+                key=f"approve-{approval.id}",
+                type="primary",
+                use_container_width=True,
+            ):
+                return ApprovalDecisionIntent(
+                    release_run_id=str(approval.release_run_id),
+                    approval_id=str(approval.id),
+                    approval_status=(
+                        ReleaseApprovalDecisionStatus.APPROVED
+                    ),
+                    decision_note=normalized_note,
+                )
+
+            if reject_column.button(
+                "Reject",
+                key=f"reject-{approval.id}",
+                use_container_width=True,
+            ):
+                return ApprovalDecisionIntent(
+                    release_run_id=str(approval.release_run_id),
+                    approval_id=str(approval.id),
+                    approval_status=(
+                        ReleaseApprovalDecisionStatus.REJECTED
+                    ),
+                    decision_note=normalized_note,
+                )
+
+    return None
 
 
 def render_agent_query_response(result: AgentQueryCallResult) -> None:
@@ -344,6 +445,22 @@ def main() -> None:
         "Load durable pending approval requests from the AgentFlow backend."
     )
 
+    stored_decision_result = st.session_state.pop(
+        _APPROVAL_DECISION_RESULT_STATE_KEY,
+        None,
+    )
+
+    if isinstance(stored_decision_result, ApprovalDecisionCallResult):
+        decided_approval = stored_decision_result.response
+        st.success(
+            f"Release run `{decided_approval.release_run_id}` was "
+            f"{decided_approval.approval_status}."
+        )
+        st.caption(
+            "Request correlation ID: "
+            f"{stored_decision_result.run_id}"
+        )
+
     load_approvals_clicked = st.button("Load pending approvals")
 
     if load_approvals_clicked:
@@ -376,8 +493,53 @@ def main() -> None:
         _PENDING_APPROVALS_STATE_KEY
     )
 
+    decision_intent: ApprovalDecisionIntent | None = None
+
     if isinstance(stored_approvals, PendingApprovalsCallResult):
-        render_pending_approvals(stored_approvals)
+        decision_intent = render_pending_approvals(stored_approvals)
+
+    if decision_intent is not None:
+        if not bearer_token.strip():
+            st.error(
+                "Enter a signed access token before deciding an approval."
+            )
+        else:
+            try:
+                with st.spinner("Persisting manager decision..."):
+                    decision_result = asyncio.run(
+                        decide_pending_approval(
+                            settings=settings,
+                            bearer_token=SecretStr(bearer_token),
+                            release_run_id=(
+                                decision_intent.release_run_id
+                            ),
+                            approval_id=decision_intent.approval_id,
+                            approval_status=(
+                                decision_intent.approval_status
+                            ),
+                            decision_note=decision_intent.decision_note,
+                        )
+                    )
+            except ValidationError:
+                st.error("The approval decision is invalid.")
+            except AgentFlowAPIError as exc:
+                st.error(str(exc))
+
+                if exc.run_id:
+                    st.caption(
+                        f"Request correlation ID: {exc.run_id}"
+                    )
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state[
+                    _APPROVAL_DECISION_RESULT_STATE_KEY
+                ] = decision_result
+                st.session_state.pop(
+                    _PENDING_APPROVALS_STATE_KEY,
+                    None,
+                )
+                st.rerun()
 
 
 if __name__ == "__main__":

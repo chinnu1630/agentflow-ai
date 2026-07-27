@@ -11,12 +11,16 @@ from streamlit.testing.v1 import AppTest
 import agentflow_frontend.app as app_module
 from agentflow_frontend.api_client import (
     AgentQueryCallResult,
+    ApprovalDecisionCallResult,
     PendingApprovalsCallResult,
 )
 from agentflow_frontend.api_models import (
     AgentQueryRequest,
     AgentQueryResponse,
     PendingReleaseRunApprovalList,
+    ReleaseApprovalDecisionStatus,
+    ReleaseRunApproval,
+    ReleaseRunApprovalDecisionRequest,
 )
 from agentflow_frontend.config import FrontendSettings, get_frontend_settings
 
@@ -444,5 +448,244 @@ def test_streamlit_app_renders_pending_approval_queue(
     )
     assert any(
         "pending-queue-render-run-id" in item.value
+        for item in app.caption
+    )
+
+
+@pytest.mark.asyncio
+async def test_decide_pending_approval_uses_typed_api_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Send only the validated decision and backend-owned identifiers."""
+    captured: dict[str, Any] = {}
+
+    approval_response = ReleaseRunApproval.model_validate(
+        {
+            "id": "3cc48c03-678b-458e-9418-941e914c220b",
+            "release_run_id": "14326708-c085-4e6d-9c32-47dc92b24841",
+            "approval_status": "approved",
+            "approval_reason": "Critical risk requires review.",
+            "approval_policy_version": "hitl_policy_v1",
+            "decided_by": "manager@example.com",
+            "decision_note": "Evidence reviewed.",
+            "created_at": "2026-07-27T12:00:00Z",
+            "decided_at": "2026-07-27T12:05:00Z",
+        }
+    )
+
+    class FakeAgentFlowAPIClient:
+        """Async fake for one approval decision."""
+
+        def __init__(
+            self,
+            *,
+            settings: FrontendSettings,
+            bearer_token: SecretStr,
+        ) -> None:
+            captured["settings"] = settings
+            captured["authorization_value"] = (
+                bearer_token.get_secret_value()
+            )
+
+        async def __aenter__(self) -> FakeAgentFlowAPIClient:
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: object | None,
+        ) -> None:
+            return None
+
+        async def decide_release_run_approval(
+            self,
+            *,
+            release_run_id: str,
+            approval_id: str,
+            decision: ReleaseRunApprovalDecisionRequest,
+        ) -> ApprovalDecisionCallResult:
+            captured["release_run_id"] = release_run_id
+            captured["approval_id"] = approval_id
+            captured["decision"] = decision
+
+            return ApprovalDecisionCallResult(
+                response=approval_response,
+                run_id="approval-decision-test-run-id",
+            )
+
+    monkeypatch.setattr(
+        app_module,
+        "AgentFlowAPIClient",
+        FakeAgentFlowAPIClient,
+    )
+
+    settings = FrontendSettings(
+        backend_base_url="https://agentflow.example.test",
+        _env_file=None,
+    )
+
+    result = await app_module.decide_pending_approval(
+        settings=settings,
+        bearer_token=SecretStr("signed-test-jwt"),
+        release_run_id="14326708-c085-4e6d-9c32-47dc92b24841",
+        approval_id="3cc48c03-678b-458e-9418-941e914c220b",
+        approval_status=ReleaseApprovalDecisionStatus.APPROVED,
+        decision_note="Evidence reviewed.",
+    )
+
+    assert result.response.approval_status == "approved"
+    assert captured["authorization_value"] == "signed-test-jwt"
+    assert captured["release_run_id"] == (
+        "14326708-c085-4e6d-9c32-47dc92b24841"
+    )
+    assert captured["approval_id"] == (
+        "3cc48c03-678b-458e-9418-941e914c220b"
+    )
+
+    captured_decision = captured["decision"]
+    assert isinstance(
+        captured_decision,
+        ReleaseRunApprovalDecisionRequest,
+    )
+    assert captured_decision.approval_status is (
+        ReleaseApprovalDecisionStatus.APPROVED
+    )
+    assert captured_decision.decision_note == "Evidence reviewed."
+    assert result.run_id == "approval-decision-test-run-id"
+
+
+@pytest.mark.parametrize(
+    ("decision_button_index", "expected_status"),
+    [
+        (2, ReleaseApprovalDecisionStatus.APPROVED),
+        (3, ReleaseApprovalDecisionStatus.REJECTED),
+    ],
+)
+def test_streamlit_app_submits_manager_approval_decision(
+    monkeypatch: pytest.MonkeyPatch,
+    decision_button_index: int,
+    expected_status: ReleaseApprovalDecisionStatus,
+) -> None:
+    """Persist approved and rejected decisions through the typed helper."""
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
+        "https://agentflow.example.test",
+    )
+    get_frontend_settings.cache_clear()
+
+    captured: dict[str, Any] = {}
+
+    pending_response = PendingReleaseRunApprovalList.model_validate(
+        {
+            "approval_status": "pending",
+            "approvals": [
+                {
+                    "id": "3cc48c03-678b-458e-9418-941e914c220b",
+                    "release_run_id": (
+                        "14326708-c085-4e6d-9c32-47dc92b24841"
+                    ),
+                    "approval_status": "pending",
+                    "approval_reason": (
+                        "Critical release risk requires manager review."
+                    ),
+                    "approval_policy_version": "hitl_policy_v1",
+                    "created_at": "2026-07-27T12:00:00Z",
+                }
+            ],
+        }
+    )
+
+    async def fake_load_pending_approvals(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+    ) -> PendingApprovalsCallResult:
+        assert str(settings.backend_base_url) == (
+            "https://agentflow.example.test/"
+        )
+        assert bearer_token.get_secret_value() == "signed-test-jwt"
+
+        return PendingApprovalsCallResult(
+            response=pending_response,
+            run_id="pending-decision-queue-run-id",
+        )
+
+    async def fake_decide_pending_approval(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+        release_run_id: str,
+        approval_id: str,
+        approval_status: ReleaseApprovalDecisionStatus,
+        decision_note: str | None,
+    ) -> ApprovalDecisionCallResult:
+        captured["settings"] = settings
+        captured["authorization_value"] = (
+            bearer_token.get_secret_value()
+        )
+        captured["release_run_id"] = release_run_id
+        captured["approval_id"] = approval_id
+        captured["approval_status"] = approval_status
+        captured["decision_note"] = decision_note
+
+        approval_response = ReleaseRunApproval.model_validate(
+            {
+                "id": approval_id,
+                "release_run_id": release_run_id,
+                "approval_status": approval_status.value,
+                "approval_reason": (
+                    "Critical release risk requires manager review."
+                ),
+                "approval_policy_version": "hitl_policy_v1",
+                "decided_by": "manager@example.com",
+                "decision_note": decision_note,
+                "created_at": "2026-07-27T12:00:00Z",
+                "decided_at": "2026-07-27T12:05:00Z",
+            }
+        )
+
+        return ApprovalDecisionCallResult(
+            response=approval_response,
+            run_id="approval-ui-decision-run-id",
+        )
+
+    monkeypatch.setattr(
+        app_module,
+        "load_pending_approvals",
+        fake_load_pending_approvals,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "decide_pending_approval",
+        fake_decide_pending_approval,
+    )
+
+    app = AppTest.from_file("streamlit_app.py")
+    app.run()
+    app.text_input[0].input("signed-test-jwt")
+    app.button[1].click().run()
+
+    app.text_area[1].input("Evidence reviewed by manager.")
+    app.button[decision_button_index].click().run()
+
+    assert not app.exception
+    assert captured["authorization_value"] == "signed-test-jwt"
+    assert captured["release_run_id"] == (
+        "14326708-c085-4e6d-9c32-47dc92b24841"
+    )
+    assert captured["approval_id"] == (
+        "3cc48c03-678b-458e-9418-941e914c220b"
+    )
+    assert captured["approval_status"] is expected_status
+    assert captured["decision_note"] == (
+        "Evidence reviewed by manager."
+    )
+    assert any(
+        expected_status.value in item.value
+        for item in app.success
+    )
+    assert any(
+        "approval-ui-decision-run-id" in item.value
         for item in app.caption
     )
