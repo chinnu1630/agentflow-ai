@@ -3,17 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, TypeVar
 from uuid import uuid4
 
 import httpx
 import structlog
-from pydantic import SecretStr, ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 
-from agentflow_frontend.api_models import AgentQueryRequest, AgentQueryResponse
+from agentflow_frontend.api_models import (
+    AgentQueryRequest,
+    AgentQueryResponse,
+    PendingReleaseRunApprovalList,
+    ReleaseRunApproval,
+    ReleaseRunApprovalDecisionRequest,
+    ReleaseRunEventList,
+    ReleaseRunStatus,
+    SlackReleaseAlertResult,
+)
 from agentflow_frontend.config import FrontendSettings
 
 logger = structlog.get_logger(__name__)
+
+ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
 
 
 class AgentFlowAPIError(RuntimeError):
@@ -57,6 +68,49 @@ class AgentQueryCallResult:
     """Validated agent response plus its request correlation identifier."""
 
     response: AgentQueryResponse
+    run_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class PendingApprovalsCallResult:
+    """Validated pending approvals plus the request correlation identifier."""
+
+    response: PendingReleaseRunApprovalList
+    run_id: str
+
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalDecisionCallResult:
+    """Validated approval decision plus the request correlation identifier."""
+
+    response: ReleaseRunApproval
+    run_id: str
+
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseRunStatusCallResult:
+    """Validated workflow status plus the request correlation identifier."""
+
+    response: ReleaseRunStatus
+    run_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseRunEventsCallResult:
+    """Validated audit timeline plus the request correlation identifier."""
+
+    response: ReleaseRunEventList
+    run_id: str
+
+
+
+@dataclass(frozen=True, slots=True)
+class SlackAlertCallResult:
+    """Validated Slack delivery result plus request correlation identifier."""
+
+    response: SlackReleaseAlertResult
     run_id: str
 
 
@@ -121,35 +175,229 @@ class AgentFlowAPIClient:
             request: Validated natural-language query and optional context.
 
         Returns:
-            Validated agent response with the frontend-generated run ID.
+            Validated agent response with its request correlation identifier.
+        """
+        parsed_response, response_run_id = await self._request_model(
+            method="POST",
+            path="/api/v1/agent/query",
+            response_model=AgentQueryResponse,
+            operation_name="agent_query",
+            json_body=request.model_dump(mode="json", exclude_none=True),
+        )
+
+        logger.info(
+            "agentflow_frontend_agent_query_completed",
+            run_id=response_run_id,
+            approval_required=parsed_response.approval_required,
+            citation_count=len(parsed_response.citations),
+        )
+
+        return AgentQueryCallResult(
+            response=parsed_response,
+            run_id=response_run_id,
+        )
+
+    async def list_pending_approvals(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> PendingApprovalsCallResult:
+        """Load pending HITL approvals for the manager dashboard.
+
+        Args:
+            limit: Maximum approvals to request, from 1 through 500.
+            offset: Number of matching approvals to skip.
+
+        Returns:
+            Validated pending approval queue with request correlation ID.
 
         Raises:
-            AgentFlowAuthenticationError: When the JWT is invalid or expired.
-            AgentFlowAuthorizationError: When the JWT lacks ``agent:query``.
-            AgentFlowRateLimitError: When the request exceeds its Redis limit.
-            AgentFlowServiceUnavailableError: On timeout or service outage.
-            AgentFlowResponseValidationError: On an invalid backend response.
-            AgentFlowAPIError: For other unsuccessful HTTP responses.
+            ValueError: If pagination values violate the backend contract.
         """
+        if not 1 <= limit <= 500:
+            raise ValueError("Approval limit must be between 1 and 500.")
+
+        if offset < 0:
+            raise ValueError("Approval offset must be zero or greater.")
+
+        parsed_response, response_run_id = await self._request_model(
+            method="GET",
+            path="/api/v1/release-runs/approvals/pending",
+            response_model=PendingReleaseRunApprovalList,
+            operation_name="pending_approvals",
+            query_params={
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+
+        logger.info(
+            "agentflow_frontend_pending_approvals_loaded",
+            run_id=response_run_id,
+            approval_count=len(parsed_response.approvals),
+        )
+
+        return PendingApprovalsCallResult(
+            response=parsed_response,
+            run_id=response_run_id,
+        )
+
+    async def decide_release_run_approval(
+        self,
+        *,
+        release_run_id: str,
+        approval_id: str,
+        decision: ReleaseRunApprovalDecisionRequest,
+    ) -> ApprovalDecisionCallResult:
+        """Approve or reject one pending release approval.
+
+        Args:
+            release_run_id: Backend release-run UUID.
+            approval_id: Pending approval UUID belonging to the release run.
+            decision: Validated approved or rejected decision payload.
+
+        Returns:
+            Persisted approval result with request correlation ID.
+        """
+        parsed_response, response_run_id = await self._request_model(
+            method="POST",
+            path=(
+                f"/api/v1/release-runs/{release_run_id}"
+                f"/approvals/{approval_id}/decision"
+            ),
+            response_model=ReleaseRunApproval,
+            operation_name="approval_decision",
+            json_body=decision.model_dump(mode="json", exclude_none=True),
+        )
+
+        logger.info(
+            "agentflow_frontend_approval_decided",
+            run_id=response_run_id,
+            release_run_id=release_run_id,
+            approval_id=approval_id,
+            approval_status=parsed_response.approval_status,
+        )
+
+        return ApprovalDecisionCallResult(
+            response=parsed_response,
+            run_id=response_run_id,
+        )
+
+    async def get_release_run_status(
+        self,
+        *,
+        release_run_id: str,
+    ) -> ReleaseRunStatusCallResult:
+        """Load the current persisted workflow status for one release run."""
+        parsed_response, response_run_id = await self._request_model(
+            method="GET",
+            path=f"/api/v1/release-runs/{release_run_id}",
+            response_model=ReleaseRunStatus,
+            operation_name="release_run_status",
+        )
+
+        logger.info(
+            "agentflow_frontend_release_run_status_loaded",
+            run_id=response_run_id,
+            release_run_id=release_run_id,
+            release_run_status=parsed_response.status,
+        )
+
+        return ReleaseRunStatusCallResult(
+            response=parsed_response,
+            run_id=response_run_id,
+        )
+
+    async def list_release_run_events(
+        self,
+        *,
+        release_run_id: str,
+    ) -> ReleaseRunEventsCallResult:
+        """Load the append-only audit timeline for one release run."""
+        parsed_response, response_run_id = await self._request_model(
+            method="GET",
+            path=f"/api/v1/release-runs/{release_run_id}/events",
+            response_model=ReleaseRunEventList,
+            operation_name="release_run_events",
+        )
+
+        logger.info(
+            "agentflow_frontend_release_run_events_loaded",
+            run_id=response_run_id,
+            release_run_id=release_run_id,
+            event_count=len(parsed_response.events),
+        )
+
+        return ReleaseRunEventsCallResult(
+            response=parsed_response,
+            run_id=response_run_id,
+        )
+
+    async def send_release_run_slack_alert(
+        self,
+        *,
+        release_run_id: str,
+    ) -> SlackAlertCallResult:
+        """Send an approval-gated release alert through the backend.
+
+        The frontend does not determine whether sending is allowed. FastAPI
+        verifies the signed principal's ``release:notify`` scope, durable
+        approval state, trusted risk snapshot, and duplicate-send protection.
+
+        Args:
+            release_run_id: Backend release-run UUID.
+
+        Returns:
+            Validated Slack delivery result with request correlation ID.
+        """
+        parsed_response, response_run_id = await self._request_model(
+            method="POST",
+            path=f"/api/v1/release-runs/{release_run_id}/slack-alert",
+            response_model=SlackReleaseAlertResult,
+            operation_name="slack_alert",
+        )
+
+        logger.info(
+            "agentflow_frontend_slack_alert_sent",
+            run_id=response_run_id,
+            release_run_id=release_run_id,
+            sent=parsed_response.sent,
+            risk_level=parsed_response.risk_level,
+        )
+
+        return SlackAlertCallResult(
+            response=parsed_response,
+            run_id=response_run_id,
+        )
+
+    async def _request_model(
+        self,
+        *,
+        method: str,
+        path: str,
+        response_model: type[ResponseModelT],
+        operation_name: str,
+        json_body: dict[str, Any] | None = None,
+        query_params: dict[str, str | int] | None = None,
+    ) -> tuple[ResponseModelT, str]:
+        """Execute one backend request and validate its response model."""
         run_id = str(uuid4())
-        url = self._settings.build_api_url("/api/v1/agent/query")
+        url = self._settings.build_api_url(path)
 
         try:
-            response = await self._http_client.post(
-                url,
-                headers={
-                    "Authorization": (
-                        f"Bearer {self._bearer_token.get_secret_value()}"
-                    ),
-                    "Content-Type": "application/json",
-                    "X-Run-ID": run_id,
-                },
-                json=request.model_dump(mode="json", exclude_none=True),
+            response = await self._http_client.request(
+                method=method,
+                url=url,
+                headers=self._build_headers(run_id),
+                json=json_body,
+                params=query_params,
             )
-        except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+        except httpx.TimeoutException as exc:
             logger.warning(
-                "agentflow_frontend_agent_query_timeout",
+                "agentflow_frontend_request_timeout",
                 run_id=run_id,
+                operation=operation_name,
                 error_type=type(exc).__name__,
             )
             raise AgentFlowServiceUnavailableError(
@@ -158,8 +406,9 @@ class AgentFlowAPIClient:
             ) from exc
         except httpx.NetworkError as exc:
             logger.warning(
-                "agentflow_frontend_agent_query_network_error",
+                "agentflow_frontend_request_network_error",
                 run_id=run_id,
+                operation=operation_name,
                 error_type=type(exc).__name__,
             )
             raise AgentFlowServiceUnavailableError(
@@ -176,12 +425,13 @@ class AgentFlowAPIClient:
             )
 
         try:
-            payload = cast(dict[str, Any], response.json())
-            parsed_response = AgentQueryResponse.model_validate(payload)
+            payload = response.json()
+            parsed_response = response_model.model_validate(payload)
         except (ValueError, ValidationError) as exc:
             logger.error(
-                "agentflow_frontend_agent_query_response_invalid",
+                "agentflow_frontend_response_invalid",
                 run_id=response_run_id,
+                operation=operation_name,
                 status_code=response.status_code,
                 error_type=type(exc).__name__,
             )
@@ -191,18 +441,17 @@ class AgentFlowAPIClient:
                 run_id=response_run_id,
             ) from exc
 
-        logger.info(
-            "agentflow_frontend_agent_query_completed",
-            run_id=response_run_id,
-            status_code=response.status_code,
-            approval_required=parsed_response.approval_required,
-            citation_count=len(parsed_response.citations),
-        )
+        return parsed_response, response_run_id
 
-        return AgentQueryCallResult(
-            response=parsed_response,
-            run_id=response_run_id,
-        )
+    def _build_headers(self, run_id: str) -> dict[str, str]:
+        """Build authenticated headers without logging or exposing the JWT."""
+        return {
+            "Authorization": (
+                f"Bearer {self._bearer_token.get_secret_value()}"
+            ),
+            "Content-Type": "application/json",
+            "X-Run-ID": run_id,
+        }
 
     @staticmethod
     def _raise_for_error_response(
@@ -222,14 +471,14 @@ class AgentFlowAPIClient:
 
         if status_code == 403:
             raise AgentFlowAuthorizationError(
-                "You are not authorized to run AgentFlow queries.",
+                "You are not authorized to perform this AgentFlow operation.",
                 status_code=status_code,
                 run_id=run_id,
             )
 
         if status_code == 429:
             raise AgentFlowRateLimitError(
-                "The AgentFlow query rate limit was exceeded.",
+                "The AgentFlow API rate limit was exceeded.",
                 status_code=status_code,
                 run_id=run_id,
             )
