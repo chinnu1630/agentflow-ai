@@ -194,6 +194,74 @@ def test_streamlit_app_requires_token_before_query(
     )
 
 
+def test_streamlit_app_allows_query_without_token_in_local_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Submit a local query without weakening the secure default."""
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
+        "http://127.0.0.1:8000",
+    )
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_AUTH_REQUIRED",
+        "false",
+    )
+    get_frontend_settings.cache_clear()
+
+    captured: dict[str, Any] = {}
+
+    response = AgentQueryResponse.model_validate(
+        {
+            "answer": "Local release-risk query completed.",
+            "plan": {
+                "intent": "release_risk_summary",
+                "response_depth": "detailed",
+                "confidence": 0.95,
+                "requires_human_approval": False,
+                "routing_reason_code": "fresh_release_risk_request",
+            },
+            "citations": [],
+            "approval_required": False,
+        }
+    )
+
+    async def fake_execute_manager_query(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+        query: str,
+    ) -> AgentQueryCallResult:
+        captured["auth_required"] = settings.auth_required
+        captured["token"] = bearer_token.get_secret_value()
+        captured["query"] = query
+
+        return AgentQueryCallResult(
+            response=response,
+            run_id="local-development-run-id",
+        )
+
+    monkeypatch.setattr(
+        app_module,
+        "execute_manager_query",
+        fake_execute_manager_query,
+    )
+
+    app = AppTest.from_file("streamlit_app.py")
+    app.run()
+    _button_by_label(app, "Analyze release risks").click().run()
+
+    assert not app.exception
+    assert captured == {
+        "auth_required": False,
+        "token": "",
+        "query": "What are the biggest release risks this week?",
+    }
+    assert not any(
+        item.label == "Signed access token"
+        for item in app.text_input
+    )
+
+
 def test_streamlit_app_renders_release_risk_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -18,6 +18,30 @@ def test_settings_require_backend_base_url(
         FrontendSettings(_env_file=None)
 
 
+def test_authentication_is_required_by_default() -> None:
+    """Keep the frontend secure when no auth setting is supplied."""
+    settings = FrontendSettings(
+        backend_base_url="https://agentflow.example.test",
+        _env_file=None,
+    )
+
+    assert settings.auth_required is True
+
+
+def test_authentication_can_be_disabled_explicitly_for_local_development(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Allow an explicit local-only configuration to omit bearer tokens."""
+    monkeypatch.setenv("AGENTFLOW_FRONTEND_AUTH_REQUIRED", "false")
+
+    settings = FrontendSettings(
+        backend_base_url="http://127.0.0.1:8000",
+        _env_file=None,
+    )
+
+    assert settings.auth_required is False
+
+
 def test_build_api_url_joins_backend_and_api_path() -> None:
     """Build the versioned AgentFlow endpoint without duplicate slashes."""
     settings = FrontendSettings(

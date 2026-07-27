@@ -571,14 +571,22 @@ def main() -> None:
     with st.sidebar:
         st.header("Secure connection")
         st.caption(f"Backend: {settings.backend_base_url}")
-        bearer_token = st.text_input(
-            "Signed access token",
-            type="password",
-            help=(
-                "Use an authorized RS256 JWT. The token is sent only to "
-                "the configured AgentFlow backend."
-            ),
-        )
+
+        if settings.auth_required:
+            bearer_token = st.text_input(
+                "Signed access token",
+                type="password",
+                help=(
+                    "Use an authorized RS256 JWT. The token is sent only to "
+                    "the configured AgentFlow backend."
+                ),
+            )
+        else:
+            bearer_token = ""
+            st.warning(
+                "Local development authentication is enabled. "
+                "Do not use this mode in staging or production."
+            )
 
     with st.form("release_risk_query_form"):
         query = st.text_area(
@@ -593,7 +601,7 @@ def main() -> None:
         )
 
     if submitted:
-        if not bearer_token.strip():
+        if settings.auth_required and not bearer_token.strip():
             st.error("Enter a signed access token before submitting the query.")
         else:
             try:
@@ -671,7 +679,7 @@ def main() -> None:
     load_approvals_clicked = st.button("Load pending approvals")
 
     if load_approvals_clicked:
-        if not bearer_token.strip():
+        if settings.auth_required and not bearer_token.strip():
             st.error(
                 "Enter a signed access token before loading approvals."
             )
@@ -706,7 +714,7 @@ def main() -> None:
         decision_intent = render_pending_approvals(stored_approvals)
 
     if decision_intent is not None:
-        if not bearer_token.strip():
+        if settings.auth_required and not bearer_token.strip():
             st.error(
                 "Enter a signed access token before deciding an approval."
             )
@@ -767,7 +775,7 @@ def main() -> None:
         )
 
         if send_slack_clicked:
-            if not bearer_token.strip():
+            if settings.auth_required and not bearer_token.strip():
                 st.error(
                     "Enter a signed access token before sending "
                     "the Slack alert."
@@ -827,7 +835,7 @@ def main() -> None:
     )
 
     if load_status_clicked or load_events_clicked:
-        if not bearer_token.strip():
+        if settings.auth_required and not bearer_token.strip():
             st.error(
                 "Enter a signed access token before loading workflow data."
             )

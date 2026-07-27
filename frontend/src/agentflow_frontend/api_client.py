@@ -133,7 +133,7 @@ class AgentFlowAPIClient:
         """
         token_value = bearer_token.get_secret_value().strip()
 
-        if not token_value:
+        if settings.auth_required and not token_value:
             raise ValueError("Bearer token must not be empty.")
 
         self._settings = settings
@@ -444,14 +444,18 @@ class AgentFlowAPIClient:
         return parsed_response, response_run_id
 
     def _build_headers(self, run_id: str) -> dict[str, str]:
-        """Build authenticated headers without logging or exposing the JWT."""
-        return {
-            "Authorization": (
-                f"Bearer {self._bearer_token.get_secret_value()}"
-            ),
+        """Build safe request headers without exposing authentication data."""
+        headers = {
             "Content-Type": "application/json",
             "X-Run-ID": run_id,
         }
+
+        if self._settings.auth_required:
+            headers["Authorization"] = (
+                f"Bearer {self._bearer_token.get_secret_value()}"
+            )
+
+        return headers
 
     @staticmethod
     def _raise_for_error_response(

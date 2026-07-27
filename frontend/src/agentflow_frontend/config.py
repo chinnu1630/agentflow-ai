@@ -25,6 +25,14 @@ class FrontendSettings(BaseSettings):
     )
 
     backend_base_url: AnyHttpUrl
+    auth_required: bool = Field(
+        default=True,
+        description=(
+            "Require a signed bearer token for frontend API requests. "
+            "Disable only when using the backend's validated local "
+            "development authentication mode."
+        ),
+    )
     connect_timeout_seconds: float = Field(default=5.0, gt=0.0, le=30.0)
     request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=120.0)
 

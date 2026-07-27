@@ -99,6 +99,43 @@ async def test_execute_agent_query_sends_jwt_and_parses_response() -> None:
     UUID(result.run_id)
 
 
+@pytest.mark.asyncio
+async def test_execute_agent_query_omits_authorization_in_local_mode() -> None:
+    """Use backend local authentication without sending a fake bearer token."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert "Authorization" not in request.headers
+
+        run_id = request.headers["X-Run-ID"]
+
+        return httpx.Response(
+            status_code=200,
+            headers={"X-Run-ID": run_id},
+            json=_successful_response(),
+        )
+
+    settings = FrontendSettings(
+        backend_base_url="http://127.0.0.1:8000",
+        auth_required=False,
+        _env_file=None,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)
+    ) as http_client:
+        client = AgentFlowAPIClient(
+            settings=settings,
+            bearer_token=SecretStr(""),
+            http_client=http_client,
+        )
+
+        result = await client.execute_agent_query(
+            AgentQueryRequest(query="Assess this release.")
+        )
+
+    assert result.response.approval_required is True
+
+
 @pytest.mark.parametrize(
     ("status_code", "expected_error"),
     [
