@@ -129,8 +129,29 @@ def test_jira_risk_rules_detect_due_soon_issue() -> None:
         evaluated_at=evaluated_at,
     )
 
-    assert any(
-        signal.category == JiraRiskCategory.DUE_SOON_ISSUE
+    due_soon_signal = next(
+        signal
+        for signal in result.signals
+        if signal.category == JiraRiskCategory.DUE_SOON_ISSUE
+    )
+
+    assert due_soon_signal.evidence["days_until_due"] == 1
+    assert due_soon_signal.evidence["due_soon_threshold_days"] == 2
+
+
+def test_jira_risk_rules_ignore_overdue_issue_as_due_soon() -> None:
+    """An overdue Jira issue must not be mislabeled as due soon."""
+    engine = JiraRiskRuleEngine()
+    evaluated_at = datetime(2026, 7, 28, 12, 0, tzinfo=UTC)
+
+    result = engine.evaluate_issue(
+        _build_issue(due_at=datetime(2026, 6, 28, 0, 0, tzinfo=UTC)),
+        run_id="release-run-test",
+        evaluated_at=evaluated_at,
+    )
+
+    assert all(
+        signal.category != JiraRiskCategory.DUE_SOON_ISSUE
         for signal in result.signals
     )
 

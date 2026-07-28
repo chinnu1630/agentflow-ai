@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
@@ -330,9 +330,9 @@ class JiraRiskRuleEngine:
         if issue.status == JiraIssueStatus.DONE or issue.due_at is None:
             return None
 
-        due_threshold = evaluated_at + timedelta(days=self._config.due_soon_days)
+        days_until_due = (issue.due_at.date() - evaluated_at.date()).days
 
-        if issue.due_at > due_threshold:
+        if days_until_due < 0 or days_until_due > self._config.due_soon_days:
             return None
 
         return JiraRiskSignal(
@@ -350,7 +350,8 @@ class JiraRiskRuleEngine:
             evidence={
                 "issue_key": issue.issue_key,
                 "due_at": issue.due_at.isoformat(),
-                "due_soon_days": self._config.due_soon_days,
+                "days_until_due": days_until_due,
+                "due_soon_threshold_days": self._config.due_soon_days,
                 "status": issue.status.value,
             },
         )

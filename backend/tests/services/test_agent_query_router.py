@@ -337,6 +337,43 @@ async def test_routes_jira_key_as_jira_ticket_question(
 
 
 @pytest.mark.anyio
+async def test_routes_lowercase_hyphenated_jira_key(
+    router: AgentQueryRouter,
+) -> None:
+    """Canonical Jira keys should remain case-insensitive."""
+
+    request = AgentQueryRequest(
+        query="What is happening with scrum-2?",
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.JIRA_TICKET_QUESTION
+    assert plan.entity_references.jira_issue_keys == ["SCRUM-2"]
+    assert plan.filters.sources == [RiskSourceFilter.JIRA]
+
+
+@pytest.mark.anyio
+async def test_routes_spaced_jira_key_as_jira_ticket_question(
+    router: AgentQueryRouter,
+) -> None:
+    """A naturally spaced Jira key should normalize to canonical form."""
+
+    request = AgentQueryRequest(
+        query="What about SCRUM 2?",
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.JIRA_TICKET_QUESTION
+    assert plan.entity_references.jira_issue_keys == ["SCRUM-2"]
+    assert plan.filters.sources == [RiskSourceFilter.JIRA]
+    assert plan.requires_current_snapshot is True
+
+
+@pytest.mark.anyio
 async def test_routes_release_approval_question_as_approval_status(
     router: AgentQueryRouter,
 ) -> None:

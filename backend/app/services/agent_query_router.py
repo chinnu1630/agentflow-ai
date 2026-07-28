@@ -48,8 +48,10 @@ class AgentQueryRouter:
     )
 
     _JIRA_KEY_PATTERN: Final[re.Pattern[str]] = re.compile(
-        r"\b([A-Z][A-Z0-9]+-\d+)\b",
-        re.IGNORECASE,
+        r"\b(?:(?P<hyphen_prefix>(?i:[A-Z][A-Z0-9]+))\s*-\s*"
+        r"(?P<hyphen_number>\d+)|"
+        r"(?P<space_prefix>(?!PR\b)[A-Z][A-Z0-9]{2,})\s+"
+        r"(?P<space_number>\d+))\b",
     )
 
     _RELEASE_CONTEXT_TERMS: Final[frozenset[str]] = frozenset(
@@ -338,7 +340,7 @@ class AgentQueryRouter:
             ),
             release_run_id=request.release_run_id,
             conversation_session_id=request.conversation_session_id,
-            filters=self._extract_filters(normalized_query),
+            filters=self._extract_filters(request.query),
             entity_references=self._extract_entities(request.query),
             requires_current_snapshot=(matched_rule.requires_current_snapshot),
             requires_historical_lookup=(matched_rule.requires_historical_lookup),
@@ -375,10 +377,11 @@ class AgentQueryRouter:
 
     def _extract_filters(
         self,
-        normalized_query: str,
+        original_query: str,
     ) -> AgentQueryFilters:
         """Extract simple source and severity filters from the query."""
 
+        normalized_query = self._normalize_query(original_query)
         sources: list[RiskSourceFilter] = []
 
         if (
@@ -391,7 +394,7 @@ class AgentQueryRouter:
         if (
             "jira" in normalized_query
             or "ticket" in normalized_query
-            or self._JIRA_KEY_PATTERN.search(normalized_query) is not None
+            or self._JIRA_KEY_PATTERN.search(original_query) is not None
         ):
             sources.append(RiskSourceFilter.JIRA)
 
@@ -430,7 +433,18 @@ class AgentQueryRouter:
         )
 
         jira_issue_keys = sorted(
-            {match.group(1).upper() for match in self._JIRA_KEY_PATTERN.finditer(original_query)}
+            {
+                (
+                    f"{match.group('hyphen_prefix').upper()}-"
+                    f"{match.group('hyphen_number')}"
+                    if match.group("hyphen_prefix") is not None
+                    else (
+                        f"{match.group('space_prefix')}-"
+                        f"{match.group('space_number')}"
+                    )
+                )
+                for match in self._JIRA_KEY_PATTERN.finditer(original_query)
+            }
         )
 
         return AgentEntityReferences(
