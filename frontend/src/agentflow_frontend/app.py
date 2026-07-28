@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import TypeGuard
 from urllib.parse import urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import streamlit as st
 from pydantic import SecretStr, TypeAdapter, ValidationError
@@ -30,7 +30,9 @@ from agentflow_frontend.api_models import (
 from agentflow_frontend.config import FrontendSettings, get_frontend_settings
 
 DEFAULT_RELEASE_RISK_QUERY = "What are the biggest release risks this week?"
-_QUERY_RESULT_STATE_KEY = "agentflow_query_result"
+_CHAT_MESSAGES_STATE_KEY = "agentflow_chat_messages"
+_CONVERSATION_SESSION_ID_STATE_KEY = "agentflow_conversation_session_id"
+_LAST_RELEASE_RUN_ID_STATE_KEY = "agentflow_last_chat_release_run_id"
 _PENDING_APPROVALS_STATE_KEY = "agentflow_pending_approvals"
 
 _APPROVAL_DECISION_RESULT_STATE_KEY = "agentflow_approval_decision_result"
@@ -50,6 +52,15 @@ class ApprovalDecisionIntent:
     approval_id: str
     approval_status: ReleaseApprovalDecisionStatus
     decision_note: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatTurn:
+    """One completed exchange in the AgentFlow chat transcript."""
+
+    query: str
+    result: AgentQueryCallResult | None
+    error: str | None
 
 
 def validate_release_run_id(value: str) -> str:
@@ -89,6 +100,8 @@ async def execute_manager_query(
     settings: FrontendSettings,
     bearer_token: SecretStr,
     query: str,
+    conversation_session_id: UUID | None = None,
+    release_run_id: str | None = None,
 ) -> AgentQueryCallResult:
     """Execute one manager query through the typed FastAPI client.
 
@@ -96,11 +109,21 @@ async def execute_manager_query(
         settings: Validated frontend runtime configuration.
         bearer_token: Signed JWT supplied by the authorized manager.
         query: Natural-language release-risk question.
+        conversation_session_id: Client-generated ID correlating every
+            question asked within one chat session.
+        release_run_id: Most recent release-run UUID from this chat, reused
+            so follow-up questions resolve trusted persisted context.
 
     Returns:
         Validated backend response and request correlation ID.
     """
-    request = AgentQueryRequest(query=query)
+    request = AgentQueryRequest(
+        query=query,
+        conversation_session_id=conversation_session_id,
+        release_run_id=(
+            UUID(release_run_id) if release_run_id is not None else None
+        ),
+    )
 
     async with AgentFlowAPIClient(
         settings=settings,
@@ -588,49 +611,100 @@ def main() -> None:
                 "Do not use this mode in staging or production."
             )
 
-    with st.form("release_risk_query_form"):
-        query = st.text_area(
-            "Manager question",
-            value=DEFAULT_RELEASE_RISK_QUERY,
-            height=120,
-            max_chars=2_000,
-        )
-        submitted = st.form_submit_button(
-            "Analyze release risks",
-            type="primary",
-        )
+    st.subheader("Chat with AgentFlow")
+    st.caption(
+        "Ask about release risk, GitHub pull requests, Jira tickets, "
+        "engineering docs, or workflow status. Follow-up questions "
+        "automatically reuse the most recent release run in this chat."
+    )
 
-    if submitted:
+    if _CONVERSATION_SESSION_ID_STATE_KEY not in st.session_state:
+        st.session_state[_CONVERSATION_SESSION_ID_STATE_KEY] = uuid4()
+
+    chat_messages: list[ChatTurn] = st.session_state.setdefault(
+        _CHAT_MESSAGES_STATE_KEY,
+        [],
+    )
+
+    for turn in chat_messages:
+        with st.chat_message("user"):
+            st.write(turn.query)
+
+        with st.chat_message("assistant"):
+            if turn.result is not None:
+                render_agent_query_response(turn.result)
+            elif turn.error is not None:
+                st.error(turn.error)
+
+    chat_query = st.chat_input(DEFAULT_RELEASE_RISK_QUERY)
+
+    if chat_query:
         if settings.auth_required and not bearer_token.strip():
-            st.error("Enter a signed access token before submitting the query.")
+            st.error("Enter a signed access token before chatting with AgentFlow.")
         else:
-            try:
-                with st.spinner(
-                    "Collecting GitHub, Jira, and engineering evidence..."
-                ):
-                    result = asyncio.run(
-                        execute_manager_query(
-                            settings=settings,
-                            bearer_token=SecretStr(bearer_token),
-                            query=query,
+            with st.chat_message("user"):
+                st.write(chat_query)
+
+            with st.chat_message("assistant"):
+                new_turn: ChatTurn | None = None
+
+                try:
+                    with st.spinner(
+                        "Collecting GitHub, Jira, and engineering evidence..."
+                    ):
+                        result = asyncio.run(
+                            execute_manager_query(
+                                settings=settings,
+                                bearer_token=SecretStr(bearer_token),
+                                query=chat_query,
+                                conversation_session_id=st.session_state[
+                                    _CONVERSATION_SESSION_ID_STATE_KEY
+                                ],
+                                release_run_id=st.session_state.get(
+                                    _LAST_RELEASE_RUN_ID_STATE_KEY
+                                ),
+                            )
                         )
+                except ValidationError:
+                    error_message = "The question is invalid."
+                    st.error(error_message)
+                    new_turn = ChatTurn(
+                        query=chat_query,
+                        result=None,
+                        error=error_message,
                     )
-            except ValidationError:
-                st.error("The manager question is invalid.")
-            except AgentFlowAPIError as exc:
-                st.error(str(exc))
+                except AgentFlowAPIError as exc:
+                    st.error(str(exc))
 
-                if exc.run_id:
-                    st.caption(f"Request correlation ID: {exc.run_id}")
-            except ValueError as exc:
-                st.error(str(exc))
-            else:
-                st.session_state[_QUERY_RESULT_STATE_KEY] = result
+                    if exc.run_id:
+                        st.caption(f"Request correlation ID: {exc.run_id}")
 
-    stored_result = st.session_state.get(_QUERY_RESULT_STATE_KEY)
+                    new_turn = ChatTurn(
+                        query=chat_query,
+                        result=None,
+                        error=str(exc),
+                    )
+                except ValueError as exc:
+                    st.error(str(exc))
+                    new_turn = ChatTurn(
+                        query=chat_query,
+                        result=None,
+                        error=str(exc),
+                    )
+                else:
+                    render_agent_query_response(result)
+                    new_turn = ChatTurn(
+                        query=chat_query,
+                        result=result,
+                        error=None,
+                    )
 
-    if isinstance(stored_result, AgentQueryCallResult):
-        render_agent_query_response(stored_result)
+                    if result.response.release_risk is not None:
+                        st.session_state[_LAST_RELEASE_RUN_ID_STATE_KEY] = str(
+                            result.response.release_risk.release_run.id
+                        )
+
+            chat_messages.append(new_turn)
 
 
     st.divider()

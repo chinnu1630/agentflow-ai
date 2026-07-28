@@ -117,7 +117,6 @@ class AnthropicExecutionPlannerClient:
             response = await self._client.messages.parse(
                 model=self._config.model,
                 max_tokens=self._config.max_tokens,
-                temperature=0.0,
                 system=system_prompt,
                 messages=[
                     {

@@ -21,12 +21,14 @@ from app.api.routes.agent_queries import (
     get_agent_execution_planner_client,
     get_agent_github_risk_collector,
     get_agent_jira_risk_collector,
+    get_agent_risk_synthesis_service,
     get_agent_slack_alert_sender,
 )
 from app.core.config import get_settings
 from app.core.security import AuthenticatedPrincipal
 from app.db.base import Base
 from app.db.session import get_db_session
+from app.integrations.anthropic_client import ClaudeSynthesisResult
 from app.integrations.anthropic_dynamic_synthesis_client import (
     ClaudeDynamicSynthesisResult,
 )
@@ -53,6 +55,16 @@ from app.schemas.jira import (
     JiraIssuePriority,
     JiraIssueStatus,
     JiraIssueType,
+)
+from app.schemas.llm_risk_synthesis import (
+    ClaudeReleaseRiskReport,
+    SynthesisEvidenceCitation,
+    SynthesisEvidenceSource,
+    SynthesizedReleaseRisk,
+)
+from app.schemas.risk_enums import (
+    RiskSeverityResponse,
+    RiskSummaryActionResponse,
 )
 from app.services.engineering_document_embedding_provider import (
     get_engineering_document_embedding_provider,
@@ -206,6 +218,72 @@ class FakeAgentJiraRiskCollector:
             signals=list(issue_result.signals),
             error_message=None,
             duration_ms=10.0,
+        )
+
+
+class FakeAgentRiskSynthesisService:
+    """Return deterministic grounded release-risk synthesis."""
+
+    call_count = 0
+
+    async def synthesize_release_risk(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        prompt_version: str,
+    ) -> ClaudeSynthesisResult:
+        """Return validated synthesis without calling Anthropic."""
+        assert system_prompt
+        assert user_prompt
+        type(self).call_count += 1
+
+        report = ClaudeReleaseRiskReport(
+            recommendation=RiskSummaryActionResponse.REVIEW_REQUIRED,
+            confidence=0.92,
+            executive_summary=(
+                "The payment release requires human review because CI failed."
+            ),
+            risks=[
+                SynthesizedReleaseRisk(
+                    rank=1,
+                    title="Payment API has failing CI",
+                    severity=RiskSeverityResponse.HIGH,
+                    confidence=0.94,
+                    explanation=(
+                        "CI failed on a release-critical payment service."
+                    ),
+                    evidence=[
+                        SynthesisEvidenceCitation(
+                            source=(
+                                SynthesisEvidenceSource.GITHUB_PULL_REQUEST
+                            ),
+                            source_id="PR-42",
+                            title="Payment API has failing CI",
+                            supporting_fact=(
+                                "CI failed on a release-critical payment service."
+                            ),
+                        )
+                    ],
+                    mitigations=[
+                        "Resolve the failing CI checks before deployment."
+                    ],
+                )
+            ],
+            missing_information=[],
+            degraded_sources=[],
+            requires_human_review=True,
+        )
+
+        return ClaudeSynthesisResult(
+            report=report,
+            message_id="msg-agent-query-synthesis",
+            model="claude-test-model",
+            input_tokens=500,
+            output_tokens=200,
+            stop_reason="end_turn",
+            duration_ms=125.5,
+            prompt_version=prompt_version,
         )
 
 
@@ -399,6 +477,11 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
 
         return FakeAgentDynamicSynthesisClient()
 
+    async def override_get_risk_synthesis_service() -> None:
+        """Disable release-risk synthesis unless a test enables its fake."""
+
+        return None
+
     async def override_get_github_collector() -> FakeAgentGitHubRiskCollector:
         """Return the fake GitHub collector."""
 
@@ -417,6 +500,7 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
     FakeAgentExecutionPlannerClient.call_count = 0
     FakeAgentDynamicSynthesisClient.call_count = 0
     FakeAgentDynamicSynthesisClient.return_invalid_grounding = False
+    FakeAgentRiskSynthesisService.call_count = 0
     FakeAgentGitHubRiskCollector.call_count = 0
     FakeAgentJiraRiskCollector.call_count = 0
     FakeAgentSlackAlertSender.call_count = 0
@@ -431,6 +515,9 @@ async def agent_query_api_client() -> AsyncIterator[AsyncClient]:
     app.dependency_overrides[
         get_agent_dynamic_synthesis_client
     ] = override_get_dynamic_synthesis
+    app.dependency_overrides[
+        get_agent_risk_synthesis_service
+    ] = override_get_risk_synthesis_service
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_agent_github_risk_collector] = override_get_github_collector
     app.dependency_overrides[get_agent_jira_risk_collector] = override_get_jira_collector
@@ -535,6 +622,86 @@ async def test_execute_agent_query_runs_release_risk_workflow(
     assert "risk_features_extracted" in event_types
     assert "release_risk_scored" in event_types
     assert "release_risk_snapshot_created" in event_types
+
+
+@pytest.mark.anyio
+async def test_execute_agent_query_runs_claude_risk_synthesis(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Fresh release analysis should invoke grounded Claude synthesis."""
+
+    async def override_get_risk_synthesis_service(
+    ) -> FakeAgentRiskSynthesisService:
+        """Return deterministic structured synthesis."""
+
+        return FakeAgentRiskSynthesisService()
+
+    app.dependency_overrides[
+        get_agent_risk_synthesis_service
+    ] = override_get_risk_synthesis_service
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": "What are the biggest release risks this week?"},
+    )
+
+    assert response.status_code == 200, response.text
+
+    release_risk = response.json()["release_risk"]
+
+    assert FakeAgentRiskSynthesisService.call_count == 1
+    assert release_risk["synthesis_status"] == "completed"
+    assert release_risk["synthesis_report"]["schema_version"] == (
+        "claude_release_risk_report_v1"
+    )
+    assert release_risk["synthesis_report"]["risks"][0]["evidence"][0][
+        "source_id"
+    ] == "PR-42"
+    assert release_risk["synthesis_model"] == "claude-test-model"
+    assert release_risk["synthesis_input_tokens"] == 500
+    assert release_risk["synthesis_output_tokens"] == 200
+    assert release_risk["synthesis_error"] is None
+
+
+@pytest.mark.anyio
+async def test_release_summary_follow_up_uses_persisted_snapshot(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Summary follow-up should reuse the persisted snapshot without recollection."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert initial_response.status_code == 200
+
+    initial_payload = initial_response.json()
+    release_run_id = initial_payload["release_risk"]["release_run"]["id"]
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What could block this week's deployment?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert follow_up_response.status_code == 200, follow_up_response.json()
+
+    follow_up_payload = follow_up_response.json()
+
+    assert follow_up_payload["plan"]["intent"] == "release_risk_summary"
+    assert follow_up_payload["release_risk"]["release_run"]["id"] == (
+        release_run_id
+    )
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls
 
 
 @pytest.mark.anyio

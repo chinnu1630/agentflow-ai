@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -29,6 +30,19 @@ from agentflow_frontend.api_models import (
     SlackReleaseAlertResult,
 )
 from agentflow_frontend.config import FrontendSettings, get_frontend_settings
+
+
+@pytest.fixture(autouse=True)
+def isolate_frontend_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Prevent developer-local .env values from leaking into frontend tests."""
+    monkeypatch.setenv("AGENTFLOW_FRONTEND_AUTH_REQUIRED", "true")
+    get_frontend_settings.cache_clear()
+
+    yield
+
+    get_frontend_settings.cache_clear()
 
 
 def _text_input_by_label(app: AppTest, label: str) -> Any:
@@ -145,7 +159,7 @@ async def test_execute_manager_query_uses_typed_api_client(
     )
 
 
-def test_streamlit_app_renders_secure_query_form(
+def test_streamlit_app_renders_chat_interface(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Render the initial manager screen without making a backend request."""
@@ -165,19 +179,19 @@ def test_streamlit_app_renders_secure_query_form(
         for item in app.text_input
     )
     assert any(
-        item.label == "Manager question"
-        for item in app.text_area
+        item.value == "Chat with AgentFlow"
+        for item in app.subheader
     )
-    assert any(
-        button.label == "Analyze release risks"
-        for button in app.button
+    assert len(app.chat_input) == 1
+    assert app.chat_input[0].placeholder == (
+        app_module.DEFAULT_RELEASE_RISK_QUERY
     )
 
 
-def test_streamlit_app_requires_token_before_query(
+def test_streamlit_app_requires_token_before_chat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Block query submission when no signed JWT is provided."""
+    """Block chat submission when no signed JWT is provided."""
     monkeypatch.setenv(
         "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
         "https://agentflow.example.test",
@@ -186,18 +200,20 @@ def test_streamlit_app_requires_token_before_query(
 
     app = AppTest.from_file("streamlit_app.py")
     app.run()
-    _button_by_label(app, "Analyze release risks").click().run()
+    app.chat_input[0].set_value(
+        "What are the biggest release risks this week?"
+    ).run()
 
     assert not app.exception
     assert app.error[0].value == (
-        "Enter a signed access token before submitting the query."
+        "Enter a signed access token before chatting with AgentFlow."
     )
 
 
-def test_streamlit_app_allows_query_without_token_in_local_mode(
+def test_streamlit_app_allows_chat_without_token_in_local_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Submit a local query without weakening the secure default."""
+    """Submit a local chat message without weakening the secure default."""
     monkeypatch.setenv(
         "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
         "http://127.0.0.1:8000",
@@ -230,10 +246,14 @@ def test_streamlit_app_allows_query_without_token_in_local_mode(
         settings: FrontendSettings,
         bearer_token: SecretStr,
         query: str,
+        conversation_session_id: Any = None,
+        release_run_id: str | None = None,
     ) -> AgentQueryCallResult:
         captured["auth_required"] = settings.auth_required
         captured["token"] = bearer_token.get_secret_value()
         captured["query"] = query
+        captured["conversation_session_id"] = conversation_session_id
+        captured["release_run_id"] = release_run_id
 
         return AgentQueryCallResult(
             response=response,
@@ -248,14 +268,18 @@ def test_streamlit_app_allows_query_without_token_in_local_mode(
 
     app = AppTest.from_file("streamlit_app.py")
     app.run()
-    _button_by_label(app, "Analyze release risks").click().run()
+    app.chat_input[0].set_value(
+        "What are the biggest release risks this week?"
+    ).run()
 
     assert not app.exception
-    assert captured == {
-        "auth_required": False,
-        "token": "",
-        "query": "What are the biggest release risks this week?",
-    }
+    assert captured["auth_required"] is False
+    assert captured["token"] == ""
+    assert captured["query"] == (
+        "What are the biggest release risks this week?"
+    )
+    assert captured["conversation_session_id"] is not None
+    assert captured["release_run_id"] is None
     assert not any(
         item.label == "Signed access token"
         for item in app.text_input
@@ -361,6 +385,8 @@ def test_streamlit_app_renders_release_risk_response(
         settings: FrontendSettings,
         bearer_token: SecretStr,
         query: str,
+        conversation_session_id: Any = None,
+        release_run_id: str | None = None,
     ) -> AgentQueryCallResult:
         assert str(settings.backend_base_url) == (
             "https://agentflow.example.test/"
@@ -382,7 +408,9 @@ def test_streamlit_app_renders_release_risk_response(
     app = AppTest.from_file("streamlit_app.py")
     app.run()
     _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
-    _button_by_label(app, "Analyze release risks").click().run()
+    app.chat_input[0].set_value(
+        "What are the biggest release risks this week?"
+    ).run()
 
     assert not app.exception
     assert any(
@@ -408,6 +436,114 @@ def test_streamlit_app_renders_release_risk_response(
     assert any(
         "frontend-render-test-run-id" in item.value
         for item in app.caption
+    )
+
+
+def test_streamlit_app_chat_carries_release_run_id_to_followup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reuse the most recent release-run ID for a chat follow-up question."""
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
+        "https://agentflow.example.test",
+    )
+    get_frontend_settings.cache_clear()
+
+    captured_release_run_ids: list[str | None] = []
+
+    release_run_id = "14326708-c085-4e6d-9c32-47dc92b24841"
+
+    first_response = AgentQueryResponse.model_validate(
+        {
+            "answer": "One critical Jira blocker requires manager review.",
+            "plan": {
+                "intent": "release_risk_summary",
+                "response_depth": "detailed",
+                "confidence": 0.98,
+                "release_run_id": release_run_id,
+                "requires_current_snapshot": True,
+                "requires_human_approval": True,
+                "routing_reason_code": "fresh_release_risk_request",
+            },
+            "release_risk": {
+                "release_run": {
+                    "id": release_run_id,
+                    "run_id": "release-run-demo",
+                    "query": "What are the biggest release risks this week?",
+                    "requested_by": "manager@example.com",
+                    "status": "waiting_for_approval",
+                    "created_at": "2026-07-27T12:00:00Z",
+                },
+                "github": {"status": "success"},
+                "jira": {"status": "success"},
+                "release_summary": {
+                    "overall_severity": "critical",
+                    "recommended_action": "hold",
+                    "total_signal_count": 1,
+                    "high_risk_count": 1,
+                    "summary_text": "Release requires manager review.",
+                    "top_risks": [],
+                },
+                "approval_required": True,
+            },
+            "citations": [],
+            "approval_required": True,
+        }
+    )
+
+    second_response = AgentQueryResponse.model_validate(
+        {
+            "answer": "The top risk is the payment rollback blocker.",
+            "plan": {
+                "intent": "explain_risk_score",
+                "response_depth": "standard",
+                "confidence": 0.9,
+                "release_run_id": release_run_id,
+                "requires_current_snapshot": True,
+                "requires_human_approval": False,
+                "routing_reason_code": "followup_explain_risk_score",
+            },
+            "citations": [],
+            "approval_required": False,
+        }
+    )
+
+    responses = [first_response, second_response]
+
+    async def fake_execute_manager_query(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+        query: str,
+        conversation_session_id: Any = None,
+        release_run_id: str | None = None,
+    ) -> AgentQueryCallResult:
+        captured_release_run_ids.append(release_run_id)
+
+        return AgentQueryCallResult(
+            response=responses.pop(0),
+            run_id=f"followup-test-run-id-{len(captured_release_run_ids)}",
+        )
+
+    monkeypatch.setattr(
+        app_module,
+        "execute_manager_query",
+        fake_execute_manager_query,
+    )
+
+    app = AppTest.from_file("streamlit_app.py")
+    app.run()
+    _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
+    app.chat_input[0].set_value(
+        "What are the biggest release risks this week?"
+    ).run()
+    app.chat_input[0].set_value("What is the top risk about?").run()
+
+    assert not app.exception
+    assert captured_release_run_ids == [None, release_run_id]
+    assert any(
+        "The top risk is the payment rollback blocker." in item.value
+        for item in app.markdown
     )
 
 

@@ -26,6 +26,7 @@ from app.integrations.anthropic_client import (
     AnthropicClientResponseError,
     AnthropicClientTimeoutError,
     AnthropicClientUnavailableError,
+    AnthropicRiskSynthesisClient,
 )
 from app.integrations.anthropic_dynamic_synthesis_client import (
     AnthropicDynamicSynthesisClient,
@@ -269,6 +270,52 @@ async def get_agent_dynamic_synthesis_client(
 AgentDynamicSynthesisClientDependency = Annotated[
     AnthropicDynamicSynthesisClient | None,
     Depends(get_agent_dynamic_synthesis_client),
+]
+
+
+async def get_agent_risk_synthesis_service(
+    request: Request,
+) -> AsyncIterator[AnthropicRiskSynthesisClient | None]:
+    """Create the optional Claude release-risk synthesis client."""
+
+    settings = get_settings()
+
+    if not settings.anthropic_enabled:
+        yield None
+        return
+
+    api_key = settings.anthropic_api_key
+
+    if api_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Claude risk synthesis is enabled but not configured. "
+                "Set ANTHROPIC_API_KEY."
+            ),
+        )
+
+    request_id = str(
+        getattr(request.state, "request_id", "unknown-request-id")
+    )
+    config = AnthropicClientConfig(
+        api_key=api_key,
+        model=settings.anthropic_model,
+        max_tokens=settings.anthropic_max_tokens,
+        timeout_seconds=settings.anthropic_timeout_seconds,
+        max_retries=settings.anthropic_max_retries,
+    )
+
+    async with AnthropicRiskSynthesisClient(
+        config=config,
+        run_id=request_id,
+    ) as synthesis_client:
+        yield synthesis_client
+
+
+AgentRiskSynthesisServiceDependency = Annotated[
+    AnthropicRiskSynthesisClient | None,
+    Depends(get_agent_risk_synthesis_service),
 ]
 
 
@@ -732,6 +779,7 @@ async def execute_agent_query(
     risk_collector: AgentGitHubRiskCollectorDependency,
     jira_risk_collector: AgentJiraRiskCollectorDependency,
     slack_sender: AgentSlackAlertSenderDependency,
+    synthesis_service: AgentRiskSynthesisServiceDependency,
     session: AsyncSession = Depends(get_db_session),
     embedding_provider: SentenceTransformerEmbeddingProvider = Depends(
         get_engineering_document_embedding_provider
@@ -787,20 +835,26 @@ async def execute_agent_query(
             await session.commit()
             return agent_response
 
-        if plan.intent in {
-            AgentIntent.EXPLAIN_RISK_SCORE,
-            AgentIntent.EXPLAIN_SPECIFIC_RISK,
-            AgentIntent.FILTER_RISKS,
-            AgentIntent.GITHUB_PR_QUESTION,
-            AgentIntent.JIRA_TICKET_QUESTION,
-            AgentIntent.WORKFLOW_STATUS_QUESTION,
-            AgentIntent.APPROVAL_STATUS_QUESTION,
-            AgentIntent.SLACK_STATUS_QUESTION,
-            AgentIntent.HISTORICAL_RISK_LOOKUP,
-            AgentIntent.SIMILAR_PAST_RELEASE,
-            AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
-            AgentIntent.ACTION_REQUEST,
-        }:
+        if (
+            (
+                plan.intent is AgentIntent.RELEASE_RISK_SUMMARY
+                and payload.release_run_id is not None
+            )
+            or plan.intent in {
+                AgentIntent.EXPLAIN_RISK_SCORE,
+                AgentIntent.EXPLAIN_SPECIFIC_RISK,
+                AgentIntent.FILTER_RISKS,
+                AgentIntent.GITHUB_PR_QUESTION,
+                AgentIntent.JIRA_TICKET_QUESTION,
+                AgentIntent.WORKFLOW_STATUS_QUESTION,
+                AgentIntent.APPROVAL_STATUS_QUESTION,
+                AgentIntent.SLACK_STATUS_QUESTION,
+                AgentIntent.HISTORICAL_RISK_LOOKUP,
+                AgentIntent.SIMILAR_PAST_RELEASE,
+                AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
+                AgentIntent.ACTION_REQUEST,
+            }
+        ):
             context_resolver = AgentQueryContextResolver(
                 snapshot_repository=risk_snapshot_repository,
                 request_id=request_id,
@@ -997,6 +1051,7 @@ async def execute_agent_query(
             jira_risk_collector=jira_risk_collector,
             event_repository=event_repository,
             knowledge_service=knowledge_service,
+            synthesis_service=synthesis_service,
         )
         executor = AgentQueryExecutor(
             release_run_service=release_run_service,

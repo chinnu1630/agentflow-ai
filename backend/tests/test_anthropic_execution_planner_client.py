@@ -119,7 +119,7 @@ async def test_create_execution_plan_returns_validated_plan() -> None:
 
     assert request_arguments["model"] == "test-claude-model"
     assert request_arguments["max_tokens"] == 2_048
-    assert request_arguments["temperature"] == 0.0
+    assert "temperature" not in request_arguments
     assert request_arguments["output_format"] is AgentExecutionPlan
 
 

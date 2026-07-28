@@ -128,10 +128,12 @@ async def test_anthropic_dependency_returns_none_when_disabled(
 @pytest.mark.anyio
 async def test_anthropic_dependency_rejects_missing_api_key(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Enabled Claude synthesis must require an API key from the environment."""
     from app.api.routes.release_runs import get_risk_synthesis_service
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ANTHROPIC_ENABLED", "true")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     get_settings.cache_clear()
@@ -206,12 +208,14 @@ async def test_dynamic_planner_dependency_returns_none_when_disabled(
 @pytest.mark.anyio
 async def test_dynamic_planner_dependency_rejects_missing_api_key(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Enabled dynamic planning must require a secret API key."""
     from app.api.routes.agent_queries import (
         get_agent_execution_planner_client,
     )
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AGENT_DYNAMIC_PLANNING_ENABLED", "true")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     get_settings.cache_clear()
