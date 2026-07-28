@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from pydantic import BaseModel
 
 from app.schemas.agent_query import ResponseDepth
+from app.schemas.risk import ReleaseRunRiskResponse
 from app.services.release_risk_response_mapper import (
     extract_risk_result_from_workflow_state,
     extract_scoring_run_id,
     merge_workflow_context,
+    to_release_run_risk_response,
 )
 
 
@@ -209,3 +213,42 @@ def test_returns_none_for_invalid_scoring_run_id() -> None:
     assert extract_scoring_run_id({}) is None
     assert extract_scoring_run_id({"release_run": {}}) is None
     assert extract_scoring_run_id({"release_run": {"run_id": "   "}}) is None
+
+
+
+def test_maps_internal_failed_jira_statuses_to_public_degraded() -> None:
+    """Public response mapping should normalize internal Jira failures."""
+
+    workflow_result = {
+        "jira": {
+            "status": "failed",
+        },
+        "jira_summary": {
+            "collection_status": "failed",
+        },
+        "risk_features": {
+            "present": True,
+        },
+        "risk_score": {
+            "present": True,
+        },
+        "approval_policy_version": "hitl_policy_v1",
+    }
+    expected_response = object()
+
+    with patch.object(
+        ReleaseRunRiskResponse,
+        "model_validate",
+        return_value=expected_response,
+    ) as validate_response:
+        response = to_release_run_risk_response(workflow_result)
+
+    assert response is expected_response
+
+    validated_payload = validate_response.call_args.args[0]
+
+    assert validated_payload["jira"]["status"] == "degraded"
+    assert (
+        validated_payload["jira_summary"]["collection_status"]
+        == "degraded"
+    )

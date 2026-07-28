@@ -848,8 +848,14 @@ class ReleaseRunService:
             )
         ]
 
+        response_status = (
+            RiskCollectionStatusResponse.SUCCESS
+            if jira_result.status is JiraRiskCollectionStatus.SUCCESS
+            else RiskCollectionStatusResponse.DEGRADED
+        )
+
         return JiraRiskCollectionResponse(
-            status=RiskCollectionStatusResponse(jira_result.status.value),
+            status=response_status,
             total_issues_analyzed=jira_result.total_issues_analyzed,
             total_signals=jira_result.total_signals,
             issues=issue_responses,

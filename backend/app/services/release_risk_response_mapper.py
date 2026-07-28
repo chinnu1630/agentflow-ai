@@ -17,6 +17,46 @@ from app.services.rule_based_risk_scoring_service import (
 )
 
 
+def _normalize_public_collection_statuses(
+    result_data: dict[str, object],
+) -> dict[str, object]:
+    """Map internal collector failures to the public degraded status.
+
+    Internal collectors retain ``failed`` for audit and operational handling.
+    The public API exposes dependency failures as ``degraded`` so the workflow
+    can return evidence from sources that remain available.
+    """
+
+    normalized_data = dict(result_data)
+
+    status_fields = (
+        ("jira", "status"),
+        ("jira_summary", "collection_status"),
+    )
+
+    for section_name, field_name in status_fields:
+        section = normalized_data.get(section_name)
+
+        if hasattr(section, "model_dump"):
+            section_data = section.model_dump(mode="python")
+        elif isinstance(section, Mapping):
+            section_data = dict(section)
+        else:
+            continue
+
+        status_value = section_data.get(field_name)
+
+        if hasattr(status_value, "value"):
+            status_value = status_value.value
+
+        if status_value == "failed":
+            section_data[field_name] = "degraded"
+
+        normalized_data[section_name] = section_data
+
+    return normalized_data
+
+
 def merge_workflow_context(
     result: object,
     workflow_state: Mapping[str, object],
@@ -149,6 +189,8 @@ def to_release_run_risk_response(result: object) -> ReleaseRunRiskResponse:
         result_data = dict(result)
     else:
         return ReleaseRunRiskResponse.model_validate(result)
+
+    result_data = _normalize_public_collection_statuses(result_data)
 
     has_existing_scoring = (
         result_data.get("risk_features") is not None and result_data.get("risk_score") is not None

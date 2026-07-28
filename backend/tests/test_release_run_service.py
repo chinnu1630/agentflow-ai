@@ -6,6 +6,11 @@ from pydantic import ValidationError
 
 from app.models.release_run import ReleaseRun
 from app.repositories.release_run_repository import ReleaseRunRepositoryError
+from app.schemas.risk import RiskCollectionStatusResponse
+from app.services.jira_risk_collector import (
+    JiraRiskCollectionResult,
+    JiraRiskCollectionStatus,
+)
 from app.services.release_run_service import (
     ReleaseRunService,
     ReleaseRunServiceError,
@@ -271,3 +276,25 @@ def test_start_release_run_command_rejects_invalid_input() -> None:
             query="bad",
             requested_by="me",
         )
+
+
+def test_to_jira_response_maps_failed_collection_to_degraded() -> None:
+    """Jira failures should degrade the API response instead of crashing."""
+    safe_error_message = (
+        "Jira risk collection failed. Release analysis can continue "
+        "with other available sources."
+    )
+    jira_result = JiraRiskCollectionResult(
+        status=JiraRiskCollectionStatus.FAILED,
+        error_message=safe_error_message,
+        duration_ms=12.5,
+    )
+
+    response = ReleaseRunService._to_jira_response(jira_result)
+
+    assert response.status is RiskCollectionStatusResponse.DEGRADED
+    assert response.error_message == safe_error_message
+    assert response.total_issues_analyzed == 0
+    assert response.total_signals == 0
+    assert response.issues == []
+    assert response.signals == []

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -82,10 +83,14 @@ async def test_jira_dependency_builds_real_collector(monkeypatch: pytest.MonkeyP
 @pytest.mark.anyio
 async def test_jira_dependency_rejects_missing_configuration(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Missing Jira settings should return a controlled service-unavailable error."""
+    monkeypatch.chdir(tmp_path)
+
     for variable in ("JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_PROJECT_KEY"):
         monkeypatch.delenv(variable, raising=False)
+
     get_settings.cache_clear()
 
     dependency = get_jira_risk_collector()
