@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import httpx
@@ -72,7 +73,14 @@ async def test_jira_client_searches_release_risk_issues() -> None:
     """JiraClient should call Jira search API and return normalized issues."""
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/rest/api/3/search"
+        assert request.url.path == "/rest/api/3/search/jql"
+
+        request_payload = json.loads(request.content)
+
+        assert request_payload["maxResults"] == 50
+        assert request_payload["jql"].startswith('project = "PAY"')
+        assert "summary" in request_payload["fields"]
+        assert "priority" in request_payload["fields"]
 
         return httpx.Response(
             status_code=200,

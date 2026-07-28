@@ -138,7 +138,7 @@ class JiraClient:
 
         response_payload = await self._post_with_retries(
             run_id=run_id,
-            url="/rest/api/3/search",
+            url="/rest/api/3/search/jql",
             json_payload=payload,
         )
 
