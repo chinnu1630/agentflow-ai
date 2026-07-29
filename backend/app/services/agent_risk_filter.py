@@ -65,7 +65,7 @@ class AgentRiskFilter:
             for severity in plan.filters.severities
         }
 
-        filtered_risks = [
+        matched_risks = [
             risk
             for risk in release_risk.release_summary.top_risks
             if self._matches_sources(
@@ -86,6 +86,12 @@ class AgentRiskFilter:
             )
         ]
 
+        filtered_risks = (
+            self._deduplicate_by_source(matched_risks)
+            if plan.filters.blockers_only
+            else matched_risks
+        )
+
         logger.info(
             "agent_risks_filtered",
             extra={
@@ -95,7 +101,11 @@ class AgentRiskFilter:
                 "input_risk_count": len(
                     release_risk.release_summary.top_risks
                 ),
+                "matched_risk_count": len(matched_risks),
                 "filtered_risk_count": len(filtered_risks),
+                "deduplicated_risk_count": (
+                    len(matched_risks) - len(filtered_risks)
+                ),
                 "source_filters": sorted(source_values),
                 "severity_filters": sorted(severity_values),
                 "blockers_only": plan.filters.blockers_only,
@@ -104,6 +114,26 @@ class AgentRiskFilter:
         )
 
         return filtered_risks
+
+    @staticmethod
+    def _deduplicate_by_source(
+        risks: list[ReleaseRiskSummaryItemResponse],
+    ) -> list[ReleaseRiskSummaryItemResponse]:
+        """Keep the highest-ranked risk for each underlying source entity."""
+
+        seen_sources: set[tuple[str, str]] = set()
+        unique_risks: list[ReleaseRiskSummaryItemResponse] = []
+
+        for risk in risks:
+            source_key = (risk.source, risk.source_id)
+
+            if source_key in seen_sources:
+                continue
+
+            seen_sources.add(source_key)
+            unique_risks.append(risk)
+
+        return unique_risks
 
     @staticmethod
     def _source_value(source: RiskSourceFilter) -> str:

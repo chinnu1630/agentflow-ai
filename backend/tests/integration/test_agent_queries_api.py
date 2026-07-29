@@ -664,10 +664,10 @@ async def test_execute_agent_query_runs_claude_risk_synthesis(
 
 
 @pytest.mark.anyio
-async def test_release_summary_follow_up_uses_persisted_snapshot(
+async def test_deployment_blocker_follow_up_uses_persisted_snapshot(
     agent_query_api_client: AsyncClient,
 ) -> None:
-    """Summary follow-up should reuse the persisted snapshot without recollection."""
+    """Blocker follow-up should filter persisted evidence without recollection."""
 
     initial_response = await agent_query_api_client.post(
         "/api/v1/agent/query",
@@ -696,10 +696,17 @@ async def test_release_summary_follow_up_uses_persisted_snapshot(
 
     follow_up_payload = follow_up_response.json()
 
-    assert follow_up_payload["plan"]["intent"] == "release_risk_summary"
+    assert follow_up_payload["plan"]["intent"] == "filter_risks"
+    assert follow_up_payload["plan"]["filters"]["blockers_only"] is True
     assert follow_up_payload["release_risk"]["release_run"]["id"] == (
         release_run_id
     )
+    assert "Found 1 matching risk" in follow_up_payload["answer"]
+    assert "release blocker" in follow_up_payload["answer"].casefold()
+    assert "Payment API has failing CI" not in follow_up_payload["answer"]
+    assert [citation["source_id"] for citation in follow_up_payload["citations"]] == [
+        "PAY-102"
+    ]
     assert FakeAgentGitHubRiskCollector.call_count == github_calls
     assert FakeAgentJiraRiskCollector.call_count == jira_calls
 

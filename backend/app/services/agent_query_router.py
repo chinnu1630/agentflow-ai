@@ -201,6 +201,12 @@ class AgentQueryRouter:
                 "jira only",
                 "github only",
                 "show blockers",
+                "what could block",
+                "what is blocking",
+                "what's blocking",
+                "what blocks",
+                "deployment blockers",
+                "release blockers",
                 "show critical",
             ),
             routing_reason_code="matched_risk_filter",
@@ -418,7 +424,13 @@ class AgentQueryRouter:
         return AgentQueryFilters(
             sources=sources,
             severities=severities,
-            blockers_only="blocker" in normalized_query,
+            blockers_only=(
+                re.search(
+                    r"\bblock(?:s|ed|ing|er|ers)?\b",
+                    normalized_query,
+                )
+                is not None
+            ),
             open_items_only=("open only" in normalized_query or "open items" in normalized_query),
         )
 

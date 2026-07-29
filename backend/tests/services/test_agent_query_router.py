@@ -77,6 +77,25 @@ async def test_routes_specific_risk_explanation(
 
 
 @pytest.mark.anyio
+async def test_routes_deployment_blocker_question_as_risk_filter(
+    router: AgentQueryRouter,
+) -> None:
+    """Natural deployment-blocker wording should request blocker-only risks."""
+
+    request = AgentQueryRequest(
+        query="What could block this week's deployment?",
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.FILTER_RISKS
+    assert plan.filters.blockers_only is True
+    assert plan.requires_current_snapshot is True
+    assert plan.may_execute_side_effect is False
+
+
+@pytest.mark.anyio
 async def test_routes_jira_blockers_filter(
     router: AgentQueryRouter,
 ) -> None:

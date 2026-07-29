@@ -119,6 +119,29 @@ def test_filters_jira_blockers_only() -> None:
     assert risks[0].source_id == "PAY-102"
 
 
+def test_blocker_filter_deduplicates_signals_from_same_source() -> None:
+    """Blocker answers should contain one ranked item per underlying ticket."""
+
+    release_risk = build_release_risk_response()
+    duplicate = release_risk.release_summary.top_risks[-2].model_copy(
+        update={
+            "severity": "high",
+            "score": 0.80,
+            "title": "Another blocker rule matched",
+            "reason": "A second rule matched the same Jira blocker.",
+        }
+    )
+    release_risk.release_summary.top_risks.append(duplicate)
+
+    risks = AgentRiskFilter(request_id="request-123").filter(
+        plan=build_plan(blockers_only=True),
+        release_risk=release_risk,
+    )
+
+    assert [risk.source_id for risk in risks] == ["PAY-102"]
+    assert risks[0].title == "Payment release blocker"
+
+
 def test_filters_by_severity() -> None:
     """Severity filters should match normalized persisted severity values."""
 
