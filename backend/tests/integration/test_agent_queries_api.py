@@ -2087,3 +2087,55 @@ async def test_dynamic_query_hides_invalid_synthesis_output(
         "UNTRUSTED_CLAUDE_OUTPUT_SHOULD_NOT_BE_EXPOSED"
         not in caplog.text
     )
+
+@pytest.mark.anyio
+async def test_pronoun_follow_up_uses_validated_pr_context(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """A pronoun follow-up should resolve one validated persisted PR."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert initial_response.status_code == 200
+
+    release_run_id = initial_response.json()["release_risk"]["release_run"]["id"]
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Why is it risky?",
+            "release_run_id": release_run_id,
+            "context_entity_references": {
+                "pull_request_numbers": [42],
+            },
+        },
+    )
+
+    assert follow_up_response.status_code == 200, follow_up_response.text
+
+    payload = follow_up_response.json()
+
+    assert payload["plan"]["intent"] == "explain_specific_risk"
+    assert payload["plan"]["entity_references"][
+        "pull_request_numbers"
+    ] == [42]
+    assert payload["release_risk"]["release_run"]["id"] == release_run_id
+
+    assert "Payment API has failing CI" in payload["answer"]
+    assert "CI failed on a release-critical payment service." in (
+        payload["answer"]
+    )
+
+    assert len(payload["citations"]) == 1
+    assert payload["citations"][0]["source_type"] == "github_pull_request"
+    assert payload["citations"][0]["source_id"] == "PR-42"
+
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls

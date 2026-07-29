@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 
 from app.schemas.agent_query import (
+    AgentEntityReferences,
     AgentIntent,
     AgentQueryRequest,
     ResponseDepth,
@@ -528,3 +529,67 @@ async def test_routes_similar_past_release_question() -> None:
     assert plan.requires_current_snapshot is True
     assert plan.requires_historical_lookup is True
     assert plan.may_execute_side_effect is False
+
+@pytest.mark.anyio
+async def test_reuses_pr_context_for_referential_risk_question(
+    router: AgentQueryRouter,
+) -> None:
+    """A pronoun follow-up should reuse one validated PR reference."""
+
+    plan = await router.create_plan(
+        AgentQueryRequest(
+            query="Why is it risky?",
+            release_run_id=uuid4(),
+            context_entity_references=AgentEntityReferences(
+                pull_request_numbers=[4],
+            ),
+        )
+    )
+
+    assert plan.intent is AgentIntent.EXPLAIN_SPECIFIC_RISK
+    assert plan.entity_references.pull_request_numbers == [4]
+    assert plan.entity_references.jira_issue_keys == []
+    assert plan.requires_current_snapshot is True
+
+
+@pytest.mark.anyio
+async def test_routes_generic_pronoun_follow_up_from_jira_context(
+    router: AgentQueryRouter,
+) -> None:
+    """A generic pronoun question should become a focused risk follow-up."""
+
+    plan = await router.create_plan(
+        AgentQueryRequest(
+            query="What should the manager do about it?",
+            release_run_id=uuid4(),
+            context_entity_references=AgentEntityReferences(
+                jira_issue_keys=["SCRUM-2"],
+            ),
+        )
+    )
+
+    assert plan.intent is AgentIntent.EXPLAIN_SPECIFIC_RISK
+    assert plan.entity_references.pull_request_numbers == []
+    assert plan.entity_references.jira_issue_keys == ["SCRUM-2"]
+    assert plan.routing_reason_code == "matched_contextual_entity_follow_up"
+
+
+@pytest.mark.anyio
+async def test_explicit_entity_overrides_previous_context(
+    router: AgentQueryRouter,
+) -> None:
+    """A newly named PR must replace, rather than merge with, old context."""
+
+    plan = await router.create_plan(
+        AgentQueryRequest(
+            query="Tell me about PR 5.",
+            release_run_id=uuid4(),
+            context_entity_references=AgentEntityReferences(
+                pull_request_numbers=[4],
+            ),
+        )
+    )
+
+    assert plan.intent is AgentIntent.GITHUB_PR_QUESTION
+    assert plan.entity_references.pull_request_numbers == [5]
+    assert plan.entity_references.jira_issue_keys == []

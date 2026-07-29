@@ -42,6 +42,12 @@ class AgentQueryRouter:
 
     _WHITESPACE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 
+    _REFERENTIAL_ENTITY_PATTERN: Final[re.Pattern[str]] = re.compile(
+        r"\b(?:it|this|that|this risk|that risk|the risk|the issue|"
+        r"the pull request|the ticket)\b",
+        re.IGNORECASE,
+    )
+
     _PR_PATTERN: Final[re.Pattern[str]] = re.compile(
         r"\b(?:pr|pull request)\s*#?\s*(\d+)\b",
         re.IGNORECASE,
@@ -311,6 +317,12 @@ class AgentQueryRouter:
 
         normalized_query = self._normalize_query(request.query)
         matched_rule = self._find_matching_rule(normalized_query)
+        query_entities = self._extract_entities(request.query)
+        entity_references = self._resolve_entity_references(
+            normalized_query=normalized_query,
+            query_entities=query_entities,
+            context_entities=request.context_entity_references,
+        )
 
         if (
             matched_rule is None
@@ -338,6 +350,19 @@ class AgentQueryRouter:
                 requires_current_snapshot=True,
             )
 
+        if (
+            matched_rule is None
+            and self._has_single_entity_reference(entity_references)
+        ):
+            matched_rule = IntentRule(
+                intent=AgentIntent.EXPLAIN_SPECIFIC_RISK,
+                response_depth=ResponseDepth.DEEP,
+                phrases=("contextual_entity_follow_up",),
+                routing_reason_code="matched_contextual_entity_follow_up",
+                priority=70,
+                requires_current_snapshot=True,
+            )
+
         if matched_rule is None:
             if not self._contains_release_context(normalized_query):
                 return self._create_out_of_scope_plan(request)
@@ -361,7 +386,7 @@ class AgentQueryRouter:
             release_run_id=request.release_run_id,
             conversation_session_id=request.conversation_session_id,
             filters=self._extract_filters(request.query),
-            entity_references=self._extract_entities(request.query),
+            entity_references=entity_references,
             requires_current_snapshot=(matched_rule.requires_current_snapshot),
             requires_historical_lookup=(matched_rule.requires_historical_lookup),
             requires_human_approval=(matched_rule.requires_human_approval),
@@ -480,6 +505,53 @@ class AgentQueryRouter:
         return AgentEntityReferences(
             pull_request_numbers=pull_request_numbers,
             jira_issue_keys=jira_issue_keys,
+        )
+
+    def _resolve_entity_references(
+        self,
+        *,
+        normalized_query: str,
+        query_entities: AgentEntityReferences,
+        context_entities: AgentEntityReferences | None,
+    ) -> AgentEntityReferences:
+        """Resolve explicit entities before bounded follow-up context.
+
+        Explicit identifiers in the current query always win. Context is used
+        only for referential wording and only when it identifies exactly one
+        persisted GitHub pull request or Jira issue.
+        """
+
+        if (
+            query_entities.pull_request_numbers
+            or query_entities.jira_issue_keys
+            or query_entities.service_names
+        ):
+            return query_entities
+
+        if (
+            context_entities is None
+            or self._REFERENTIAL_ENTITY_PATTERN.search(normalized_query) is None
+            or not self._has_single_entity_reference(context_entities)
+        ):
+            return query_entities
+
+        return AgentEntityReferences(
+            pull_request_numbers=list(
+                context_entities.pull_request_numbers
+            ),
+            jira_issue_keys=list(context_entities.jira_issue_keys),
+        )
+
+    @staticmethod
+    def _has_single_entity_reference(
+        entity_references: AgentEntityReferences,
+    ) -> bool:
+        """Return whether exactly one PR or Jira entity is available."""
+
+        return (
+            len(entity_references.pull_request_numbers)
+            + len(entity_references.jira_issue_keys)
+            == 1
         )
 
     def _calculate_confidence(

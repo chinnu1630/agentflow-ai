@@ -19,6 +19,7 @@ from agentflow_frontend.api_client import (
     SlackAlertCallResult,
 )
 from agentflow_frontend.api_models import (
+    AgentEntityReferences,
     AgentQueryRequest,
     AgentQueryResponse,
     PendingReleaseRunApprovalList,
@@ -248,6 +249,7 @@ def test_streamlit_app_allows_chat_without_token_in_local_mode(
         query: str,
         conversation_session_id: Any = None,
         release_run_id: str | None = None,
+        context_entity_references: AgentEntityReferences | None = None,
     ) -> AgentQueryCallResult:
         captured["auth_required"] = settings.auth_required
         captured["token"] = bearer_token.get_secret_value()
@@ -387,6 +389,7 @@ def test_streamlit_app_renders_release_risk_response(
         query: str,
         conversation_session_id: Any = None,
         release_run_id: str | None = None,
+        context_entity_references: AgentEntityReferences | None = None,
     ) -> AgentQueryCallResult:
         assert str(settings.backend_base_url) == (
             "https://agentflow.example.test/"
@@ -517,6 +520,7 @@ def test_streamlit_app_chat_carries_release_run_id_to_followup(
         query: str,
         conversation_session_id: Any = None,
         release_run_id: str | None = None,
+        context_entity_references: AgentEntityReferences | None = None,
     ) -> AgentQueryCallResult:
         captured_release_run_ids.append(release_run_id)
 
@@ -1512,3 +1516,51 @@ def test_streamlit_app_renders_workflow_status_and_audit_timeline(
         "workflow-events-ui-run-id" in item.value
         for item in app.caption
     )
+
+def test_get_focused_entity_context_returns_single_pr() -> None:
+    """Preserve one backend-validated PR for a pronoun follow-up."""
+
+    response = AgentQueryResponse.model_validate(
+        {
+            "answer": "PR 4 has unresolved release risk.",
+            "plan": {
+                "intent": "github_pr_question",
+                "response_depth": "standard",
+                "confidence": 0.98,
+                "entity_references": {
+                    "pull_request_numbers": [4],
+                },
+                "routing_reason_code": "matched_github_pr_reference",
+            },
+            "citations": [],
+            "approval_required": False,
+        }
+    )
+
+    context = app_module.get_focused_entity_context(response)
+
+    assert context == AgentEntityReferences(pull_request_numbers=[4])
+
+
+def test_get_focused_entity_context_rejects_ambiguous_summary() -> None:
+    """Do not infer a pronoun target from a multi-entity summary."""
+
+    response = AgentQueryResponse.model_validate(
+        {
+            "answer": "Several risks require review.",
+            "plan": {
+                "intent": "release_risk_summary",
+                "response_depth": "standard",
+                "confidence": 0.98,
+                "entity_references": {
+                    "pull_request_numbers": [4],
+                    "jira_issue_keys": ["SCRUM-2"],
+                },
+                "routing_reason_code": "matched_release_risk_summary",
+            },
+            "citations": [],
+            "approval_required": True,
+        }
+    )
+
+    assert app_module.get_focused_entity_context(response) is None

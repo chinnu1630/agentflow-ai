@@ -15,6 +15,16 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+class AgentEntityReferences(BaseModel):
+    """Validated entity context sent between focused follow-up questions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    service_names: list[str] = Field(default_factory=list)
+    pull_request_numbers: list[int] = Field(default_factory=list)
+    jira_issue_keys: list[str] = Field(default_factory=list)
+
+
 class AgentQueryRequest(BaseModel):
     """Natural-language query sent to the AgentFlow backend."""
 
@@ -26,6 +36,7 @@ class AgentQueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2_000)
     conversation_session_id: UUID | None = None
     release_run_id: UUID | None = None
+    context_entity_references: AgentEntityReferences | None = None
 
     @field_validator("query")
     @classmethod
@@ -61,6 +72,9 @@ class AgentQueryPlan(_APIResponseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     release_run_id: UUID | None = None
     conversation_session_id: UUID | None = None
+    entity_references: AgentEntityReferences = Field(
+        default_factory=AgentEntityReferences
+    )
     requires_current_snapshot: bool = False
     requires_historical_lookup: bool = False
     requires_human_approval: bool = False

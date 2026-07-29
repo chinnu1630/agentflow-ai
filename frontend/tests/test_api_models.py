@@ -137,3 +137,19 @@ def test_agent_query_response_rejects_out_of_range_risk_score() -> None:
                 "approval_required": False,
             }
         )
+
+def test_agent_query_request_accepts_validated_entity_context() -> None:
+    """Serialize one typed PR reference for a contextual follow-up."""
+
+    request = AgentQueryRequest.model_validate(
+        {
+            "query": "Why is it risky?",
+            "context_entity_references": {
+                "pull_request_numbers": [4],
+            },
+        }
+    )
+
+    assert request.context_entity_references is not None
+    assert request.context_entity_references.pull_request_numbers == [4]
+    assert request.context_entity_references.jira_issue_keys == []

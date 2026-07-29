@@ -22,6 +22,7 @@ from agentflow_frontend.api_client import (
     SlackAlertCallResult,
 )
 from agentflow_frontend.api_models import (
+    AgentEntityReferences,
     AgentQueryRequest,
     AgentQueryResponse,
     ReleaseApprovalDecisionStatus,
@@ -33,6 +34,7 @@ DEFAULT_RELEASE_RISK_QUERY = "What are the biggest release risks this week?"
 _CHAT_MESSAGES_STATE_KEY = "agentflow_chat_messages"
 _CONVERSATION_SESSION_ID_STATE_KEY = "agentflow_conversation_session_id"
 _LAST_RELEASE_RUN_ID_STATE_KEY = "agentflow_last_chat_release_run_id"
+_LAST_ENTITY_REFERENCES_STATE_KEY = "agentflow_last_entity_references"
 _PENDING_APPROVALS_STATE_KEY = "agentflow_pending_approvals"
 
 _APPROVAL_DECISION_RESULT_STATE_KEY = "agentflow_approval_decision_result"
@@ -61,6 +63,37 @@ class ChatTurn:
     query: str
     result: AgentQueryCallResult | None
     error: str | None
+
+
+def get_focused_entity_context(
+    response: AgentQueryResponse,
+) -> AgentEntityReferences | None:
+    """Return one validated PR or Jira entity from a focused answer.
+
+    Generic and ambiguous answers clear entity context so later pronouns do
+    not silently resolve to stale or unrelated evidence.
+    """
+
+    if response.plan.intent not in {
+        "github_pr_question",
+        "jira_ticket_question",
+        "explain_specific_risk",
+    }:
+        return None
+
+    references = response.plan.entity_references
+    entity_count = (
+        len(references.pull_request_numbers)
+        + len(references.jira_issue_keys)
+    )
+
+    if entity_count != 1:
+        return None
+
+    return AgentEntityReferences(
+        pull_request_numbers=list(references.pull_request_numbers),
+        jira_issue_keys=list(references.jira_issue_keys),
+    )
 
 
 def validate_release_run_id(value: str) -> str:
@@ -102,6 +135,7 @@ async def execute_manager_query(
     query: str,
     conversation_session_id: UUID | None = None,
     release_run_id: str | None = None,
+    context_entity_references: AgentEntityReferences | None = None,
 ) -> AgentQueryCallResult:
     """Execute one manager query through the typed FastAPI client.
 
@@ -113,6 +147,8 @@ async def execute_manager_query(
             question asked within one chat session.
         release_run_id: Most recent release-run UUID from this chat, reused
             so follow-up questions resolve trusted persisted context.
+        context_entity_references: One validated PR or Jira entity from the
+            immediately preceding focused answer.
 
     Returns:
         Validated backend response and request correlation ID.
@@ -123,6 +159,7 @@ async def execute_manager_query(
         release_run_id=(
             UUID(release_run_id) if release_run_id is not None else None
         ),
+        context_entity_references=context_entity_references,
     )
 
     async with AgentFlowAPIClient(
@@ -663,6 +700,9 @@ def main() -> None:
                                 release_run_id=st.session_state.get(
                                     _LAST_RELEASE_RUN_ID_STATE_KEY
                                 ),
+                                context_entity_references=st.session_state.get(
+                                    _LAST_ENTITY_REFERENCES_STATE_KEY
+                                ),
                             )
                         )
                 except ValidationError:
@@ -703,6 +743,19 @@ def main() -> None:
                         st.session_state[_LAST_RELEASE_RUN_ID_STATE_KEY] = str(
                             result.response.release_risk.release_run.id
                         )
+
+                    focused_context = get_focused_entity_context(
+                        result.response
+                    )
+                    if focused_context is None:
+                        st.session_state.pop(
+                            _LAST_ENTITY_REFERENCES_STATE_KEY,
+                            None,
+                        )
+                    else:
+                        st.session_state[
+                            _LAST_ENTITY_REFERENCES_STATE_KEY
+                        ] = focused_context
 
             chat_messages.append(new_turn)
 

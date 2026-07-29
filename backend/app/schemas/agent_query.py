@@ -96,6 +96,7 @@ class AgentQueryRequest(BaseModel):
     )
     conversation_session_id: UUID | None = None
     release_run_id: UUID | None = None
+    context_entity_references: AgentEntityReferences | None = None
 
     @field_validator("query")
     @classmethod
