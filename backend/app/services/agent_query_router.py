@@ -200,6 +200,8 @@ class AgentQueryRouter:
                 "github risks only",
                 "jira only",
                 "github only",
+                "github and jira",
+                "jira and github",
                 "show blockers",
                 "what could block",
                 "what is blocking",
@@ -431,7 +433,11 @@ class AgentQueryRouter:
                 )
                 is not None
             ),
-            open_items_only=("open only" in normalized_query or "open items" in normalized_query),
+            open_items_only=(
+                "open only" in normalized_query
+                or "open items" in normalized_query
+                or "currently open" in normalized_query
+            ),
         )
 
     def _extract_entities(

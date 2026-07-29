@@ -77,6 +77,31 @@ async def test_routes_specific_risk_explanation(
 
 
 @pytest.mark.anyio
+async def test_routes_open_github_and_jira_question_as_filter(
+    router: AgentQueryRouter,
+) -> None:
+    """Combined GitHub and Jira wording should not require a specific PR."""
+
+    request = AgentQueryRequest(
+        query=(
+            "Which currently open GitHub and Jira items could affect "
+            "this week's release?"
+        ),
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.FILTER_RISKS
+    assert set(plan.filters.sources) == {
+        RiskSourceFilter.GITHUB,
+        RiskSourceFilter.JIRA,
+    }
+    assert plan.filters.open_items_only is True
+    assert plan.requires_current_snapshot is True
+
+
+@pytest.mark.anyio
 async def test_routes_deployment_blocker_question_as_risk_filter(
     router: AgentQueryRouter,
 ) -> None:

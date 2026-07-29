@@ -664,6 +664,46 @@ async def test_execute_agent_query_runs_claude_risk_synthesis(
 
 
 @pytest.mark.anyio
+async def test_open_github_and_jira_follow_up_uses_persisted_snapshot(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Mixed-source follow-up should reuse persisted evidence without recollection."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": "What are the biggest release risks this week?"},
+    )
+
+    assert initial_response.status_code == 200
+
+    release_run_id = initial_response.json()["release_risk"]["release_run"]["id"]
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": (
+                "Which currently open GitHub and Jira items could affect "
+                "this week's release?"
+            ),
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert follow_up_response.status_code == 200, follow_up_response.text
+
+    payload = follow_up_response.json()
+
+    assert payload["plan"]["intent"] == "filter_risks"
+    assert set(payload["plan"]["filters"]["sources"]) == {"github", "jira"}
+    assert payload["plan"]["filters"]["open_items_only"] is True
+    assert payload["release_risk"]["release_run"]["id"] == release_run_id
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+
+@pytest.mark.anyio
 async def test_deployment_blocker_follow_up_uses_persisted_snapshot(
     agent_query_api_client: AsyncClient,
 ) -> None:
