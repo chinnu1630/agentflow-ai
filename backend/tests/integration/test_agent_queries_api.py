@@ -663,6 +663,55 @@ async def test_execute_agent_query_runs_claude_risk_synthesis(
     assert release_risk["synthesis_error"] is None
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_source"),
+    [
+        ("Show only GitHub risks.", "github"),
+        ("Show only Jira risks.", "jira"),
+    ],
+)
+@pytest.mark.anyio
+async def test_source_only_follow_up_uses_persisted_snapshot(
+    agent_query_api_client: AsyncClient,
+    query: str,
+    expected_source: str,
+) -> None:
+    """Source-only follow-ups should filter persisted evidence without recollection."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": "What are the biggest release risks this week?"},
+    )
+
+    assert initial_response.status_code == 200
+
+    release_run_id = initial_response.json()["release_risk"]["release_run"]["id"]
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": query,
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert follow_up_response.status_code == 200, follow_up_response.text
+
+    payload = follow_up_response.json()
+
+    assert payload["plan"]["intent"] == "filter_risks"
+    assert payload["plan"]["filters"]["sources"] == [expected_source]
+    assert payload["citations"]
+    assert all(
+        citation["source"] == expected_source
+        for citation in payload["citations"]
+    )
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+
 @pytest.mark.anyio
 async def test_open_github_and_jira_follow_up_uses_persisted_snapshot(
     agent_query_api_client: AsyncClient,

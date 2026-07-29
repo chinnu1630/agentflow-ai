@@ -76,6 +76,33 @@ async def test_routes_specific_risk_explanation(
     assert plan.requires_current_snapshot is True
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_source"),
+    [
+        ("Show only GitHub risks.", RiskSourceFilter.GITHUB),
+        ("Show only Jira risks.", RiskSourceFilter.JIRA),
+    ],
+)
+@pytest.mark.anyio
+async def test_routes_source_only_risk_wording_as_filter(
+    router: AgentQueryRouter,
+    query: str,
+    expected_source: RiskSourceFilter,
+) -> None:
+    """Natural source-only wording should not require a specific entity ID."""
+
+    request = AgentQueryRequest(
+        query=query,
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.FILTER_RISKS
+    assert plan.filters.sources == [expected_source]
+    assert plan.requires_current_snapshot is True
+
+
 @pytest.mark.anyio
 async def test_routes_open_github_and_jira_question_as_filter(
     router: AgentQueryRouter,
