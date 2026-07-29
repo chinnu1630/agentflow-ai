@@ -1001,6 +1001,43 @@ async def test_specific_risk_follow_up_uses_persisted_snapshot(
 
 
 @pytest.mark.anyio
+async def test_natural_high_severity_follow_up_uses_persisted_snapshot(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Natural severity wording should filter persisted evidence only."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": "What are the biggest release risks this week?"},
+    )
+
+    assert initial_response.status_code == 200
+
+    release_run_id = initial_response.json()["release_risk"]["release_run"]["id"]
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Show high severity risks.",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert follow_up_response.status_code == 200, follow_up_response.text
+
+    payload = follow_up_response.json()
+
+    assert payload["plan"]["intent"] == "filter_risks"
+    assert payload["plan"]["filters"]["severities"] == ["high"]
+    assert payload["release_risk"]["release_run"]["id"] == release_run_id
+    assert payload["citations"]
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+
+@pytest.mark.anyio
 async def test_filter_risks_follow_up_uses_persisted_snapshot(
     agent_query_api_client: AsyncClient,
 ) -> None:
@@ -1398,6 +1435,45 @@ async def test_previous_release_comparison_uses_persisted_snapshots(
 
     assert FakeAgentGitHubRiskCollector.call_count == github_calls
     assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+@pytest.mark.anyio
+async def test_natural_slack_delivery_status_wording_uses_persisted_state(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Natural Slack delivery wording should read durable state only."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": "What are the biggest release risks this week?"},
+    )
+
+    assert initial_response.status_code == 200
+
+    release_run_id = initial_response.json()["release_risk"]["release_run"]["id"]
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    status_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Has an alert already been delivered to Slack?",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert status_response.status_code == 200, status_response.text
+
+    payload = status_response.json()
+
+    assert payload["plan"]["intent"] == "slack_status_question"
+    assert payload["answer"] == (
+        "No Slack alert has been sent for this release run."
+    )
+    assert payload["release_risk"]["release_run"]["id"] == release_run_id
+    assert payload["citations"] == []
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
 
 @pytest.mark.anyio
 async def test_slack_status_question_reports_not_sent_without_recollection(

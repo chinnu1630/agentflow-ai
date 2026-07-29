@@ -242,6 +242,54 @@ async def test_routes_slack_status_as_read_only(
 
 
 @pytest.mark.anyio
+async def test_routes_natural_slack_delivery_status_wording(
+    router: AgentQueryRouter,
+) -> None:
+    """Natural delivery wording should use the read-only Slack status route."""
+
+    request = AgentQueryRequest(
+        query="Has an alert already been delivered to Slack?",
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.SLACK_STATUS_QUESTION
+    assert plan.response_depth is ResponseDepth.BRIEF
+    assert plan.requires_human_approval is False
+    assert plan.may_execute_side_effect is False
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_severity"),
+    [
+        ("Show high severity risks.", "high"),
+        ("Show critical risks.", "critical"),
+        ("Show medium severity risks.", "medium"),
+        ("Show low severity risks.", "low"),
+    ],
+)
+@pytest.mark.anyio
+async def test_routes_natural_severity_filters(
+    router: AgentQueryRouter,
+    query: str,
+    expected_severity: str,
+) -> None:
+    """Severity-only wording should filter the persisted release snapshot."""
+
+    request = AgentQueryRequest(
+        query=query,
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.FILTER_RISKS
+    assert plan.filters.severities == [expected_severity]
+    assert plan.requires_current_snapshot is True
+
+
+@pytest.mark.anyio
 async def test_extracts_pull_request_and_jira_identifiers(
     router: AgentQueryRouter,
 ) -> None:
