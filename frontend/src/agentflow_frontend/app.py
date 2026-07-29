@@ -464,6 +464,22 @@ def render_pending_approvals(
     return None
 
 
+def should_render_release_assessment(
+    response: AgentQueryResponse,
+) -> bool:
+    """Return whether the response requires the full release dashboard.
+
+    Focused PR, Jira, filtering, approval, workflow, and Slack questions may
+    reuse the persisted release snapshot, but should render only their focused
+    answer and supporting citations.
+    """
+
+    return (
+        response.release_risk is not None
+        and response.plan.intent == "release_risk_summary"
+    )
+
+
 def render_agent_query_response(result: AgentQueryCallResult) -> None:
     """Render a validated AgentFlow response in Streamlit.
 
@@ -478,7 +494,8 @@ def render_agent_query_response(result: AgentQueryCallResult) -> None:
 
     release_risk = response.release_risk
 
-    if release_risk is not None:
+    if should_render_release_assessment(response):
+        assert release_risk is not None
         st.subheader("Release assessment")
 
         score_value = (

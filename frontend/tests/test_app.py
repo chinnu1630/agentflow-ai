@@ -1564,3 +1564,54 @@ def test_get_focused_entity_context_rejects_ambiguous_summary() -> None:
     )
 
     assert app_module.get_focused_entity_context(response) is None
+
+def test_release_assessment_rendering_is_limited_to_summary_intent() -> None:
+    """Focused follow-ups should not redraw the full release dashboard."""
+
+    summary_response = AgentQueryResponse.model_validate(
+        {
+            "answer": "The release requires manager review.",
+            "plan": {
+                "intent": "release_risk_summary",
+                "response_depth": "standard",
+                "confidence": 0.98,
+                "routing_reason_code": "matched_release_risk_summary",
+            },
+            "release_risk": {
+                "release_run": {
+                    "id": "14326708-c085-4e6d-9c32-47dc92b24841",
+                    "run_id": "release-run-render-policy",
+                    "query": "What are the biggest release risks?",
+                    "requested_by": "manager@example.com",
+                    "status": "waiting_for_approval",
+                    "created_at": "2026-07-29T12:00:00Z",
+                },
+                "github": {
+                    "status": "success",
+                },
+                "jira": {
+                    "status": "success",
+                },
+                "release_summary": {
+                    "overall_severity": "high",
+                    "recommended_action": "review_required",
+                    "total_signal_count": 18,
+                    "high_risk_count": 6,
+                    "summary_text": "Release requires manager review.",
+                },
+            },
+            "citations": [],
+            "approval_required": True,
+        }
+    )
+
+    focused_response = summary_response.model_copy(
+        update={
+            "plan": summary_response.plan.model_copy(
+                update={"intent": "github_pr_question"}
+            )
+        }
+    )
+
+    assert app_module.should_render_release_assessment(summary_response) is True
+    assert app_module.should_render_release_assessment(focused_response) is False
