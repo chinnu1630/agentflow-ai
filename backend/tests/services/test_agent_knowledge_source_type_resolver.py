@@ -51,3 +51,39 @@ def test_avoids_filter_for_generic_or_ambiguous_query(query: str) -> None:
     """Generic or multi-category questions should search all documents."""
 
     assert resolve_engineering_document_source_type(query) is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "What recovery steps are documented for payment API timeouts?",
+        "What monitoring checks should be completed after a rollback?",
+    ],
+)
+def test_infers_runbook_for_bounded_operational_guidance(
+    query: str,
+) -> None:
+    """Operational recovery guidance should search only trusted runbooks."""
+
+    assert (
+        resolve_engineering_document_source_type(query)
+        is EngineeringDocumentSourceType.RUNBOOK
+    )
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Could a rollback affect this release?",
+        (
+            "Compare documented rollback recovery steps with the "
+            "release readiness checklist."
+        ),
+    ],
+)
+def test_does_not_overfilter_ambiguous_operational_queries(
+    query: str,
+) -> None:
+    """Generic or multi-category operational wording must remain unfiltered."""
+
+    assert resolve_engineering_document_source_type(query) is None
