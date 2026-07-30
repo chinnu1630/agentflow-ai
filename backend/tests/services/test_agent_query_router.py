@@ -593,3 +593,41 @@ async def test_explicit_entity_overrides_previous_context(
     assert plan.intent is AgentIntent.GITHUB_PR_QUESTION
     assert plan.entity_references.pull_request_numbers == [5]
     assert plan.entity_references.jira_issue_keys == []
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "What recovery steps are documented for payment API timeouts?",
+        "What monitoring checks should be completed after a rollback?",
+    ],
+)
+@pytest.mark.anyio
+async def test_routes_implicit_operational_document_questions_as_knowledge(
+    router: AgentQueryRouter,
+    query: str,
+) -> None:
+    """Operational-document wording should route to knowledge retrieval."""
+
+    plan = await router.create_plan(AgentQueryRequest(query=query))
+
+    assert plan.intent is AgentIntent.KNOWLEDGE_DOC_QUESTION
+    assert plan.response_depth is ResponseDepth.STANDARD
+    assert plan.requires_current_snapshot is False
+    assert plan.requires_historical_lookup is False
+    assert plan.routing_reason_code == "matched_implicit_knowledge_question"
+
+
+@pytest.mark.anyio
+async def test_does_not_route_generic_rollback_question_as_knowledge(
+    router: AgentQueryRouter,
+) -> None:
+    """Rollback wording alone must not trigger engineering-document retrieval."""
+
+    plan = await router.create_plan(
+        AgentQueryRequest(query="Could a rollback affect this release?")
+    )
+
+    assert plan.intent is AgentIntent.RELEASE_RISK_SUMMARY
+    assert plan.requires_current_snapshot is True
+    assert plan.routing_reason_code == "matched_general_release_context"

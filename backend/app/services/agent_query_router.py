@@ -60,6 +60,25 @@ class AgentQueryRouter:
         r"(?P<space_number>\d+))\b",
     )
 
+    _IMPLICIT_KNOWLEDGE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+        re.compile(
+            r"\b(?:documented|documentation)\b.*"
+            r"\b(?:recovery|rollback|monitoring|validation|remediation|triage)\b"
+        ),
+        re.compile(
+            r"\b(?:recovery|rollback|monitoring|validation|remediation|triage)\b.*"
+            r"\b(?:documented|documentation)\b"
+        ),
+        re.compile(
+            r"\b(?:monitoring|validation|verification)\s+checks?\b.*"
+            r"\b(?:after|following)\s+(?:a\s+)?rollback\b"
+        ),
+        re.compile(
+            r"\b(?:after|following)\s+(?:a\s+)?rollback\b.*"
+            r"\b(?:monitoring|validation|verification)\s+checks?\b"
+        ),
+    )
+
     _RELEASE_CONTEXT_TERMS: Final[frozenset[str]] = frozenset(
         {
             "release",
@@ -363,6 +382,18 @@ class AgentQueryRouter:
                 requires_current_snapshot=True,
             )
 
+        if (
+            matched_rule is None
+            and self._matches_implicit_knowledge_question(normalized_query)
+        ):
+            matched_rule = IntentRule(
+                intent=AgentIntent.KNOWLEDGE_DOC_QUESTION,
+                response_depth=ResponseDepth.STANDARD,
+                phrases=("implicit_operational_document_question",),
+                routing_reason_code="matched_implicit_knowledge_question",
+                priority=55,
+            )
+
         if matched_rule is None:
             if not self._contains_release_context(normalized_query):
                 return self._create_out_of_scope_plan(request)
@@ -411,6 +442,22 @@ class AgentQueryRouter:
                 return rule
 
         return None
+
+    def _matches_implicit_knowledge_question(
+        self,
+        normalized_query: str,
+    ) -> bool:
+        """Return whether operational wording implies document retrieval.
+
+        The matcher requires a bounded combination of documentation,
+        recovery, monitoring, validation, or post-rollback terminology.
+        A generic rollback mention alone is intentionally insufficient.
+        """
+
+        return any(
+            pattern.search(normalized_query) is not None
+            for pattern in self._IMPLICIT_KNOWLEDGE_PATTERNS
+        )
 
     def _contains_release_context(
         self,
