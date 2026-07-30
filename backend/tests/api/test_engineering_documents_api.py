@@ -10,7 +10,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-import app.models  # noqa: F401 - ensures all SQLAlchemy models are registered
+import app.models as app_models  # noqa: F401 - register SQLAlchemy models
 from app.db.base import Base
 from app.db.session import get_db_session
 from app.main import app
@@ -316,3 +316,60 @@ async def test_retrieve_engineering_document_chunks_rejects_invalid_query(
     )
 
     assert response.status_code == 422
+
+
+
+@pytest.mark.asyncio
+async def test_ingest_engineering_document_replaces_changed_source(
+    api_client: httpx.AsyncClient,
+) -> None:
+    """POST ingestion should refresh changed content for one source URI."""
+    initial_payload = {
+        "title": "Payment Service Runbook",
+        "source_type": "runbook",
+        "source_uri": "docs/payment-service-refresh-runbook.md",
+        "raw_content": "Original payment recovery guidance.",
+        "metadata_json": {
+            "team": "payments",
+            "version": "1",
+        },
+        "chunking_config": {
+            "max_tokens_per_chunk": 20,
+            "overlap_tokens": 5,
+        },
+    }
+
+    updated_payload = {
+        **initial_payload,
+        "title": "Payment Service Production Runbook",
+        "raw_content": (
+            "Updated AtlasPay timeout recovery guidance with evidence "
+            "collection and rollback decision rules."
+        ),
+        "metadata_json": {
+            "team": "payments",
+            "version": "2",
+        },
+    }
+
+    first_response = await api_client.post(
+        "/api/v1/engineering-documents/ingest",
+        json=initial_payload,
+    )
+    second_response = await api_client.post(
+        "/api/v1/engineering-documents/ingest",
+        json=updated_payload,
+    )
+
+    assert first_response.status_code == 201
+    assert second_response.status_code == 200
+
+    first_data = first_response.json()
+    second_data = second_response.json()
+
+    assert second_data["document_id"] == first_data["document_id"]
+    assert second_data["content_hash"] != first_data["content_hash"]
+    assert second_data["created_document"] is False
+    assert second_data["created_chunks"] is True
+    assert second_data["duplicate_document"] is False
+    assert second_data["chunk_count"] >= 1

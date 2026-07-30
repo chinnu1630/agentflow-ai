@@ -63,6 +63,53 @@ _OPERATIONAL_GUIDANCE_RERANKER_SUFFIX = (
     "Operational guidance: symptom evidence to collect triage decision rule."
 )
 
+_MARKDOWN_SECTION_PATTERN = re.compile(r"(?:^|\s)#{2,6}\s+\S")
+_OPERATIONAL_SECTION_MARKERS: tuple[str, ...] = (
+    "**symptom:**",
+    "**evidence to collect:**",
+    "**decision rule:**",
+)
+_OPERATIONAL_SECTION_SCORE_BONUS = 2.0
+_OPERATIONAL_QUERY_STOPWORDS = frozenset(
+    {
+        "a",
+        "after",
+        "an",
+        "api",
+        "are",
+        "be",
+        "checks",
+        "collect",
+        "completed",
+        "decision",
+        "documented",
+        "documentation",
+        "evidence",
+        "following",
+        "for",
+        "guidance",
+        "is",
+        "monitoring",
+        "operational",
+        "payment",
+        "recovery",
+        "remediation",
+        "rollback",
+        "rule",
+        "service",
+        "should",
+        "steps",
+        "symptom",
+        "the",
+        "to",
+        "triage",
+        "validation",
+        "verification",
+        "what",
+        "which",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _CandidateChunk:
@@ -359,6 +406,83 @@ class EngineeringDocumentRetrievalService:
 
         return f"{query} {_OPERATIONAL_GUIDANCE_RERANKER_SUFFIX}"
 
+    @classmethod
+    def _apply_operational_section_bonus(
+        cls,
+        *,
+        query: str,
+        candidates: list[EngineeringDocumentRetrievalResult],
+    ) -> list[EngineeringDocumentRetrievalResult]:
+        """Boost failure-specific sections for bounded operational questions.
+
+        Cross-encoders can over-rank generic evidence or rollback text. A
+        candidate receives a deterministic bonus only when it contains a
+        Markdown section, structured runbook markers, and a specific query term.
+        """
+        normalized_query = " ".join(query.casefold().split())
+
+        if not any(
+            pattern.search(normalized_query) is not None
+            for pattern in _OPERATIONAL_GUIDANCE_PATTERNS
+        ):
+            return candidates
+
+        query_terms = {
+            cls._normalize_operational_term(token)
+            for token in _TOKEN_PATTERN.findall(normalized_query)
+            if token.casefold() not in _OPERATIONAL_QUERY_STOPWORDS
+        }
+        query_terms.discard("")
+
+        if not query_terms:
+            return candidates
+
+        adjusted_candidates: list[EngineeringDocumentRetrievalResult] = []
+
+        for candidate in candidates:
+            normalized_content = candidate.content.casefold()
+            marker_count = sum(
+                marker in normalized_content
+                for marker in _OPERATIONAL_SECTION_MARKERS
+            )
+            content_terms = {
+                cls._normalize_operational_term(token)
+                for token in _TOKEN_PATTERN.findall(normalized_content)
+            }
+
+            is_failure_specific_section = (
+                _MARKDOWN_SECTION_PATTERN.search(candidate.content) is not None
+                and marker_count >= 2
+                and bool(query_terms & content_terms)
+            )
+
+            adjusted_score = (
+                candidate.score + _OPERATIONAL_SECTION_SCORE_BONUS
+                if is_failure_specific_section
+                else candidate.score
+            )
+            adjusted_candidates.append(
+                candidate.model_copy(
+                    update={"score": round(adjusted_score, 6)}
+                )
+            )
+
+        return adjusted_candidates
+
+    @staticmethod
+    def _normalize_operational_term(token: str) -> str:
+        """Normalize simple plural terms for deterministic matching."""
+        normalized_token = token.casefold()
+
+        if (
+            len(normalized_token) > 4
+            and normalized_token.endswith("s")
+            and normalized_token not in {"redis", "status"}
+        ):
+            return normalized_token[:-1]
+
+        return normalized_token
+
     async def _rerank_results(
         self,
         *,
@@ -399,6 +523,10 @@ class EngineeringDocumentRetrievalService:
                 strict=True,
             )
         ]
+        scored_candidates = self._apply_operational_section_bonus(
+            query=query,
+            candidates=scored_candidates,
+        )
 
         return sorted(
             scored_candidates,

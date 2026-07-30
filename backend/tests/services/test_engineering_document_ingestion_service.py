@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 
 import pytest
 import pytest_asyncio
@@ -192,12 +192,12 @@ class FakeEmbeddingProvider:
 
     async def embed_texts(
         self,
-        texts: list[str],
+        texts: Sequence[str],
         *,
         run_id: str | None = None,
     ) -> list[list[float]]:
         """Return one 384-dimensional embedding per supplied text."""
-        self.calls.append(texts)
+        self.calls.append(list(texts))
         return [
             [float(index + 1)] * 384
             for index, _text in enumerate(texts)
@@ -259,3 +259,54 @@ async def test_duplicate_ingestion_backfills_missing_chunk_embeddings(
     assert len(embedding_provider.calls) == 1
     assert chunks[0].embedding == [1.0] * 384
     assert chunks[1].embedding == [2.0] * 384
+
+
+
+@pytest.mark.asyncio
+async def test_ingest_document_replaces_changed_source_content(
+    async_session: AsyncSession,
+) -> None:
+    """Changed content for one source URI should replace stale knowledge."""
+    repository = EngineeringDocumentRepository(async_session)
+    embedding_provider = FakeEmbeddingProvider()
+    service = EngineeringDocumentIngestionService(
+        repository,
+        embedding_provider=embedding_provider,
+    )
+
+    first_request = _ingestion_request(
+        raw_content=_numbered_tokens(25),
+    )
+    first_result = await service.ingest_document(
+        first_request,
+        run_id="initial-document-ingestion",
+    )
+
+    second_request = _ingestion_request(
+        raw_content=_numbered_tokens(45),
+    )
+    second_result = await service.ingest_document(
+        second_request,
+        run_id="updated-document-ingestion",
+    )
+
+    documents = await repository.list_documents()
+    stored_document = await repository.get_document_by_id(first_result.document_id)
+    stored_chunks = await repository.list_chunks_by_document_id(
+        first_result.document_id
+    )
+
+    assert second_result.document_id == first_result.document_id
+    assert second_result.created_document is False
+    assert second_result.created_chunks is True
+    assert second_result.duplicate_document is False
+    assert len(documents) == 1
+
+    assert stored_document is not None
+    assert stored_document.raw_content == second_request.raw_content
+    assert stored_document.content_hash == second_result.content_hash
+
+    assert len(stored_chunks) == second_result.chunk_count
+    assert [chunk.chunk_index for chunk in stored_chunks] == [0, 1, 2]
+    assert all(chunk.embedding is not None for chunk in stored_chunks)
+    assert len(embedding_provider.calls) == 2

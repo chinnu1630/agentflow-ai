@@ -204,6 +204,72 @@ class EngineeringDocumentIngestionService:
                 duplicate_document=True,
             )
 
+        existing_source_document = (
+            await self._repository.get_document_by_source_uri(
+                ingestion_request.source_uri,
+                run_id=run_id,
+            )
+        )
+
+        if existing_source_document is not None:
+            replacement_document = EngineeringDocumentCreate(
+                title=ingestion_request.title,
+                source_type=ingestion_request.source_type,
+                source_uri=ingestion_request.source_uri,
+                content_hash=content_hash,
+                raw_content=ingestion_request.raw_content,
+                metadata_json=ingestion_request.metadata_json,
+            )
+
+            replacement_chunks = self._chunker.chunk_document(
+                DocumentChunkingInput(
+                    document_id=existing_source_document.id,
+                    raw_content=ingestion_request.raw_content,
+                    metadata_json=ingestion_request.metadata_json,
+                ),
+                config=ingestion_request.chunking_config,
+                run_id=run_id,
+            )
+            replacement_chunks = await self._attach_embeddings(
+                replacement_chunks,
+                run_id=run_id,
+            )
+
+            await self._repository.replace_document_content(
+                existing_source_document.id,
+                replacement_document,
+                run_id=run_id,
+            )
+            deleted_chunk_count = (
+                await self._repository.delete_chunks_by_document_id(
+                    existing_source_document.id,
+                    run_id=run_id,
+                )
+            )
+            created_chunks = await self._repository.create_chunks(
+                replacement_chunks,
+                run_id=run_id,
+            )
+
+            logger.info(
+                "engineering_document_ingestion_source_replaced",
+                run_id=run_id,
+                document_id=str(existing_source_document.id),
+                source_uri=ingestion_request.source_uri,
+                content_hash=content_hash,
+                deleted_chunk_count=deleted_chunk_count,
+                created_chunk_count=len(created_chunks),
+            )
+
+            return EngineeringDocumentIngestionResult(
+                document_id=existing_source_document.id,
+                content_hash=content_hash,
+                chunk_count=len(created_chunks),
+                created_document=False,
+                created_chunks=True,
+                duplicate_document=False,
+            )
+
         document = await self._repository.create_document(
             EngineeringDocumentCreate(
                 title=ingestion_request.title,

@@ -93,4 +93,5 @@ Index(
 Index(
     "ix_engineering_documents_source_uri",
     EngineeringDocument.source_uri,
+    unique=True,
 )

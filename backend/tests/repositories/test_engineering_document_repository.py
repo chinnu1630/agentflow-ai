@@ -518,3 +518,119 @@ async def test_semantic_search_distance_column_uses_float_result_type() -> None:
 
     assert distance_column.key == "cosine_distance"
     assert isinstance(distance_column.type, Float)
+
+
+
+@pytest.mark.asyncio
+async def test_get_document_by_source_uri_returns_document_when_found(
+    async_session: AsyncSession,
+) -> None:
+    """get_document_by_source_uri should return the matching source."""
+    repository = EngineeringDocumentRepository(async_session)
+    created_document = await repository.create_document(_document_create())
+
+    found_document = await repository.get_document_by_source_uri(
+        created_document.source_uri
+    )
+
+    assert found_document is not None
+    assert found_document.id == created_document.id
+    assert found_document.source_uri == created_document.source_uri
+
+
+@pytest.mark.asyncio
+async def test_create_document_rejects_duplicate_source_uri(
+    async_session: AsyncSession,
+) -> None:
+    """create_document should prevent multiple versions of one source URI."""
+    repository = EngineeringDocumentRepository(async_session)
+
+    await repository.create_document(
+        _document_create(raw_content="Original runbook content.")
+    )
+
+    duplicate_source = _document_create(
+        title="Updated Payment Service Runbook",
+        raw_content="Updated runbook content.",
+    )
+
+    with pytest.raises(EngineeringDocumentRepositoryError):
+        await repository.create_document(duplicate_source)
+
+
+@pytest.mark.asyncio
+async def test_replace_document_content_preserves_document_identity(
+    async_session: AsyncSession,
+) -> None:
+    """replace_document_content should update a source without changing its ID."""
+    repository = EngineeringDocumentRepository(async_session)
+    created_document = await repository.create_document(_document_create())
+
+    replacement = _document_create(
+        title="Payment Service Production Runbook",
+        raw_content="Updated payment recovery and rollback guidance.",
+        source_uri=created_document.source_uri,
+    )
+
+    updated_document = await repository.replace_document_content(
+        created_document.id,
+        replacement,
+        run_id="document-replacement-test",
+    )
+
+    assert updated_document.id == created_document.id
+    assert updated_document.title == replacement.title
+    assert updated_document.source_uri == replacement.source_uri
+    assert updated_document.content_hash == replacement.content_hash
+    assert updated_document.raw_content == replacement.raw_content
+    assert updated_document.metadata_json == replacement.metadata_json
+
+
+@pytest.mark.asyncio
+async def test_delete_chunks_by_document_id_removes_only_target_chunks(
+    async_session: AsyncSession,
+) -> None:
+    """delete_chunks_by_document_id should leave unrelated chunks untouched."""
+    repository = EngineeringDocumentRepository(async_session)
+
+    target_document = await repository.create_document(
+        _document_create(
+            raw_content="Target document content.",
+            source_uri="docs/target-runbook.md",
+        )
+    )
+    other_document = await repository.create_document(
+        _document_create(
+            raw_content="Other document content.",
+            source_uri="docs/other-runbook.md",
+        )
+    )
+
+    await repository.create_chunk(
+        EngineeringDocumentChunkCreate(
+            document_id=target_document.id,
+            chunk_index=0,
+            content="Target document chunk.",
+            token_count=3,
+        )
+    )
+    await repository.create_chunk(
+        EngineeringDocumentChunkCreate(
+            document_id=other_document.id,
+            chunk_index=0,
+            content="Other document chunk.",
+            token_count=3,
+        )
+    )
+
+    deleted_count = await repository.delete_chunks_by_document_id(
+        target_document.id,
+        run_id="chunk-deletion-test",
+    )
+
+    target_chunks = await repository.list_chunks_by_document_id(target_document.id)
+    other_chunks = await repository.list_chunks_by_document_id(other_document.id)
+
+    assert deleted_count == 1
+    assert target_chunks == []
+    assert len(other_chunks) == 1

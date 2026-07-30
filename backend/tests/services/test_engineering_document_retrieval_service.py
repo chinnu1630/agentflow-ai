@@ -832,3 +832,78 @@ async def test_preserves_general_query_for_reranking(
     assert len(reranker.calls) == 1
     reranker_query, _candidate_contents = reranker.calls[0]
     assert reranker_query == original_query
+
+
+
+@pytest.mark.asyncio
+async def test_operational_reranking_prefers_failure_specific_runbook_section(
+    async_session: AsyncSession,
+) -> None:
+    """Failure-specific runbook sections should outrank generic evidence text."""
+    repository = EngineeringDocumentRepository(async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+
+    await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="General Incident Evidence Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/general-incident-evidence.md",
+            raw_content=(
+                "Payment API timeout recovery documentation. "
+                "General incident evidence includes logs, traces, dashboards, "
+                "and rollback records for all production incidents."
+            ),
+        )
+    )
+    await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Payment Provider Failure Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/payment-provider-failures.md",
+            raw_content=(
+                "Payment API timeouts recovery guidance. "
+                "## 14. AtlasPay provider failures "
+                "**Symptom:** AtlasPayTimeoutRateHigh. "
+                "**Evidence to collect:** Confirm the AtlasPay timeout dashboard "
+                "and provider status. "
+                "**Decision rule:** Treat this as an external dependency incident; "
+                "do not roll back unless client configuration changed."
+            ),
+        )
+    )
+
+    class MisleadingOperationalReranker:
+        """Deliberately over-score generic evidence to test the safeguard."""
+
+        async def score_candidates(
+            self,
+            *,
+            query: str,
+            candidate_contents: Sequence[str],
+            run_id: str | None = None,
+        ) -> list[float]:
+            """Return misleading scores based on generic evidence wording."""
+            del query, run_id
+
+            return [
+                0.9 if "General incident evidence" in content else 0.2
+                for content in candidate_contents
+            ]
+
+    retrieval_service = EngineeringDocumentRetrievalService(
+        repository,
+        reranker=MisleadingOperationalReranker(),
+    )
+
+    response = await retrieval_service.retrieve_relevant_chunks(
+        EngineeringDocumentRetrievalRequest(
+            query="What recovery steps are documented for payment API timeouts?",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            top_k=2,
+        ),
+        run_id="failure-specific-section-priority-test",
+    )
+
+    assert len(response.results) == 2
+    assert "## 14. AtlasPay provider failures" in response.results[0].content
+    assert "General incident evidence" in response.results[1].content

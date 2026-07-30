@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import structlog
-from sqlalchemy import Float, select
+from sqlalchemy import Float, delete, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
@@ -145,6 +146,113 @@ class EngineeringDocumentRepository:
             run_id=run_id,
             content_hash=normalized_hash,
             found=document is not None,
+        )
+
+        return document
+
+    async def get_document_by_source_uri(
+        self,
+        source_uri: str,
+        *,
+        run_id: str | None = None,
+    ) -> EngineeringDocument | None:
+        """Return an engineering document by source URI, or None when missing.
+
+        Args:
+            source_uri: Stable URI identifying the authoritative source.
+            run_id: Optional workflow/request identifier for structured logs.
+
+        Returns:
+            The matching engineering document, when one exists.
+
+        Raises:
+            ValueError: If source_uri is blank.
+        """
+        normalized_source_uri = source_uri.strip()
+
+        if not normalized_source_uri:
+            raise ValueError("source_uri must not be blank")
+
+        result = await self._session.execute(
+            select(EngineeringDocument).where(
+                EngineeringDocument.source_uri == normalized_source_uri
+            )
+        )
+        document = result.scalar_one_or_none()
+
+        logger.info(
+            "engineering_document_fetched_by_source_uri",
+            run_id=run_id,
+            source_uri=normalized_source_uri,
+            found=document is not None,
+        )
+
+        return document
+
+    async def replace_document_content(
+        self,
+        document_id: UUID,
+        document_create: EngineeringDocumentCreate,
+        *,
+        run_id: str | None = None,
+    ) -> EngineeringDocument:
+        """Replace document content while preserving document identity.
+
+        Chunk deletion and recreation are coordinated separately by the
+        ingestion service so the complete refresh can remain transactional.
+
+        Args:
+            document_id: Existing document identifier to preserve.
+            document_create: Validated replacement document data.
+            run_id: Optional workflow/request identifier for structured logs.
+
+        Returns:
+            The updated engineering document.
+
+        Raises:
+            EngineeringDocumentRepositoryError: If the document is missing or
+                the replacement violates a database constraint.
+        """
+        document = await self.get_document_by_id(
+            document_id,
+            run_id=run_id,
+        )
+
+        if document is None:
+            raise EngineeringDocumentRepositoryError(
+                "Engineering document could not be replaced because it does not exist."
+            )
+
+        document.title = document_create.title
+        document.source_type = document_create.source_type
+        document.source_uri = document_create.source_uri
+        document.content_hash = document_create.content_hash.lower()
+        document.raw_content = document_create.raw_content
+        document.metadata_json = document_create.metadata_json
+
+        try:
+            await self._session.flush()
+            await self._session.refresh(document)
+        except IntegrityError as exc:
+            await self._session.rollback()
+            logger.warning(
+                "engineering_document_replace_conflict",
+                run_id=run_id,
+                document_id=str(document_id),
+                content_hash=document_create.content_hash.lower(),
+                source_uri=document_create.source_uri,
+            )
+            raise EngineeringDocumentRepositoryError(
+                "Engineering document could not be replaced because "
+                "it violates a database constraint."
+            ) from exc
+
+        logger.info(
+            "engineering_document_replaced",
+            run_id=run_id,
+            document_id=str(document.id),
+            source_type=document.source_type.value,
+            source_uri=document.source_uri,
         )
 
         return document
@@ -453,6 +561,42 @@ class EngineeringDocumentRepository:
         )
 
         return len(chunks)
+
+    async def delete_chunks_by_document_id(
+        self,
+        document_id: UUID,
+        *,
+        run_id: str | None = None,
+    ) -> int:
+        """Delete all retrieval chunks belonging to one document.
+
+        Args:
+            document_id: Parent document whose stale chunks must be removed.
+            run_id: Optional workflow/request identifier for structured logs.
+
+        Returns:
+            Number of deleted chunks.
+        """
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                delete(EngineeringDocumentChunk).where(
+                    EngineeringDocumentChunk.document_id == document_id
+                )
+            ),
+        )
+        await self._session.flush()
+
+        deleted_count = int(result.rowcount or 0)
+
+        logger.info(
+            "engineering_document_chunks_deleted",
+            run_id=run_id,
+            document_id=str(document_id),
+            deleted_count=deleted_count,
+        )
+
+        return deleted_count
 
     async def list_chunks_by_document_id(
         self,
