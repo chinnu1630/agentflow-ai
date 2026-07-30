@@ -96,6 +96,9 @@ from app.services.agent_jira_ticket_resolver import (
     AgentJiraTicketNotFoundError,
     AgentJiraTicketResolver,
 )
+from app.services.agent_knowledge_source_type_resolver import (
+    resolve_engineering_document_source_type,
+)
 from app.services.agent_llm_cost_estimator import (
     AgentLLMCostEstimator,
     AgentLLMCostRates,
@@ -824,6 +827,9 @@ async def execute_agent_query(
                 EngineeringDocumentRetrievalRequest(
                     query=payload.query,
                     top_k=5,
+                    source_type=resolve_engineering_document_source_type(
+                        payload.query
+                    ),
                 ),
                 run_id=request_id,
             )

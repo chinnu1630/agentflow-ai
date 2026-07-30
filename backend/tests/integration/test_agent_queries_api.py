@@ -1835,6 +1835,67 @@ async def test_knowledge_document_question_uses_ingested_documents(
 
 
 @pytest.mark.anyio
+async def test_runbook_question_filters_out_release_checklist(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Explicit runbook wording should exclude checklist chunks."""
+
+    checklist_response = await agent_query_api_client.post(
+        "/api/v1/engineering-documents/ingest",
+        json={
+            "title": "Payment Service Release Readiness Checklist",
+            "source_type": "release_checklist",
+            "source_uri": "docs/payment-release-checklist.md",
+            "raw_content": (
+                "CHECKLIST_ONLY: rollback criteria and required validation "
+                "steps must be attached to the release ticket."
+            ),
+            "metadata_json": {"service": "payment-service"},
+        },
+    )
+    runbook_response = await agent_query_api_client.post(
+        "/api/v1/engineering-documents/ingest",
+        json={
+            "title": "Payment Service Production Runbook",
+            "source_type": "runbook",
+            "source_uri": "docs/payment-production-runbook.md",
+            "raw_content": (
+                "RUNBOOK_ONLY: initiate rollback when payment error thresholds "
+                "are breached. After rollback, validate authorization success, "
+                "latency recovery, and error-rate normalization."
+            ),
+            "metadata_json": {"service": "payment-service"},
+        },
+    )
+
+    assert checklist_response.status_code == 201
+    assert runbook_response.status_code == 201
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": (
+                "According to the Payment Service Production Runbook, "
+                "what are the rollback criteria and validation steps?"
+            ),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    payload = response.json()
+
+    assert payload["plan"]["intent"] == "knowledge_doc_question"
+    assert "RUNBOOK_ONLY" in payload["answer"]
+    assert "CHECKLIST_ONLY" not in payload["answer"]
+    assert payload["citations"]
+    assert all(
+        citation["source_type"] == "runbook"
+        for citation in payload["citations"]
+    )
+
+
+@pytest.mark.anyio
 async def test_dynamic_knowledge_query_executes_read_only_tool_plan(
     agent_query_api_client: AsyncClient,
 ) -> None:
