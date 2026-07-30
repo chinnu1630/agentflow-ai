@@ -746,3 +746,89 @@ async def test_reranker_failure_preserves_fused_ranking(
     assert len(response.results) == 1
     assert response.results[0].title == "Payment Release Runbook"
     assert response.results[0].score > 0
+
+
+@pytest.mark.asyncio
+async def test_expands_operational_guidance_query_for_reranking(
+    async_session: AsyncSession,
+) -> None:
+    """Natural recovery wording should expose runbook terminology to reranking."""
+    repository = EngineeringDocumentRepository(async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+
+    await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Payment Operations Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/payment-operations-runbook.md",
+            raw_content=(
+                "Payment API timeout recovery steps are documented. "
+                "AtlasPay timeout incident. Evidence to collect includes "
+                "dashboard checks, provider status, logs, and correlation IDs."
+            ),
+        )
+    )
+
+    reranker = FakeCandidateReranker(scores=[1.0])
+    retrieval_service = EngineeringDocumentRetrievalService(
+        repository,
+        reranker=reranker,
+    )
+
+    original_query = (
+        "What recovery steps are documented for payment API timeouts?"
+    )
+
+    await retrieval_service.retrieve_relevant_chunks(
+        EngineeringDocumentRetrievalRequest(
+            query=original_query,
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            top_k=1,
+        ),
+        run_id="operational-query-expansion-test",
+    )
+
+    assert len(reranker.calls) == 1
+    reranker_query, _candidate_contents = reranker.calls[0]
+    assert reranker_query == (
+        f"{original_query} "
+        "Operational guidance: symptom evidence to collect triage decision rule."
+    )
+
+
+@pytest.mark.asyncio
+async def test_preserves_general_query_for_reranking(
+    async_session: AsyncSession,
+) -> None:
+    """Queries outside the bounded operational pattern must remain unchanged."""
+    repository = EngineeringDocumentRepository(async_session)
+    ingestion_service = EngineeringDocumentIngestionService(repository)
+
+    await ingestion_service.ingest_document(
+        _ingestion_request(
+            title="Payment Redis Runbook",
+            source_type=EngineeringDocumentSourceType.RUNBOOK,
+            source_uri="docs/payment-redis-runbook.md",
+            raw_content="Redis checkout failure rollback guidance.",
+        )
+    )
+
+    reranker = FakeCandidateReranker(scores=[1.0])
+    retrieval_service = EngineeringDocumentRetrievalService(
+        repository,
+        reranker=reranker,
+    )
+
+    original_query = "Redis checkout failure"
+
+    await retrieval_service.retrieve_relevant_chunks(
+        EngineeringDocumentRetrievalRequest(
+            query=original_query,
+            top_k=1,
+        ),
+        run_id="general-query-preservation-test",
+    )
+
+    assert len(reranker.calls) == 1
+    reranker_query, _candidate_contents = reranker.calls[0]
+    assert reranker_query == original_query

@@ -40,6 +40,29 @@ logger = structlog.get_logger(__name__)
 
 _TOKEN_PATTERN = re.compile(r"[a-zA-Z0-9_]+")
 
+_OPERATIONAL_GUIDANCE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:documented|documentation)\b.*"
+        r"\b(?:recovery|rollback|monitoring|validation|remediation|triage)\b"
+    ),
+    re.compile(
+        r"\b(?:recovery|rollback|monitoring|validation|remediation|triage)\b.*"
+        r"\b(?:documented|documentation)\b"
+    ),
+    re.compile(
+        r"\b(?:monitoring|validation|verification)\s+checks?\b.*"
+        r"\b(?:after|following)\s+(?:a\s+)?rollback\b"
+    ),
+    re.compile(
+        r"\b(?:after|following)\s+(?:a\s+)?rollback\b.*"
+        r"\b(?:monitoring|validation|verification)\s+checks?\b"
+    ),
+)
+
+_OPERATIONAL_GUIDANCE_RERANKER_SUFFIX = (
+    "Operational guidance: symptom evidence to collect triage decision rule."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _CandidateChunk:
@@ -272,7 +295,7 @@ class EngineeringDocumentRetrievalService:
             top_k=candidate_pool_size,
         )
         ranked_results = await self._rerank_results(
-            query=retrieval_request.query,
+            query=self._build_reranker_query(retrieval_request.query),
             candidates=fused_results,
             top_k=retrieval_request.top_k,
             run_id=run_id,
@@ -317,6 +340,24 @@ class EngineeringDocumentRetrievalService:
             total_candidates=total_candidates,
             results=ranked_results,
         )
+
+    @staticmethod
+    def _build_reranker_query(query: str) -> str:
+        """Enrich bounded operational questions for cross-encoder reranking.
+
+        BM25 and semantic retrieval continue using the original manager query.
+        Only the final reranker receives terminology commonly used in runbooks.
+        """
+
+        normalized_query = " ".join(query.casefold().split())
+
+        if not any(
+            pattern.search(normalized_query) is not None
+            for pattern in _OPERATIONAL_GUIDANCE_PATTERNS
+        ):
+            return query
+
+        return f"{query} {_OPERATIONAL_GUIDANCE_RERANKER_SUFFIX}"
 
     async def _rerank_results(
         self,
