@@ -843,6 +843,89 @@ def test_composes_grounded_knowledge_document_answer() -> None:
     assert response.citations[0].source_url == "docs/payment-service-runbook.md"
 
 
+
+def test_filters_unrelated_chunks_from_knowledge_answer() -> None:
+    """Knowledge answers should exclude chunks unrelated to the query subject."""
+    from app.models.engineering_document import EngineeringDocumentSourceType
+    from app.services.engineering_document_retrieval_service import (
+        EngineeringDocumentRetrievalResponse,
+        EngineeringDocumentRetrievalResult,
+    )
+
+    timeout_chunk_id = uuid4()
+    retrieval = EngineeringDocumentRetrievalResponse(
+        query="What recovery steps are documented for payment API timeouts?",
+        total_candidates=3,
+        results=[
+            EngineeringDocumentRetrievalResult(
+                document_id=uuid4(),
+                chunk_id=timeout_chunk_id,
+                title="Payment Service Production Runbook",
+                source_type=EngineeringDocumentSourceType.RUNBOOK,
+                source_uri="docs/payment-service-runbook.md",
+                chunk_index=10,
+                score=1.84,
+                content=(
+                    "AtlasPayTimeoutRateHigh indicates payment API timeouts. "
+                    "Confirm the AtlasPay timeout rate and provider status."
+                ),
+                token_count=14,
+                metadata_json={"service": "payment-service"},
+            ),
+            EngineeringDocumentRetrievalResult(
+                document_id=uuid4(),
+                chunk_id=uuid4(),
+                title="Payment Service Production Runbook",
+                source_type=EngineeringDocumentSourceType.RUNBOOK,
+                source_uri="docs/payment-service-runbook.md",
+                chunk_index=6,
+                score=1.03,
+                content=(
+                    "For payment API timeouts, collect AtlasPay response codes, "
+                    "correlation IDs, and OpenTelemetry traces."
+                ),
+                token_count=15,
+                metadata_json={"service": "payment-service"},
+            ),
+            EngineeringDocumentRetrievalResult(
+                document_id=uuid4(),
+                chunk_id=uuid4(),
+                title="Payment Service Production Runbook",
+                source_type=EngineeringDocumentSourceType.RUNBOOK,
+                source_uri="docs/payment-service-runbook.md",
+                chunk_index=15,
+                score=0.16,
+                content=(
+                    "Database migration failures require stopping deployment "
+                    "and running the migration downgrade command."
+                ),
+                token_count=14,
+                metadata_json={"service": "payment-service"},
+            ),
+        ],
+    )
+    plan = AgentQueryPlan(
+        intent=AgentIntent.KNOWLEDGE_DOC_QUESTION,
+        response_depth=ResponseDepth.STANDARD,
+        confidence=1.0,
+        routing_reason_code="test_specific_knowledge_question",
+    )
+
+    response = AgentResponseComposer(
+        request_id="request-123",
+    ).compose_knowledge_document(
+        plan=plan,
+        retrieval=retrieval,
+    )
+
+    assert "AtlasPayTimeoutRateHigh" in response.answer
+    assert "AtlasPay response codes" in response.answer
+    assert "Database migration failures" not in response.answer
+    assert len(response.citations) == 2
+    assert response.citations[0].source_id == str(timeout_chunk_id)
+
+
+
 def test_composes_safe_answer_when_no_knowledge_matches() -> None:
     """Empty retrieval should return a transparent answer without citations."""
     from app.services.engineering_document_retrieval_service import (

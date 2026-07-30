@@ -18,6 +18,53 @@ from app.services.engineering_document_retrieval_service import (
 
 logger = logging.getLogger(__name__)
 
+_TOKEN_PATTERN = re.compile(r"[a-zA-Z0-9_]+")
+
+_OPERATIONAL_KNOWLEDGE_PATTERNS = (
+    re.compile(
+        r"\b(recover|recovery|rollback|restore|remediation|mitigation|triage)\b"
+    ),
+    re.compile(r"\b(what|which|how)\b.*\b(steps?|procedure|runbook|playbook)\b"),
+)
+
+_OPERATIONAL_QUERY_STOPWORDS = frozenset(
+    {
+        "about",
+        "api",
+        "application",
+        "are",
+        "document",
+        "documented",
+        "documents",
+        "does",
+        "engineering",
+        "for",
+        "from",
+        "how",
+        "mitigation",
+        "payment",
+        "playbook",
+        "procedure",
+        "recovery",
+        "recover",
+        "remediation",
+        "runbook",
+        "say",
+        "says",
+        "service",
+        "step",
+        "steps",
+        "system",
+        "the",
+        "this",
+        "to",
+        "triage",
+        "what",
+        "which",
+        "with",
+    }
+)
+
 
 class AgentKnowledgeResponseComposerMixin:
     """Compose deterministic answers using trusted document chunks."""
@@ -45,6 +92,11 @@ class AgentKnowledgeResponseComposerMixin:
                 "intent": plan.intent.value,
                 "response_depth": plan.response_depth.value,
                 "retrieval_result_count": len(retrieval.results),
+                "selected_result_count": len(selected_results),
+                "omitted_result_count": max(
+                    0,
+                    len(retrieval.results) - len(selected_results),
+                ),
                 "citation_count": len(citations),
             },
         )
@@ -57,13 +109,14 @@ class AgentKnowledgeResponseComposerMixin:
             approval_required=False,
         )
 
-    @staticmethod
+    @classmethod
     def _select_results(
+        cls,
         *,
         plan: AgentQueryPlan,
         retrieval: EngineeringDocumentRetrievalResponse,
     ) -> list[EngineeringDocumentRetrievalResult]:
-        """Select only the chunks used to construct the final answer."""
+        """Select grounded chunks while filtering unrelated operational evidence."""
         result_limit = {
             ResponseDepth.BRIEF: 1,
             ResponseDepth.STANDARD: 3,
@@ -71,7 +124,80 @@ class AgentKnowledgeResponseComposerMixin:
             ResponseDepth.ACTION_CONFIRMATION: 1,
         }[plan.response_depth]
 
-        return retrieval.results[:result_limit]
+        limited_results = retrieval.results[:result_limit]
+
+        if len(limited_results) <= 1:
+            return limited_results
+
+        normalized_query = " ".join(retrieval.query.casefold().split())
+
+        if not any(
+            pattern.search(normalized_query) is not None
+            for pattern in _OPERATIONAL_KNOWLEDGE_PATTERNS
+        ):
+            return limited_results
+
+        anchor_terms = cls._extract_operational_anchor_terms(
+            query=retrieval.query,
+            top_result=limited_results[0],
+        )
+
+        if not anchor_terms:
+            return limited_results
+
+        selected_results = [limited_results[0]]
+
+        for result in limited_results[1:]:
+            content_terms = cls._tokenize_operational_text(result.content)
+
+            if anchor_terms & content_terms:
+                selected_results.append(result)
+
+        return selected_results
+
+    @classmethod
+    def _extract_operational_anchor_terms(
+        cls,
+        *,
+        query: str,
+        top_result: EngineeringDocumentRetrievalResult,
+    ) -> set[str]:
+        """Return specific query terms grounded in the highest-ranked chunk."""
+        query_terms = {
+            cls._normalize_operational_term(token)
+            for token in _TOKEN_PATTERN.findall(query.casefold())
+            if token.casefold() not in _OPERATIONAL_QUERY_STOPWORDS
+        }
+        query_terms.discard("")
+
+        if not query_terms:
+            return set()
+
+        top_result_terms = cls._tokenize_operational_text(top_result.content)
+        return query_terms & top_result_terms
+
+    @classmethod
+    def _tokenize_operational_text(cls, value: str) -> set[str]:
+        """Return normalized terms used for bounded operational matching."""
+        return {
+            normalized
+            for token in _TOKEN_PATTERN.findall(value.casefold())
+            if (normalized := cls._normalize_operational_term(token))
+        }
+
+    @staticmethod
+    def _normalize_operational_term(token: str) -> str:
+        """Normalize simple plural terms without applying broad stemming."""
+        normalized_token = token.casefold()
+
+        if (
+            len(normalized_token) > 4
+            and normalized_token.endswith("s")
+            and normalized_token not in {"redis", "status"}
+        ):
+            return normalized_token[:-1]
+
+        return normalized_token
 
     def _build_knowledge_answer(
         self,
