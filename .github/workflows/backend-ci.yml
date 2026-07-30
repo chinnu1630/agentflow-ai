@@ -140,7 +140,7 @@ jobs:
           docker compose exec -T postgres \
             psql -U agentflow -d agentflow -tAc \
             "SELECT version_num FROM alembic_version;" \
-            | grep -Fx "808eea38fb4f"
+            | grep -Fx "ff2ca85c77b0"
 
           docker compose exec -T postgres \
             psql -U agentflow -d agentflow -tAc \
