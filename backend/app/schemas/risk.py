@@ -256,7 +256,7 @@ class KnowledgeContextResultResponse(BaseModel):
     source_type: str | None = None
     title: str | None = None
     content: str | None = None
-    score: float | None = Field(default=None, ge=0.0)
+    score: float | None = Field(default=None, allow_inf_nan=False)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

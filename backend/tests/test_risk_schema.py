@@ -5,12 +5,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
+from pydantic import ValidationError
+
 from app.schemas.llm_risk_synthesis import ClaudeReleaseRiskReport
 from app.schemas.risk import (
     GitHubRiskCollectionResponse,
     GitHubRiskSummaryResponse,
     JiraRiskCollectionResponse,
     JiraRiskSummaryResponse,
+    KnowledgeContextResultResponse,
     PullRequestRiskResponse,
     ReleaseRiskSummaryResponse,
     ReleaseRunRiskResponse,
@@ -23,6 +27,29 @@ from app.schemas.risk import (
     RiskSummaryItemResponse,
     RiskSynthesisStatusResponse,
 )
+
+
+def test_knowledge_context_accepts_negative_finite_reranker_score() -> None:
+    """Knowledge retrieval should preserve finite cross-encoder logits."""
+    result = KnowledgeContextResultResponse(score=-3.25)
+
+    assert result.score == -3.25
+
+
+@pytest.mark.parametrize(
+    "invalid_score",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+    ],
+)
+def test_knowledge_context_rejects_non_finite_score(
+    invalid_score: float,
+) -> None:
+    """Knowledge retrieval should reject non-finite public score values."""
+    with pytest.raises(ValidationError):
+        KnowledgeContextResultResponse(score=invalid_score)
 
 
 def test_risk_signal_response_accepts_valid_payload() -> None:

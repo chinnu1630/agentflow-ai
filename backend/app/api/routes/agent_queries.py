@@ -1189,6 +1189,26 @@ async def execute_agent_query(
 
     except ValidationError as exc:
         await session.rollback()
+        logger.error(
+            "agent_query_response_validation_failed",
+            extra={
+                "run_id": request_id,
+                "validation_error_count": exc.error_count(),
+                "validation_errors": [
+                    {
+                        "location": ".".join(
+                            str(part) for part in error["loc"]
+                        ),
+                        "type": error["type"],
+                    }
+                    for error in exc.errors(
+                        include_url=False,
+                        include_context=False,
+                        include_input=False,
+                    )[:20]
+                ],
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Agent workflow returned an invalid response.",
