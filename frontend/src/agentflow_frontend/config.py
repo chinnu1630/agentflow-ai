@@ -64,4 +64,4 @@ class FrontendSettings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_frontend_settings() -> FrontendSettings:
     """Load and cache validated frontend runtime settings."""
-    return FrontendSettings()  # type: ignore[call-arg]
+    return FrontendSettings()
