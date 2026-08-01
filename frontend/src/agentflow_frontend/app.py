@@ -962,9 +962,22 @@ def main() -> None:
         "from FastAPI."
     )
 
+    workflow_release_run_input_key = "workflow-release-run-id"
+    latest_release_run_id = st.session_state.get(
+        _LAST_RELEASE_RUN_ID_STATE_KEY
+    )
+
+    if (
+        isinstance(latest_release_run_id, str)
+        and not st.session_state.get(workflow_release_run_input_key)
+    ):
+        st.session_state[workflow_release_run_input_key] = (
+            latest_release_run_id
+        )
+
     release_run_lookup = st.text_input(
         "Release run ID",
-        key="workflow-release-run-id",
+        key=workflow_release_run_input_key,
         placeholder="Paste the release-run UUID shown in the assessment",
     )
 
