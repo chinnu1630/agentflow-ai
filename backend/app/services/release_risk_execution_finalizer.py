@@ -167,6 +167,12 @@ class ReleaseRiskExecutionFinalizer:
                     update={
                         "approval_request_id": latest_approval.id,
                         "approval_status": latest_approval.approval_status,
+                        "release_run": response.release_run.model_copy(
+                            update={
+                                "status": "waiting_for_approval",
+                                "completed_at": None,
+                            }
+                        ),
                     }
                 )
 
@@ -209,7 +215,10 @@ class ReleaseRiskExecutionFinalizer:
                     "approval_request_id": approval.id,
                     "approval_status": approval.approval_status,
                     "release_run": response.release_run.model_copy(
-                        update={"status": "waiting_for_approval"}
+                        update={
+                            "status": "waiting_for_approval",
+                            "completed_at": None,
+                        }
                     ),
                 }
             )

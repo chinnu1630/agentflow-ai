@@ -1592,6 +1592,7 @@ async def test_collect_release_risks_api_creates_pending_approval_request_when_r
     assert first_response_data["approval_request_id"] is not None
     assert first_response_data["approval_status"] == "pending"
     assert first_response_data["release_run"]["status"] == "waiting_for_approval"
+    assert first_response_data["release_run"]["completed_at"] is None
 
     second_risk_response = await release_run_api_client.post(
         f"/api/v1/release-runs/{release_run_id}/risks",
@@ -1606,6 +1607,8 @@ async def test_collect_release_risks_api_creates_pending_approval_request_when_r
         first_response_data["approval_request_id"]
     )
     assert second_response_data["approval_status"] == "pending"
+    assert second_response_data["release_run"]["status"] == "waiting_for_approval"
+    assert second_response_data["release_run"]["completed_at"] is None
 
     events_response = await release_run_api_client.get(
         f"/api/v1/release-runs/{release_run_id}/events",

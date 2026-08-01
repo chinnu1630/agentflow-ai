@@ -197,6 +197,8 @@ class ReleaseRunRepository:
 
             if status in {"completed", "failed", "cancelled"}:
                 release_run.completed_at = datetime.now(UTC)
+            else:
+                release_run.completed_at = None
 
             await self._session.flush()
             await self._session.refresh(release_run)

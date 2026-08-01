@@ -195,6 +195,43 @@ async def test_update_status_sets_completed_at_for_terminal_status(
 
 
 @pytest.mark.anyio
+async def test_update_status_clears_completed_at_for_non_terminal_status(
+    db_session: AsyncSession,
+) -> None:
+    """Repository should clear completion time after a non-terminal transition."""
+    repository = ReleaseRunRepository(
+        session=db_session,
+        request_id="test-request-id",
+    )
+
+    release_run = ReleaseRun(
+        run_id="test-run-007",
+        query="Check approval lifecycle",
+        requested_by="manager@example.com",
+        status="created",
+    )
+
+    created_release_run = await repository.create(release_run)
+
+    completed_release_run = await repository.update_status(
+        release_run_id=created_release_run.id,
+        status="completed",
+    )
+
+    assert completed_release_run is not None
+    assert completed_release_run.completed_at is not None
+
+    waiting_release_run = await repository.update_status(
+        release_run_id=created_release_run.id,
+        status="waiting_for_approval",
+    )
+
+    assert waiting_release_run is not None
+    assert waiting_release_run.status == "waiting_for_approval"
+    assert waiting_release_run.completed_at is None
+
+
+@pytest.mark.anyio
 async def test_update_status_returns_none_when_release_run_missing(
     db_session: AsyncSession,
 ) -> None:
