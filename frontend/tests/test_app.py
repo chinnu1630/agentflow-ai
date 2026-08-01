@@ -189,6 +189,276 @@ def test_streamlit_app_renders_chat_interface(
     )
 
 
+def test_streamlit_app_places_release_operations_in_sidebar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep operational release controls outside the chat workspace."""
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
+        "http://127.0.0.1:8000",
+    )
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_AUTH_REQUIRED",
+        "false",
+    )
+    get_frontend_settings.cache_clear()
+
+    app = AppTest.from_file("streamlit_app.py")
+    app.run()
+
+    assert not app.exception
+
+    sidebar_subheaders = [
+        item.value for item in app.sidebar.subheader
+    ]
+    main_subheaders = [
+        item.value for item in app.main.subheader
+    ]
+
+    assert "Manager approval queue" in sidebar_subheaders
+    assert (
+        "Workflow status and audit timeline"
+        in sidebar_subheaders
+    )
+    assert "Manager approval queue" not in main_subheaders
+    assert (
+        "Workflow status and audit timeline"
+        not in main_subheaders
+    )
+
+
+def test_streamlit_chat_contains_only_question_and_agent_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep release dashboards and operational details outside chat."""
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
+        "http://127.0.0.1:8000",
+    )
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_AUTH_REQUIRED",
+        "false",
+    )
+    get_frontend_settings.cache_clear()
+
+    release_run_id = "14326708-c085-4e6d-9c32-47dc92b24841"
+
+    response = AgentQueryResponse.model_validate(
+        {
+            "answer": "The release has one high-risk blocker.",
+            "plan": {
+                "intent": "release_risk_summary",
+                "response_depth": "detailed",
+                "confidence": 0.98,
+                "release_run_id": release_run_id,
+                "requires_current_snapshot": True,
+                "requires_human_approval": True,
+                "routing_reason_code": "fresh_release_risk_request",
+            },
+            "release_risk": {
+                "release_run": {
+                    "id": release_run_id,
+                    "run_id": "chat-layout-backend-run-id",
+                    "query": "What are the biggest release risks this week?",
+                    "requested_by": "manager@example.com",
+                    "status": "waiting_for_approval",
+                    "created_at": "2026-08-01T12:00:00Z",
+                },
+                "github": {"status": "success"},
+                "jira": {"status": "success"},
+                "release_summary": {
+                    "overall_severity": "high",
+                    "recommended_action": "review_required",
+                    "total_signal_count": 1,
+                    "high_risk_count": 1,
+                    "summary_text": "Release requires manager review.",
+                    "top_risks": [],
+                },
+                "risk_score": {
+                    "score": 0.65,
+                    "risk_level": "high",
+                    "recommended_action": "review_required",
+                    "reasons": ["One release blocker"],
+                },
+                "approval_required": True,
+                "approval_status": "pending",
+            },
+            "citations": [],
+            "approval_required": True,
+        }
+    )
+
+    async def fake_execute_manager_query(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+        query: str,
+        conversation_session_id: Any = None,
+        release_run_id: str | None = None,
+        context_entity_references: AgentEntityReferences | None = None,
+    ) -> AgentQueryCallResult:
+        return AgentQueryCallResult(
+            response=response,
+            run_id="chat-layout-request-run-id",
+        )
+
+    monkeypatch.setattr(
+        app_module,
+        "execute_manager_query",
+        fake_execute_manager_query,
+    )
+
+    app = AppTest.from_file("streamlit_app.py")
+    app.run()
+    app.chat_input[0].set_value(
+        "What are the biggest release risks this week?"
+    ).run()
+
+    assert not app.exception
+    assert len(app.chat_message) == 2
+
+    assistant_message = app.chat_message[1]
+
+    assert any(
+        "The release has one high-risk blocker." in item.value
+        for item in assistant_message.markdown
+    )
+    assert len(assistant_message.subheader) == 0
+    assert len(assistant_message.metric) == 0
+    assert len(assistant_message.warning) == 0
+    assert len(assistant_message.success) == 0
+
+    assert [
+        item.value for item in app.main.subheader
+    ] == ["Chat with AgentFlow"]
+
+
+def test_streamlit_sidebar_renders_latest_release_assessment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Show trusted assessment details in the sidebar, not inside chat."""
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
+        "http://127.0.0.1:8000",
+    )
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_AUTH_REQUIRED",
+        "false",
+    )
+    get_frontend_settings.cache_clear()
+
+    release_run_id = "14326708-c085-4e6d-9c32-47dc92b24841"
+
+    response = AgentQueryResponse.model_validate(
+        {
+            "answer": "The release has one high-risk blocker.",
+            "plan": {
+                "intent": "release_risk_summary",
+                "response_depth": "detailed",
+                "confidence": 0.98,
+                "release_run_id": release_run_id,
+                "requires_current_snapshot": True,
+                "requires_human_approval": True,
+                "routing_reason_code": "fresh_release_risk_request",
+            },
+            "release_risk": {
+                "release_run": {
+                    "id": release_run_id,
+                    "run_id": "sidebar-assessment-backend-run-id",
+                    "query": "What are the biggest release risks this week?",
+                    "requested_by": "manager@example.com",
+                    "status": "waiting_for_approval",
+                    "created_at": "2026-08-01T12:00:00Z",
+                },
+                "github": {"status": "success"},
+                "jira": {"status": "success"},
+                "release_summary": {
+                    "overall_severity": "high",
+                    "recommended_action": "review_required",
+                    "total_signal_count": 1,
+                    "high_risk_count": 1,
+                    "summary_text": "Release requires manager review.",
+                    "top_risks": [
+                        {
+                            "source": "jira",
+                            "source_type": "jira_issue",
+                            "source_id": "PAY-102",
+                            "severity": "high",
+                            "score": 0.91,
+                            "title": "Payment rollback blocker",
+                            "reason": "Open issue blocks safe deployment.",
+                            "evidence": {"priority": "P1"},
+                        }
+                    ],
+                },
+                "risk_score": {
+                    "score": 0.65,
+                    "risk_level": "high",
+                    "recommended_action": "review_required",
+                    "reasons": ["One release blocker"],
+                },
+                "approval_required": True,
+                "approval_reason": "High release risk requires review.",
+                "approval_status": "pending",
+            },
+            "citations": [
+                {
+                    "source": "jira",
+                    "source_type": "jira_issue",
+                    "source_id": "PAY-102",
+                    "title": "Payment rollback blocker",
+                }
+            ],
+            "approval_required": True,
+        }
+    )
+
+    async def fake_execute_manager_query(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+        query: str,
+        conversation_session_id: Any = None,
+        release_run_id: str | None = None,
+        context_entity_references: AgentEntityReferences | None = None,
+    ) -> AgentQueryCallResult:
+        return AgentQueryCallResult(
+            response=response,
+            run_id="sidebar-assessment-request-run-id",
+        )
+
+    monkeypatch.setattr(
+        app_module,
+        "execute_manager_query",
+        fake_execute_manager_query,
+    )
+
+    app = AppTest.from_file("streamlit_app.py")
+    app.run()
+    app.chat_input[0].set_value(
+        "What are the biggest release risks this week?"
+    ).run()
+
+    assert not app.exception
+
+    assert "Latest release assessment" in [
+        item.value for item in app.sidebar.subheader
+    ]
+    assert any(
+        metric.label == "Risk score"
+        and metric.value == "0.65"
+        for metric in app.sidebar.metric
+    )
+    assert any(
+        "Payment rollback blocker" in item.value
+        for item in app.sidebar.markdown
+    )
+
+    assistant_message = app.chat_message[1]
+    assert len(assistant_message.metric) == 0
+    assert len(assistant_message.subheader) == 0
+
+
 def test_streamlit_app_requires_token_before_chat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -416,30 +686,30 @@ def test_streamlit_app_renders_release_risk_response(
     ).run()
 
     assert not app.exception
-    assert any(
-        item.value == "Agent answer"
-        for item in app.subheader
-    )
+    assert len(app.chat_message) == 2
+
+    assistant_message = app.chat_message[1]
+
     assert any(
         "One critical Jira blocker" in item.value
-        for item in app.markdown
+        for item in assistant_message.markdown
     )
-    assert any(
-        "Degraded dependency data: GitHub" in item.value
-        for item in app.warning
-    )
-    assert any(
-        "Human approval is required" in item.value
-        for item in app.warning
-    )
-    assert any(
-        item.value == "Payment rollback blocker"
-        for item in app.markdown
-    )
-    assert any(
-        "frontend-render-test-run-id" in item.value
-        for item in app.caption
-    )
+    assert len(assistant_message.subheader) == 0
+    assert len(assistant_message.metric) == 0
+    assert len(assistant_message.warning) == 0
+    assert len(assistant_message.success) == 0
+
+    assert [
+        item.value for item in app.main.subheader
+    ] == ["Chat with AgentFlow"]
+
+    assert "Manager approval queue" in [
+        item.value for item in app.sidebar.subheader
+    ]
+    assert _text_input_by_label(
+        app,
+        "Release run ID",
+    ).value == "14326708-c085-4e6d-9c32-47dc92b24841"
 
 
 def test_streamlit_app_chat_carries_release_run_id_to_followup(
@@ -1601,7 +1871,6 @@ def test_streamlit_app_prefills_workflow_lookup_from_latest_release_run(
 
     assert not app.exception
     assert _text_input_by_label(app, "Release run ID").value == release_run_id
-
 
 
 def test_get_focused_entity_context_returns_single_pr() -> None:

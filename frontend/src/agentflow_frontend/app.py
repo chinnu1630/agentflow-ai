@@ -480,6 +480,37 @@ def should_render_release_assessment(
     )
 
 
+def render_chat_answer(result: AgentQueryCallResult) -> None:
+    """Render only AgentFlow's natural-language answer inside chat.
+
+    Args:
+        result: Typed backend response and correlation identifier.
+    """
+    st.write(result.response.answer)
+
+
+def get_latest_release_assessment(
+    chat_messages: list[ChatTurn],
+) -> AgentQueryCallResult | None:
+    """Return the newest chat result containing release-risk evidence.
+
+    Args:
+        chat_messages: Completed manager and AgentFlow chat turns.
+
+    Returns:
+        Latest release-risk response, or ``None`` when the conversation has
+        not created a release assessment.
+    """
+    for turn in reversed(chat_messages):
+        if (
+            turn.result is not None
+            and turn.result.response.release_risk is not None
+        ):
+            return turn.result
+
+    return None
+
+
 def render_agent_query_response(result: AgentQueryCallResult) -> None:
     """Render a validated AgentFlow response in Streamlit.
 
@@ -487,11 +518,6 @@ def render_agent_query_response(result: AgentQueryCallResult) -> None:
         result: Typed backend response and correlation identifier.
     """
     response = result.response
-
-    st.subheader("Agent answer")
-    st.write(response.answer)
-    st.caption(f"Request correlation ID: {result.run_id}")
-
     release_risk = response.release_risk
 
     if should_render_release_assessment(response):
@@ -686,7 +712,7 @@ def main() -> None:
 
         with st.chat_message("assistant"):
             if turn.result is not None:
-                render_agent_query_response(turn.result)
+                render_chat_answer(turn.result)
             elif turn.error is not None:
                 st.error(turn.error)
 
@@ -749,7 +775,7 @@ def main() -> None:
                         error=str(exc),
                     )
                 else:
-                    render_agent_query_response(result)
+                    render_chat_answer(result)
                     new_turn = ChatTurn(
                         query=chat_query,
                         result=result,
@@ -777,165 +803,125 @@ def main() -> None:
             chat_messages.append(new_turn)
 
 
-    st.divider()
-    st.subheader("Manager approval queue")
-    st.caption(
-        "Load durable pending approval requests from the AgentFlow backend."
-    )
-
-    stored_decision_result = st.session_state.pop(
-        _APPROVAL_DECISION_RESULT_STATE_KEY,
-        None,
-    )
-
-    if isinstance(stored_decision_result, ApprovalDecisionCallResult):
-        decided_approval = stored_decision_result.response
-        st.success(
-            f"Release run `{decided_approval.release_run_id}` was "
-            f"{decided_approval.approval_status}."
+    with st.sidebar:
+        latest_assessment_result = get_latest_release_assessment(
+            chat_messages
         )
+
+        if latest_assessment_result is not None:
+            st.divider()
+            st.subheader("Latest release assessment")
+
+            with st.expander(
+                "View assessment details",
+                expanded=False,
+            ):
+                render_agent_query_response(latest_assessment_result)
+
+        st.divider()
+        st.subheader("Manager approval queue")
         st.caption(
-            "Request correlation ID: "
-            f"{stored_decision_result.run_id}"
+            "Load durable pending approval requests from the AgentFlow backend."
         )
 
-        if (
-            decided_approval.approval_status
-            == ReleaseApprovalDecisionStatus.APPROVED
-        ):
-            st.session_state[_APPROVED_RELEASE_RUN_STATE_KEY] = str(
-                decided_approval.release_run_id
+        stored_decision_result = st.session_state.pop(
+            _APPROVAL_DECISION_RESULT_STATE_KEY,
+            None,
+        )
+
+        if isinstance(stored_decision_result, ApprovalDecisionCallResult):
+            decided_approval = stored_decision_result.response
+            st.success(
+                f"Release run `{decided_approval.release_run_id}` was "
+                f"{decided_approval.approval_status}."
             )
-        else:
-            st.session_state.pop(
-                _APPROVED_RELEASE_RUN_STATE_KEY,
-                None,
+            st.caption(
+                "Request correlation ID: "
+                f"{stored_decision_result.run_id}"
             )
 
-    stored_slack_result = st.session_state.pop(
-        _SLACK_ALERT_RESULT_STATE_KEY,
-        None,
-    )
-
-    if isinstance(stored_slack_result, SlackAlertCallResult):
-        render_slack_alert_result(stored_slack_result)
-
-    load_approvals_clicked = st.button("Load pending approvals")
-
-    if load_approvals_clicked:
-        if settings.auth_required and not bearer_token.strip():
-            st.error(
-                "Enter a signed access token before loading approvals."
-            )
-        else:
-            try:
-                with st.spinner("Loading pending approval requests..."):
-                    approvals_result = asyncio.run(
-                        load_pending_approvals(
-                            settings=settings,
-                            bearer_token=SecretStr(bearer_token),
-                        )
-                    )
-            except AgentFlowAPIError as exc:
-                st.error(str(exc))
-
-                if exc.run_id:
-                    st.caption(f"Request correlation ID: {exc.run_id}")
-            except ValueError as exc:
-                st.error(str(exc))
-            else:
-                st.session_state[_PENDING_APPROVALS_STATE_KEY] = (
-                    approvals_result
+            if (
+                decided_approval.approval_status
+                == ReleaseApprovalDecisionStatus.APPROVED
+            ):
+                st.session_state[_APPROVED_RELEASE_RUN_STATE_KEY] = str(
+                    decided_approval.release_run_id
                 )
-
-    stored_approvals = st.session_state.get(
-        _PENDING_APPROVALS_STATE_KEY
-    )
-
-    decision_intent: ApprovalDecisionIntent | None = None
-
-    if isinstance(stored_approvals, PendingApprovalsCallResult):
-        decision_intent = render_pending_approvals(stored_approvals)
-
-    if decision_intent is not None:
-        if settings.auth_required and not bearer_token.strip():
-            st.error(
-                "Enter a signed access token before deciding an approval."
-            )
-        else:
-            try:
-                with st.spinner("Persisting manager decision..."):
-                    decision_result = asyncio.run(
-                        decide_pending_approval(
-                            settings=settings,
-                            bearer_token=SecretStr(bearer_token),
-                            release_run_id=(
-                                decision_intent.release_run_id
-                            ),
-                            approval_id=decision_intent.approval_id,
-                            approval_status=(
-                                decision_intent.approval_status
-                            ),
-                            decision_note=decision_intent.decision_note,
-                        )
-                    )
-            except ValidationError:
-                st.error("The approval decision is invalid.")
-            except AgentFlowAPIError as exc:
-                st.error(str(exc))
-
-                if exc.run_id:
-                    st.caption(
-                        f"Request correlation ID: {exc.run_id}"
-                    )
-            except ValueError as exc:
-                st.error(str(exc))
             else:
-                st.session_state[
-                    _APPROVAL_DECISION_RESULT_STATE_KEY
-                ] = decision_result
                 st.session_state.pop(
-                    _PENDING_APPROVALS_STATE_KEY,
+                    _APPROVED_RELEASE_RUN_STATE_KEY,
                     None,
                 )
-                st.rerun()
 
-    approved_release_run_id = st.session_state.get(
-        _APPROVED_RELEASE_RUN_STATE_KEY
-    )
-
-    if isinstance(approved_release_run_id, str):
-        st.divider()
-        st.subheader("Approved release notification")
-        st.caption(
-            "FastAPI will revalidate approval, authorization, trusted "
-            "risk evidence, and duplicate-send protection."
+        stored_slack_result = st.session_state.pop(
+            _SLACK_ALERT_RESULT_STATE_KEY,
+            None,
         )
 
-        send_slack_clicked = st.button(
-            "Send approved Slack alert",
-            key=f"send-slack-{approved_release_run_id}",
-            type="primary",
-        )
+        if isinstance(stored_slack_result, SlackAlertCallResult):
+            render_slack_alert_result(stored_slack_result)
 
-        if send_slack_clicked:
+        load_approvals_clicked = st.button("Load pending approvals")
+
+        if load_approvals_clicked:
             if settings.auth_required and not bearer_token.strip():
                 st.error(
-                    "Enter a signed access token before sending "
-                    "the Slack alert."
+                    "Enter a signed access token before loading approvals."
                 )
             else:
                 try:
-                    with st.spinner(
-                        "Requesting approval-gated Slack delivery..."
-                    ):
-                        slack_result = asyncio.run(
-                            send_approved_release_slack_alert(
+                    with st.spinner("Loading pending approval requests..."):
+                        approvals_result = asyncio.run(
+                            load_pending_approvals(
                                 settings=settings,
                                 bearer_token=SecretStr(bearer_token),
-                                release_run_id=approved_release_run_id,
                             )
                         )
+                except AgentFlowAPIError as exc:
+                    st.error(str(exc))
+
+                    if exc.run_id:
+                        st.caption(f"Request correlation ID: {exc.run_id}")
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state[_PENDING_APPROVALS_STATE_KEY] = (
+                        approvals_result
+                    )
+
+        stored_approvals = st.session_state.get(
+            _PENDING_APPROVALS_STATE_KEY
+        )
+
+        decision_intent: ApprovalDecisionIntent | None = None
+
+        if isinstance(stored_approvals, PendingApprovalsCallResult):
+            decision_intent = render_pending_approvals(stored_approvals)
+
+        if decision_intent is not None:
+            if settings.auth_required and not bearer_token.strip():
+                st.error(
+                    "Enter a signed access token before deciding an approval."
+                )
+            else:
+                try:
+                    with st.spinner("Persisting manager decision..."):
+                        decision_result = asyncio.run(
+                            decide_pending_approval(
+                                settings=settings,
+                                bearer_token=SecretStr(bearer_token),
+                                release_run_id=(
+                                    decision_intent.release_run_id
+                                ),
+                                approval_id=decision_intent.approval_id,
+                                approval_status=(
+                                    decision_intent.approval_status
+                                ),
+                                decision_note=decision_intent.decision_note,
+                            )
+                        )
+                except ValidationError:
+                    st.error("The approval decision is invalid.")
                 except AgentFlowAPIError as exc:
                     st.error(str(exc))
 
@@ -947,125 +933,179 @@ def main() -> None:
                     st.error(str(exc))
                 else:
                     st.session_state[
-                        _SLACK_ALERT_RESULT_STATE_KEY
-                    ] = slack_result
+                        _APPROVAL_DECISION_RESULT_STATE_KEY
+                    ] = decision_result
                     st.session_state.pop(
-                        _APPROVED_RELEASE_RUN_STATE_KEY,
+                        _PENDING_APPROVALS_STATE_KEY,
                         None,
                     )
                     st.rerun()
 
-    st.divider()
-    st.subheader("Workflow status and audit timeline")
-    st.caption(
-        "Read the persisted workflow state and append-only audit events "
-        "from FastAPI."
-    )
-
-    workflow_release_run_input_key = "workflow-release-run-id"
-    latest_release_run_id = st.session_state.get(
-        _LAST_RELEASE_RUN_ID_STATE_KEY
-    )
-
-    if (
-        isinstance(latest_release_run_id, str)
-        and not st.session_state.get(workflow_release_run_input_key)
-    ):
-        st.session_state[workflow_release_run_input_key] = (
-            latest_release_run_id
+        approved_release_run_id = st.session_state.get(
+            _APPROVED_RELEASE_RUN_STATE_KEY
         )
 
-    release_run_lookup = st.text_input(
-        "Release run ID",
-        key=workflow_release_run_input_key,
-        placeholder="Paste the release-run UUID shown in the assessment",
-    )
-
-    status_column, events_column = st.columns(2)
-    load_status_clicked = status_column.button(
-        "Load workflow status",
-        use_container_width=True,
-    )
-    load_events_clicked = events_column.button(
-        "Load audit timeline",
-        use_container_width=True,
-    )
-
-    if load_status_clicked or load_events_clicked:
-        if settings.auth_required and not bearer_token.strip():
-            st.error(
-                "Enter a signed access token before loading workflow data."
+        if isinstance(approved_release_run_id, str):
+            st.divider()
+            st.subheader("Approved release notification")
+            st.caption(
+                "FastAPI will revalidate approval, authorization, trusted "
+                "risk evidence, and duplicate-send protection."
             )
-        else:
-            try:
-                validated_release_run_id = validate_release_run_id(
-                    release_run_lookup
+
+            send_slack_clicked = st.button(
+                "Send approved Slack alert",
+                key=f"send-slack-{approved_release_run_id}",
+                type="primary",
+            )
+
+            if send_slack_clicked:
+                if settings.auth_required and not bearer_token.strip():
+                    st.error(
+                        "Enter a signed access token before sending "
+                        "the Slack alert."
+                    )
+                else:
+                    try:
+                        with st.spinner(
+                            "Requesting approval-gated Slack delivery..."
+                        ):
+                            slack_result = asyncio.run(
+                                send_approved_release_slack_alert(
+                                    settings=settings,
+                                    bearer_token=SecretStr(bearer_token),
+                                    release_run_id=approved_release_run_id,
+                                )
+                            )
+                    except AgentFlowAPIError as exc:
+                        st.error(str(exc))
+
+                        if exc.run_id:
+                            st.caption(
+                                f"Request correlation ID: {exc.run_id}"
+                            )
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.session_state[
+                            _SLACK_ALERT_RESULT_STATE_KEY
+                        ] = slack_result
+                        st.session_state.pop(
+                            _APPROVED_RELEASE_RUN_STATE_KEY,
+                            None,
+                        )
+                        st.rerun()
+
+        st.divider()
+        st.subheader("Workflow status and audit timeline")
+        st.caption(
+            "Read the persisted workflow state and append-only audit events "
+            "from FastAPI."
+        )
+
+        workflow_release_run_input_key = "workflow-release-run-id"
+        latest_release_run_id = st.session_state.get(
+            _LAST_RELEASE_RUN_ID_STATE_KEY
+        )
+
+        if (
+            isinstance(latest_release_run_id, str)
+            and not st.session_state.get(workflow_release_run_input_key)
+        ):
+            st.session_state[workflow_release_run_input_key] = (
+                latest_release_run_id
+            )
+
+        release_run_lookup = st.text_input(
+            "Release run ID",
+            key=workflow_release_run_input_key,
+            placeholder="Paste the release-run UUID shown in the assessment",
+        )
+
+        status_column, events_column = st.columns(2)
+        load_status_clicked = status_column.button(
+            "Load workflow status",
+            use_container_width=True,
+        )
+        load_events_clicked = events_column.button(
+            "Load audit timeline",
+            use_container_width=True,
+        )
+
+        if load_status_clicked or load_events_clicked:
+            if settings.auth_required and not bearer_token.strip():
+                st.error(
+                    "Enter a signed access token before loading workflow data."
                 )
-            except ValidationError:
-                st.error("Enter a valid release-run UUID.")
             else:
-                if load_status_clicked:
-                    try:
-                        with st.spinner("Loading workflow status..."):
-                            status_result = asyncio.run(
-                                load_release_run_status(
-                                    settings=settings,
-                                    bearer_token=SecretStr(bearer_token),
-                                    release_run_id=validated_release_run_id,
+                try:
+                    validated_release_run_id = validate_release_run_id(
+                        release_run_lookup
+                    )
+                except ValidationError:
+                    st.error("Enter a valid release-run UUID.")
+                else:
+                    if load_status_clicked:
+                        try:
+                            with st.spinner("Loading workflow status..."):
+                                status_result = asyncio.run(
+                                    load_release_run_status(
+                                        settings=settings,
+                                        bearer_token=SecretStr(bearer_token),
+                                        release_run_id=validated_release_run_id,
+                                    )
                                 )
-                            )
-                    except AgentFlowAPIError as exc:
-                        st.error(str(exc))
+                        except AgentFlowAPIError as exc:
+                            st.error(str(exc))
 
-                        if exc.run_id:
-                            st.caption(
-                                f"Request correlation ID: {exc.run_id}"
-                            )
-                    except ValueError as exc:
-                        st.error(str(exc))
-                    else:
-                        st.session_state[
-                            _RELEASE_RUN_STATUS_STATE_KEY
-                        ] = status_result
-
-                if load_events_clicked:
-                    try:
-                        with st.spinner("Loading audit timeline..."):
-                            events_result = asyncio.run(
-                                load_release_run_events(
-                                    settings=settings,
-                                    bearer_token=SecretStr(bearer_token),
-                                    release_run_id=validated_release_run_id,
+                            if exc.run_id:
+                                st.caption(
+                                    f"Request correlation ID: {exc.run_id}"
                                 )
-                            )
-                    except AgentFlowAPIError as exc:
-                        st.error(str(exc))
+                        except ValueError as exc:
+                            st.error(str(exc))
+                        else:
+                            st.session_state[
+                                _RELEASE_RUN_STATUS_STATE_KEY
+                            ] = status_result
 
-                        if exc.run_id:
-                            st.caption(
-                                f"Request correlation ID: {exc.run_id}"
-                            )
-                    except ValueError as exc:
-                        st.error(str(exc))
-                    else:
-                        st.session_state[
-                            _RELEASE_RUN_EVENTS_STATE_KEY
-                        ] = events_result
+                    if load_events_clicked:
+                        try:
+                            with st.spinner("Loading audit timeline..."):
+                                events_result = asyncio.run(
+                                    load_release_run_events(
+                                        settings=settings,
+                                        bearer_token=SecretStr(bearer_token),
+                                        release_run_id=validated_release_run_id,
+                                    )
+                                )
+                        except AgentFlowAPIError as exc:
+                            st.error(str(exc))
 
-    stored_status_result = st.session_state.get(
-        _RELEASE_RUN_STATUS_STATE_KEY
-    )
+                            if exc.run_id:
+                                st.caption(
+                                    f"Request correlation ID: {exc.run_id}"
+                                )
+                        except ValueError as exc:
+                            st.error(str(exc))
+                        else:
+                            st.session_state[
+                                _RELEASE_RUN_EVENTS_STATE_KEY
+                            ] = events_result
 
-    if isinstance(stored_status_result, ReleaseRunStatusCallResult):
-        render_release_run_status(stored_status_result)
+        stored_status_result = st.session_state.get(
+            _RELEASE_RUN_STATUS_STATE_KEY
+        )
 
-    stored_events_result = st.session_state.get(
-        _RELEASE_RUN_EVENTS_STATE_KEY
-    )
+        if isinstance(stored_status_result, ReleaseRunStatusCallResult):
+            render_release_run_status(stored_status_result)
 
-    if isinstance(stored_events_result, ReleaseRunEventsCallResult):
-        render_release_run_events(stored_events_result)
+        stored_events_result = st.session_state.get(
+            _RELEASE_RUN_EVENTS_STATE_KEY
+        )
 
+        if isinstance(stored_events_result, ReleaseRunEventsCallResult):
+            render_release_run_events(stored_events_result)
 
 
 if __name__ == "__main__":
