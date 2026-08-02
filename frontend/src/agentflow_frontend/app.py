@@ -820,8 +820,31 @@ def main() -> None:
     st.subheader("Chat with AgentFlow")
     st.caption(
         "Ask about release risk, GitHub pull requests, Jira tickets, "
-        "engineering docs, or workflow status. Follow-up questions "
-        "automatically reuse the most recent release run in this chat."
+        "engineering docs, or workflow status. Choose whether to collect "
+        "fresh evidence or follow up on the latest release run."
+    )
+
+    latest_chat_release_run_id = st.session_state.get(
+        _LAST_RELEASE_RUN_ID_STATE_KEY
+    )
+    query_context_options = [
+        "Fresh assessment",
+        "Follow up on latest run",
+    ]
+
+    query_context_mode = st.radio(
+        "Query context",
+        options=query_context_options,
+        horizontal=True,
+        help=(
+            "Fresh assessment recollects current GitHub, Jira, and document "
+            "evidence. Follow-up mode reuses the exact persisted release run."
+        ),
+    )
+
+    reuse_latest_release_run = (
+        query_context_mode == "Follow up on latest run"
+        and isinstance(latest_chat_release_run_id, str)
     )
 
     if _CONVERSATION_SESSION_ID_STATE_KEY not in st.session_state:
@@ -847,6 +870,21 @@ def main() -> None:
     if chat_query:
         if settings.auth_required and not bearer_token.strip():
             st.error("Enter a signed access token before chatting with AgentFlow.")
+        elif (
+            query_context_mode == "Follow up on latest run"
+            and not isinstance(latest_chat_release_run_id, str)
+        ):
+            error_message = (
+                "Run a fresh assessment before selecting follow-up mode."
+            )
+            st.error(error_message)
+            chat_messages.append(
+                ChatTurn(
+                    query=chat_query,
+                    result=None,
+                    error=error_message,
+                )
+            )
         else:
             with st.chat_message("user"):
                 st.write(chat_query)
@@ -866,11 +904,17 @@ def main() -> None:
                                 conversation_session_id=st.session_state[
                                     _CONVERSATION_SESSION_ID_STATE_KEY
                                 ],
-                                release_run_id=st.session_state.get(
-                                    _LAST_RELEASE_RUN_ID_STATE_KEY
+                                release_run_id=(
+                                    latest_chat_release_run_id
+                                    if reuse_latest_release_run
+                                    else None
                                 ),
-                                context_entity_references=st.session_state.get(
-                                    _LAST_ENTITY_REFERENCES_STATE_KEY
+                                context_entity_references=(
+                                    st.session_state.get(
+                                        _LAST_ENTITY_REFERENCES_STATE_KEY
+                                    )
+                                    if reuse_latest_release_run
+                                    else None
                                 ),
                             )
                         )

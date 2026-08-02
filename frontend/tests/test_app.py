@@ -739,10 +739,10 @@ def test_streamlit_app_renders_release_risk_response(
     ).value == "14326708-c085-4e6d-9c32-47dc92b24841"
 
 
-def test_streamlit_app_chat_carries_release_run_id_to_followup(
+def test_streamlit_app_chat_defaults_each_query_to_fresh_assessment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reuse the most recent release-run ID for a chat follow-up question."""
+    """Do not silently attach a previous release-run ID to a new query."""
     monkeypatch.setenv(
         "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
         "https://agentflow.example.test",
@@ -841,10 +841,167 @@ def test_streamlit_app_chat_carries_release_run_id_to_followup(
     app.chat_input[0].set_value("What is the top risk about?").run()
 
     assert not app.exception
+    assert captured_release_run_ids == [None, None]
+    assert any(
+        "The top risk is the payment rollback blocker." in item.value
+        for item in app.markdown
+    )
+
+
+def test_streamlit_app_chat_reuses_release_run_when_followup_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit follow-up mode should reuse the latest persisted run."""
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
+        "https://agentflow.example.test",
+    )
+    get_frontend_settings.cache_clear()
+
+    captured_release_run_ids: list[str | None] = []
+
+    release_run_id = "14326708-c085-4e6d-9c32-47dc92b24841"
+
+    first_response = AgentQueryResponse.model_validate(
+        {
+            "answer": "One critical Jira blocker requires manager review.",
+            "plan": {
+                "intent": "release_risk_summary",
+                "response_depth": "detailed",
+                "confidence": 0.98,
+                "release_run_id": release_run_id,
+                "requires_current_snapshot": True,
+                "requires_human_approval": True,
+                "routing_reason_code": "fresh_release_risk_request",
+            },
+            "release_risk": {
+                "release_run": {
+                    "id": release_run_id,
+                    "run_id": "release-run-demo",
+                    "query": "What are the biggest release risks this week?",
+                    "requested_by": "manager@example.com",
+                    "status": "waiting_for_approval",
+                    "created_at": "2026-07-27T12:00:00Z",
+                },
+                "github": {"status": "success"},
+                "jira": {"status": "success"},
+                "release_summary": {
+                    "overall_severity": "critical",
+                    "recommended_action": "hold",
+                    "total_signal_count": 1,
+                    "high_risk_count": 1,
+                    "summary_text": "Release requires manager review.",
+                    "top_risks": [],
+                },
+                "approval_required": True,
+            },
+            "citations": [],
+            "approval_required": True,
+        }
+    )
+
+    second_response = AgentQueryResponse.model_validate(
+        {
+            "answer": "The top risk is the payment rollback blocker.",
+            "plan": {
+                "intent": "explain_risk_score",
+                "response_depth": "standard",
+                "confidence": 0.9,
+                "release_run_id": release_run_id,
+                "requires_current_snapshot": True,
+                "requires_human_approval": False,
+                "routing_reason_code": "followup_explain_risk_score",
+            },
+            "citations": [],
+            "approval_required": False,
+        }
+    )
+
+    responses = [first_response, second_response]
+
+    async def fake_execute_manager_query(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+        query: str,
+        conversation_session_id: Any = None,
+        release_run_id: str | None = None,
+        context_entity_references: AgentEntityReferences | None = None,
+    ) -> AgentQueryCallResult:
+        captured_release_run_ids.append(release_run_id)
+
+        return AgentQueryCallResult(
+            response=responses.pop(0),
+            run_id=f"followup-test-run-id-{len(captured_release_run_ids)}",
+        )
+
+    monkeypatch.setattr(
+        app_module,
+        "execute_manager_query",
+        fake_execute_manager_query,
+    )
+
+    app = AppTest.from_file("streamlit_app.py")
+    app.run()
+    _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
+    app.chat_input[0].set_value(
+        "What are the biggest release risks this week?"
+    ).run()
+    app.radio[0].set_value("Follow up on latest run").run()
+    app.chat_input[0].set_value("What is the top risk about?").run()
+
+    assert not app.exception
     assert captured_release_run_ids == [None, release_run_id]
     assert any(
         "The top risk is the payment rollback blocker." in item.value
         for item in app.markdown
+    )
+
+
+def test_streamlit_app_rejects_followup_without_release_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Follow-up mode must fail closed when no persisted run is available."""
+
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
+        "https://agentflow.example.test",
+    )
+    get_frontend_settings.cache_clear()
+
+    call_count = 0
+
+    async def fake_execute_manager_query(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+        query: str,
+        conversation_session_id: Any = None,
+        release_run_id: str | None = None,
+        context_entity_references: AgentEntityReferences | None = None,
+    ) -> AgentQueryCallResult:
+        nonlocal call_count
+        call_count += 1
+        raise AssertionError("Backend must not be called without follow-up context.")
+
+    monkeypatch.setattr(
+        app_module,
+        "execute_manager_query",
+        fake_execute_manager_query,
+    )
+
+    app = AppTest.from_file("streamlit_app.py")
+    app.run()
+    _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
+    app.radio[0].set_value("Follow up on latest run").run()
+    app.chat_input[0].set_value("What is the workflow status?").run()
+
+    assert not app.exception
+    assert call_count == 0
+    assert any(
+        "Run a fresh assessment before selecting follow-up mode."
+        in item.value
+        for item in app.error
     )
 
 
