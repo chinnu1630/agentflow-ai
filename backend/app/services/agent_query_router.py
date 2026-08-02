@@ -241,6 +241,7 @@ class AgentQueryRouter:
                 "jira and github",
                 "show blockers",
                 "what could block",
+                "could block deployment",
                 "what is blocking",
                 "what's blocking",
                 "what blocks",

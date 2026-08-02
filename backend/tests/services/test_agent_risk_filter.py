@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.schemas.agent_query import (
@@ -49,6 +50,37 @@ def build_release_risk_response() -> ReleaseRunRiskResponse:
         release_run_id=uuid4(),
         approval_request_id=uuid4(),
     )
+    evaluated_at = datetime.now(UTC).isoformat()
+
+    payload["github"]["risk_results"] = [
+        {
+            "source_type": "github_pull_request",
+            "source_id": "1",
+            "source_url": "https://github.example/pr/1",
+            "pull_request_number": 1,
+            "total_score": 0.78,
+            "max_severity": "high",
+            "signals": [
+                {
+                    "source_type": "github_pull_request",
+                    "source_id": "1",
+                    "source_url": "https://github.example/pr/1",
+                    "rule_id": "github_ci_failure",
+                    "category": "ci_failure",
+                    "severity": "high",
+                    "score": 0.78,
+                    "title": "Payment API has failing CI",
+                    "description": (
+                        "CI failed on a release-critical service."
+                    ),
+                    "evidence": {
+                        "ci_status": "failed",
+                    },
+                }
+            ],
+            "evaluated_at": evaluated_at,
+        }
+    ]
 
     payload["release_summary"]["top_risks"].extend(
         [
@@ -102,6 +134,22 @@ def test_filters_github_risks_only() -> None:
     assert risks[0].source_id == "1"
 
 
+def test_filters_github_blockers_from_trusted_signal_category() -> None:
+    """GitHub blocker filtering should use persisted rule categories."""
+
+    risks = AgentRiskFilter(request_id="request-123").filter(
+        plan=build_plan(
+            sources=[RiskSourceFilter.GITHUB],
+            blockers_only=True,
+        ),
+        release_risk=build_release_risk_response(),
+    )
+
+    assert len(risks) == 1
+    assert risks[0].source == "github"
+    assert risks[0].source_id == "1"
+
+
 def test_filters_jira_blockers_only() -> None:
     """A Jira blocker filter should use trusted persisted evidence."""
 
@@ -138,8 +186,19 @@ def test_blocker_filter_deduplicates_signals_from_same_source() -> None:
         release_risk=release_risk,
     )
 
-    assert [risk.source_id for risk in risks] == ["PAY-102"]
-    assert risks[0].title == "Payment release blocker"
+    assert [risk.source_id for risk in risks] == [
+        "1",
+        "PAY-102",
+    ]
+    assert sum(
+        risk.source_id == "PAY-102"
+        for risk in risks
+    ) == 1
+    assert next(
+        risk
+        for risk in risks
+        if risk.source_id == "PAY-102"
+    ).title == "Payment release blocker"
 
 
 def test_filters_by_severity() -> None:

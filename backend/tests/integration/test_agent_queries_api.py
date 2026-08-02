@@ -671,6 +671,132 @@ async def test_execute_agent_query_runs_claude_risk_synthesis(
     ],
 )
 @pytest.mark.anyio
+async def test_standalone_source_filter_creates_fresh_release_assessment(
+    agent_query_api_client: AsyncClient,
+    query: str,
+    expected_source: str,
+) -> None:
+    """Standalone source filters should collect fresh release evidence."""
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": query},
+    )
+
+    assert response.status_code == 200, response.text
+
+    payload = response.json()
+    release_risk = payload["release_risk"]
+
+    assert payload["plan"]["intent"] == "filter_risks"
+    assert payload["plan"]["filters"]["sources"] == [expected_source]
+    assert release_risk["release_run"]["query"] == query
+    assert payload["citations"]
+    assert all(
+        citation["source"] == expected_source
+        for citation in payload["citations"]
+    )
+    assert FakeAgentGitHubRiskCollector.call_count == 1
+    assert FakeAgentJiraRiskCollector.call_count == 1
+
+
+@pytest.mark.anyio
+async def test_standalone_high_severity_filter_creates_fresh_assessment(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Standalone severity filters should operate on a fresh assessment."""
+
+    query = "Show high-severity risks."
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": query},
+    )
+
+    assert response.status_code == 200, response.text
+
+    payload = response.json()
+    release_risk = payload["release_risk"]
+
+    assert payload["plan"]["intent"] == "filter_risks"
+    assert payload["plan"]["filters"]["severities"] == ["high"]
+    assert release_risk["release_run"]["query"] == query
+    assert "Payment API has failing CI" in payload["answer"]
+    assert "PR-42" in {
+        citation["source_id"]
+        for citation in payload["citations"]
+    }
+    assert FakeAgentGitHubRiskCollector.call_count == 1
+    assert FakeAgentJiraRiskCollector.call_count == 1
+
+
+@pytest.mark.anyio
+async def test_standalone_highest_risk_explanation_creates_fresh_assessment(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """Highest-risk explanations should use a newly collected assessment."""
+
+    query = "Explain the highest risk."
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": query},
+    )
+
+    assert response.status_code == 200, response.text
+
+    payload = response.json()
+    release_risk = payload["release_risk"]
+    highest_risk = release_risk["release_summary"]["top_risks"][0]
+
+    assert payload["plan"]["intent"] == "explain_specific_risk"
+    assert release_risk["release_run"]["query"] == query
+    assert highest_risk["title"] in payload["answer"]
+    assert highest_risk["reason"] in payload["answer"]
+    assert len(payload["citations"]) == 1
+    assert payload["citations"][0]["source_id"] == highest_risk["source_id"]
+    assert FakeAgentGitHubRiskCollector.call_count == 1
+    assert FakeAgentJiraRiskCollector.call_count == 1
+
+
+@pytest.mark.anyio
+async def test_standalone_github_blocker_query_creates_fresh_assessment(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """PR blocker questions should collect and filter fresh GitHub evidence."""
+
+    query = "Which pull requests could block deployment?"
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": query},
+    )
+
+    assert response.status_code == 200, response.text
+
+    payload = response.json()
+    release_risk = payload["release_risk"]
+
+    assert payload["plan"]["intent"] == "filter_risks"
+    assert payload["plan"]["filters"]["sources"] == ["github"]
+    assert payload["plan"]["filters"]["blockers_only"] is True
+    assert release_risk["release_run"]["query"] == query
+    assert "Payment API has failing CI" in payload["answer"]
+    assert [citation["source_id"] for citation in payload["citations"]] == [
+        "PR-42"
+    ]
+    assert FakeAgentGitHubRiskCollector.call_count == 1
+    assert FakeAgentJiraRiskCollector.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_source"),
+    [
+        ("Show only GitHub risks.", "github"),
+        ("Show only Jira risks.", "jira"),
+    ],
+)
+@pytest.mark.anyio
 async def test_source_only_follow_up_uses_persisted_snapshot(
     agent_query_api_client: AsyncClient,
     query: str,
@@ -790,12 +916,16 @@ async def test_deployment_blocker_follow_up_uses_persisted_snapshot(
     assert follow_up_payload["release_risk"]["release_run"]["id"] == (
         release_run_id
     )
-    assert "Found 1 matching risk" in follow_up_payload["answer"]
+    assert "Found 2 matching risks" in follow_up_payload["answer"]
     assert "release blocker" in follow_up_payload["answer"].casefold()
-    assert "Payment API has failing CI" not in follow_up_payload["answer"]
-    assert [citation["source_id"] for citation in follow_up_payload["citations"]] == [
-        "PAY-102"
-    ]
+    assert "Payment API has failing CI" in follow_up_payload["answer"]
+    assert {
+        citation["source_id"]
+        for citation in follow_up_payload["citations"]
+    } == {
+        "PR-42",
+        "PAY-102",
+    }
     assert FakeAgentGitHubRiskCollector.call_count == github_calls
     assert FakeAgentJiraRiskCollector.call_count == jira_calls
 
@@ -842,19 +972,55 @@ async def test_risk_score_follow_up_uses_persisted_snapshot(
 
 
 @pytest.mark.anyio
-async def test_risk_score_follow_up_requires_release_run_id(
+async def test_standalone_risk_score_query_creates_fresh_assessment(
     agent_query_api_client: AsyncClient,
 ) -> None:
-    """Risk-score follow-up must include trusted release-run context."""
+    """Standalone score explanations should use a fresh release assessment."""
+
+    query = "Why is the risk score high?"
 
     response = await agent_query_api_client.post(
         "/api/v1/agent/query",
-        json={
-            "query": "Why is the risk score high?",
-        },
+        json={"query": query},
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 200, response.text
+
+    payload = response.json()
+    release_risk = payload["release_risk"]
+
+    assert payload["plan"]["intent"] == "explain_risk_score"
+    assert payload["plan"]["response_depth"] == "deep"
+    assert release_risk["release_run"]["query"] == query
+    assert "risk score" in payload["answer"].casefold()
+    assert FakeAgentGitHubRiskCollector.call_count == 1
+    assert FakeAgentJiraRiskCollector.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "What is the workflow status?",
+        "Has this release been approved?",
+        "Was the Slack alert sent?",
+        "Can you send this to Slack?",
+        "Did this happen before?",
+        "Compare this with the previous release.",
+    ],
+)
+@pytest.mark.anyio
+async def test_operational_query_without_release_run_id_is_rejected(
+    agent_query_api_client: AsyncClient,
+    query: str,
+) -> None:
+    """Operational and historical queries require explicit durable context."""
+
+    response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={"query": query},
+    )
+
+    assert response.status_code == 422, response.text
 
     error_payload = response.json()
 
@@ -862,7 +1028,9 @@ async def test_risk_score_follow_up_requires_release_run_id(
     assert error_payload["error"]["message"] == (
         "A release-run ID is required for this follow-up query."
     )
-    assert error_payload["run_id"] != "unknown"
+    assert FakeAgentGitHubRiskCollector.call_count == 0
+    assert FakeAgentJiraRiskCollector.call_count == 0
+    assert FakeAgentSlackAlertSender.call_count == 0
 
 
 @pytest.mark.anyio

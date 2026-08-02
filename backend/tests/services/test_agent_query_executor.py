@@ -192,17 +192,17 @@ async def test_rejects_unsupported_intent() -> None:
     )
 
     request = AgentQueryRequest(
-        query="Why is the risk score high?",
+        query="What is the workflow status?",
         release_run_id=uuid4(),
     )
     plan = build_plan(
-        intent=AgentIntent.EXPLAIN_RISK_SCORE,
+        intent=AgentIntent.WORKFLOW_STATUS_QUESTION,
         release_run_id=request.release_run_id,
     )
 
     with pytest.raises(
         UnsupportedAgentQueryIntentError,
-        match="explain_risk_score",
+        match="workflow_status_question",
     ):
         await executor.execute(
             request,

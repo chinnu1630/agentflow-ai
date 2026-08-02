@@ -9,6 +9,7 @@ from app.schemas.agent_query import AgentQueryPlan, RiskSourceFilter
 from app.schemas.risk import (
     ReleaseRiskSummaryItemResponse,
     ReleaseRunRiskResponse,
+    RiskCategoryResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,27 @@ class AgentRiskFilter:
             "done",
             "merged",
             "resolved",
+        }
+    )
+
+    _GITHUB_BLOCKING_CATEGORIES: Final[
+        frozenset[RiskCategoryResponse]
+    ] = frozenset(
+        {
+            RiskCategoryResponse.CI_FAILURE,
+            RiskCategoryResponse.CI_PENDING,
+            RiskCategoryResponse.REVIEW_BLOCKED,
+            RiskCategoryResponse.REVIEW_MISSING,
+            RiskCategoryResponse.DRAFT_PULL_REQUEST,
+        }
+    )
+
+    _JIRA_BLOCKING_CATEGORIES: Final[
+        frozenset[RiskCategoryResponse]
+    ] = frozenset(
+        {
+            RiskCategoryResponse.BLOCKED_JIRA_ISSUE,
+            RiskCategoryResponse.RELEASE_BLOCKER_ISSUE,
         }
     )
 
@@ -64,6 +86,11 @@ class AgentRiskFilter:
             severity.casefold()
             for severity in plan.filters.severities
         }
+        blocking_source_keys = (
+            self._blocking_source_keys(release_risk)
+            if plan.filters.blockers_only
+            else set()
+        )
 
         matched_risks = [
             risk
@@ -79,6 +106,7 @@ class AgentRiskFilter:
             and self._matches_blocker_filter(
                 risk=risk,
                 blockers_only=plan.filters.blockers_only,
+                blocking_source_keys=blocking_source_keys,
             )
             and self._matches_open_filter(
                 risk=risk,
@@ -164,15 +192,41 @@ class AgentRiskFilter:
             or risk.severity.value.casefold() in severity_values
         )
 
+    @classmethod
+    def _blocking_source_keys(
+        cls,
+        release_risk: ReleaseRunRiskResponse,
+    ) -> set[tuple[str, str]]:
+        """Return source entities with trusted deployment-blocking signals."""
+
+        blocking_sources: set[tuple[str, str]] = set()
+
+        for risk_result in release_risk.github.risk_results:
+            if any(
+                signal.category in cls._GITHUB_BLOCKING_CATEGORIES
+                for signal in risk_result.signals
+            ):
+                blocking_sources.add(("github", risk_result.source_id))
+
+        for signal in release_risk.jira.signals:
+            if signal.category in cls._JIRA_BLOCKING_CATEGORIES:
+                blocking_sources.add(("jira", signal.source_id))
+
+        return blocking_sources
+
     @staticmethod
     def _matches_blocker_filter(
         *,
         risk: ReleaseRiskSummaryItemResponse,
         blockers_only: bool,
+        blocking_source_keys: set[tuple[str, str]],
     ) -> bool:
         """Return whether a risk satisfies blocker-only filtering."""
 
         if not blockers_only:
+            return True
+
+        if (risk.source, risk.source_id) in blocking_source_keys:
             return True
 
         evidence_status = str(

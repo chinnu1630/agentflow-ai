@@ -7,11 +7,13 @@ from typing import Protocol
 from uuid import UUID
 
 from app.schemas.agent_query import (
-    AgentIntent,
     AgentQueryPlan,
     AgentQueryRequest,
 )
 from app.schemas.risk import ReleaseRunRiskResponse
+from app.services.agent_query_execution_policy import (
+    ANALYTICAL_RELEASE_INTENTS,
+)
 from app.services.release_risk_response_mapper import (
     extract_risk_result_from_workflow_state,
     to_release_run_risk_response,
@@ -104,7 +106,7 @@ class AgentQueryExecutor:
             AgentQueryResultError: If the workflow returns no usable result.
         """
 
-        if plan.intent is not AgentIntent.RELEASE_RISK_SUMMARY:
+        if plan.intent not in ANALYTICAL_RELEASE_INTENTS:
             raise UnsupportedAgentQueryIntentError(
                 f"Unsupported agent query intent: {plan.intent.value}"
             )

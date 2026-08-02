@@ -70,6 +70,7 @@ from app.schemas.agent_query import (
     AgentQueryResponse,
 )
 from app.schemas.github import GitHubRepositoryConfig
+from app.schemas.risk import ReleaseRunRiskResponse
 from app.services.agent_dynamic_execution_service import (
     AgentDynamicExecutionService,
 )
@@ -114,6 +115,10 @@ from app.services.agent_query_context_resolver import (
     AgentQueryContextResolverError,
     AgentQuerySnapshotNotFoundError,
     AgentQuerySnapshotValidationError,
+)
+from app.services.agent_query_execution_policy import (
+    ANALYTICAL_RELEASE_INTENTS,
+    should_resolve_persisted_context,
 )
 from app.services.agent_query_executor import (
     AgentQueryContextMismatchError,
@@ -376,6 +381,83 @@ ExecutableAgentQueryPlanDependency = Annotated[
     AgentQueryPlan,
     Depends(get_executable_agent_query_plan),
 ]
+
+
+def _compose_analytical_agent_response(
+    *,
+    payload: AgentQueryRequest,
+    plan: AgentQueryPlan,
+    release_risk: ReleaseRunRiskResponse,
+    response_composer: AgentResponseComposer,
+    request_id: str,
+) -> AgentQueryResponse:
+    """Apply one analytical operation to trusted release-risk evidence."""
+
+    if plan.intent in {
+        AgentIntent.RELEASE_RISK_SUMMARY,
+        AgentIntent.EXPLAIN_RISK_SCORE,
+    }:
+        return response_composer.compose(
+            plan=plan,
+            release_risk=release_risk,
+        )
+
+    if plan.intent is AgentIntent.EXPLAIN_SPECIFIC_RISK:
+        selected_risk = AgentSpecificRiskMatcher(
+            request_id=request_id,
+        ).match(
+            query=payload.query,
+            plan=plan,
+            release_risk=release_risk,
+        )
+        return response_composer.compose_specific_risk(
+            plan=plan,
+            release_risk=release_risk,
+            selected_risk=selected_risk,
+        )
+
+    if plan.intent is AgentIntent.FILTER_RISKS:
+        selected_risks = AgentRiskFilter(
+            request_id=request_id,
+        ).filter(
+            plan=plan,
+            release_risk=release_risk,
+        )
+        return response_composer.compose_filtered_risks(
+            plan=plan,
+            release_risk=release_risk,
+            selected_risks=selected_risks,
+        )
+
+    if plan.intent is AgentIntent.GITHUB_PR_QUESTION:
+        pull_request = AgentGitHubPRResolver(
+            request_id=request_id,
+        ).resolve(
+            plan=plan,
+            release_risk=release_risk,
+        )
+        return response_composer.compose_github_pr(
+            plan=plan,
+            release_risk=release_risk,
+            pull_request=pull_request,
+        )
+
+    if plan.intent is AgentIntent.JIRA_TICKET_QUESTION:
+        jira_issue = AgentJiraTicketResolver(
+            request_id=request_id,
+        ).resolve(
+            plan=plan,
+            release_risk=release_risk,
+        )
+        return response_composer.compose_jira_ticket(
+            plan=plan,
+            release_risk=release_risk,
+            jira_issue=jira_issue,
+        )
+
+    raise UnsupportedAgentQueryIntentError(
+        f"Unsupported analytical agent query intent: {plan.intent.value}"
+    )
 
 _release_notify_authorizer = require_scopes("release:notify")
 
@@ -841,84 +923,20 @@ async def execute_agent_query(
             await session.commit()
             return agent_response
 
-        if (
-            (
-                plan.intent is AgentIntent.RELEASE_RISK_SUMMARY
-                and payload.release_run_id is not None
-            )
-            or plan.intent in {
-                AgentIntent.EXPLAIN_RISK_SCORE,
-                AgentIntent.EXPLAIN_SPECIFIC_RISK,
-                AgentIntent.FILTER_RISKS,
-                AgentIntent.GITHUB_PR_QUESTION,
-                AgentIntent.JIRA_TICKET_QUESTION,
-                AgentIntent.WORKFLOW_STATUS_QUESTION,
-                AgentIntent.APPROVAL_STATUS_QUESTION,
-                AgentIntent.SLACK_STATUS_QUESTION,
-                AgentIntent.HISTORICAL_RISK_LOOKUP,
-                AgentIntent.SIMILAR_PAST_RELEASE,
-                AgentIntent.COMPARE_WITH_PREVIOUS_RELEASE,
-                AgentIntent.ACTION_REQUEST,
-            }
-        ):
+        if should_resolve_persisted_context(payload, plan):
             context_resolver = AgentQueryContextResolver(
                 snapshot_repository=risk_snapshot_repository,
                 request_id=request_id,
             )
             context = await context_resolver.resolve(payload, plan)
 
-            if plan.intent is AgentIntent.EXPLAIN_SPECIFIC_RISK:
-                risk_matcher = AgentSpecificRiskMatcher(
+            if plan.intent in ANALYTICAL_RELEASE_INTENTS:
+                agent_response = _compose_analytical_agent_response(
+                    payload=payload,
+                    plan=plan,
+                    release_risk=context.release_risk,
+                    response_composer=response_composer,
                     request_id=request_id,
-                )
-                selected_risk = risk_matcher.match(
-                    query=payload.query,
-                    plan=plan,
-                    release_risk=context.release_risk,
-                )
-                agent_response = response_composer.compose_specific_risk(
-                    plan=plan,
-                    release_risk=context.release_risk,
-                    selected_risk=selected_risk,
-                )
-            elif plan.intent is AgentIntent.FILTER_RISKS:
-                risk_filter = AgentRiskFilter(
-                    request_id=request_id,
-                )
-                selected_risks = risk_filter.filter(
-                    plan=plan,
-                    release_risk=context.release_risk,
-                )
-                agent_response = response_composer.compose_filtered_risks(
-                    plan=plan,
-                    release_risk=context.release_risk,
-                    selected_risks=selected_risks,
-                )
-            elif plan.intent is AgentIntent.GITHUB_PR_QUESTION:
-                github_pr_resolver = AgentGitHubPRResolver(
-                    request_id=request_id,
-                )
-                pull_request = github_pr_resolver.resolve(
-                    plan=plan,
-                    release_risk=context.release_risk,
-                )
-                agent_response = response_composer.compose_github_pr(
-                    plan=plan,
-                    release_risk=context.release_risk,
-                    pull_request=pull_request,
-                )
-            elif plan.intent is AgentIntent.JIRA_TICKET_QUESTION:
-                jira_ticket_resolver = AgentJiraTicketResolver(
-                    request_id=request_id,
-                )
-                jira_issue = jira_ticket_resolver.resolve(
-                    plan=plan,
-                    release_risk=context.release_risk,
-                )
-                agent_response = response_composer.compose_jira_ticket(
-                    plan=plan,
-                    release_risk=context.release_risk,
-                    jira_issue=jira_issue,
                 )
             elif plan.intent is AgentIntent.WORKFLOW_STATUS_QUESTION:
                 agent_response = response_composer.compose_workflow_status(
@@ -1081,9 +1099,12 @@ async def execute_agent_query(
             response=response,
         )
 
-        agent_response = response_composer.compose(
+        agent_response = _compose_analytical_agent_response(
+            payload=payload,
             plan=plan,
             release_risk=response,
+            response_composer=response_composer,
+            request_id=request_id,
         )
 
         await session.commit()
