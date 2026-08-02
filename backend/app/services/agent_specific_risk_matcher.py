@@ -28,6 +28,10 @@ class AgentSpecificRiskMatcher:
 
     _TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"[a-z0-9]+")
     _ORDINAL_INDEXES: Final[dict[str, int]] = {
+        "highest": 0,
+        "top": 0,
+        "number one": 0,
+        "number 1": 0,
         "first": 0,
         "1st": 0,
         "second": 1,

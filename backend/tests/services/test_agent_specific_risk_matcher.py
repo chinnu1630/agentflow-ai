@@ -114,6 +114,30 @@ def test_matches_ordinal_risk_reference() -> None:
     assert risk.title == "Payment API has failing CI"
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Explain the highest risk.",
+        "Explain the top risk.",
+        "Explain the number one risk.",
+    ],
+)
+def test_matches_highest_ranked_risk_alias(query: str) -> None:
+    """Highest-risk aliases should select the first persisted ranked risk."""
+
+    matcher = AgentSpecificRiskMatcher(request_id="request-123")
+
+    risk = matcher.match(
+        query=query,
+        plan=build_plan(),
+        release_risk=build_release_risk_response(),
+    )
+
+    assert risk.source_id == "1"
+    assert risk.title == "Payment API has failing CI"
+
+
+
 def test_matches_risk_using_title_keywords() -> None:
     """Meaningful query terms should match risk title and reason text."""
 

@@ -78,6 +78,35 @@ async def test_routes_specific_risk_explanation(
 
 
 @pytest.mark.parametrize(
+    "query",
+    [
+        "Explain the highest risk.",
+        "Explain the top risk.",
+        "Explain the first risk.",
+        "Explain the number one risk.",
+    ],
+)
+@pytest.mark.anyio
+async def test_routes_ranked_risk_explanation(
+    router: AgentQueryRouter,
+    query: str,
+) -> None:
+    """A ranked-risk reference should request one deep risk explanation."""
+
+    request = AgentQueryRequest(
+        query=query,
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.EXPLAIN_SPECIFIC_RISK
+    assert plan.response_depth is ResponseDepth.DEEP
+    assert plan.requires_current_snapshot is True
+
+
+
+@pytest.mark.parametrize(
     ("query", "expected_source"),
     [
         ("Show only GitHub risks.", RiskSourceFilter.GITHUB),

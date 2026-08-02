@@ -1001,6 +1001,59 @@ async def test_specific_risk_follow_up_uses_persisted_snapshot(
 
 
 @pytest.mark.anyio
+async def test_highest_risk_follow_up_explains_first_ranked_risk(
+    agent_query_api_client: AsyncClient,
+) -> None:
+    """A highest-risk follow-up should explain one persisted ranked risk."""
+
+    initial_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "What are the biggest release risks this week?",
+        },
+    )
+
+    assert initial_response.status_code == 200
+
+    initial_payload = initial_response.json()
+    release_run_id = initial_payload["release_risk"]["release_run"]["id"]
+    highest_risk = initial_payload["release_risk"]["release_summary"][
+        "top_risks"
+    ][0]
+
+    github_calls = FakeAgentGitHubRiskCollector.call_count
+    jira_calls = FakeAgentJiraRiskCollector.call_count
+
+    follow_up_response = await agent_query_api_client.post(
+        "/api/v1/agent/query",
+        json={
+            "query": "Explain the highest risk.",
+            "release_run_id": release_run_id,
+        },
+    )
+
+    assert follow_up_response.status_code == 200, follow_up_response.text
+
+    follow_up_payload = follow_up_response.json()
+
+    assert follow_up_payload["plan"]["intent"] == "explain_specific_risk"
+    assert follow_up_payload["plan"]["response_depth"] == "deep"
+    assert follow_up_payload["release_risk"]["release_run"]["id"] == (
+        release_run_id
+    )
+    assert highest_risk["title"] in follow_up_payload["answer"]
+    assert highest_risk["reason"] in follow_up_payload["answer"]
+    assert follow_up_payload["answer"] != initial_payload["answer"]
+    assert len(follow_up_payload["citations"]) == 1
+    assert follow_up_payload["citations"][0]["source_id"] == (
+        highest_risk["source_id"]
+    )
+    assert FakeAgentGitHubRiskCollector.call_count == github_calls
+    assert FakeAgentJiraRiskCollector.call_count == jira_calls
+
+
+
+@pytest.mark.anyio
 async def test_natural_high_severity_follow_up_uses_persisted_snapshot(
     agent_query_api_client: AsyncClient,
 ) -> None:
