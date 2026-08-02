@@ -61,6 +61,33 @@ def _button_by_label(app: AppTest, label: str) -> Any:
     return next(item for item in app.button if item.label == label)
 
 
+def test_apply_agentflow_theme_injects_static_brand_css(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Apply the navy-and-gold stylesheet without dynamic HTML content."""
+    captured: dict[str, object] = {}
+
+    def fake_markdown(
+        body: str,
+        *,
+        unsafe_allow_html: bool = False,
+    ) -> None:
+        captured["body"] = body
+        captured["unsafe_allow_html"] = unsafe_allow_html
+
+    monkeypatch.setattr(app_module.st, "markdown", fake_markdown)
+
+    app_module.apply_agentflow_theme()
+
+    stylesheet = str(captured["body"])
+    assert captured["unsafe_allow_html"] is True
+    assert "#071426" in stylesheet
+    assert "#F2C14E" in stylesheet
+    assert "stChatMessage" in stylesheet
+    assert "focus-visible" in stylesheet
+
+
+
 @pytest.mark.parametrize(
     ("url", "expected"),
     [

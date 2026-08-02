@@ -648,6 +648,131 @@ def _render_citations(response: AgentQueryResponse) -> None:
                 )
 
 
+def apply_agentflow_theme() -> None:
+    """Apply the static AgentFlow navy-and-gold visual identity.
+
+    The stylesheet contains no user-controlled values, preventing HTML or CSS
+    injection while keeping presentation concerns centralized in one function.
+    """
+    st.markdown(
+        """
+        <style>
+        :root {
+            --agentflow-navy: #071426;
+            --agentflow-navy-light: #102542;
+            --agentflow-gold: #F2C14E;
+            --agentflow-gold-hover: #FFD978;
+            --agentflow-cream: #F7F1E3;
+            --agentflow-muted: #B7C4D6;
+            --agentflow-border: rgba(242, 193, 78, 0.38);
+        }
+
+        .stApp {
+            background:
+                radial-gradient(
+                    circle at top right,
+                    rgba(16, 37, 66, 0.85),
+                    transparent 38%
+                ),
+                var(--agentflow-navy);
+            color: var(--agentflow-cream);
+        }
+
+        h1, h2, h3 {
+            color: var(--agentflow-gold) !important;
+            letter-spacing: 0.015em;
+        }
+
+        h1 {
+            font-size: clamp(2.2rem, 4vw, 3.25rem) !important;
+            font-weight: 750 !important;
+        }
+
+        h2 {
+            font-size: clamp(1.45rem, 2.4vw, 2rem) !important;
+        }
+
+        h3 {
+            font-size: clamp(1.15rem, 1.8vw, 1.45rem) !important;
+        }
+
+        p, label, li, .stMarkdown {
+            font-size: 1rem;
+            line-height: 1.65;
+        }
+
+        [data-testid="stCaptionContainer"] {
+            color: var(--agentflow-muted);
+        }
+
+        section[data-testid="stSidebar"] {
+            background:
+                linear-gradient(
+                    180deg,
+                    #0B1D35 0%,
+                    var(--agentflow-navy-light) 100%
+                );
+            border-right: 1px solid var(--agentflow-border);
+        }
+
+        div[data-testid="stChatMessage"] {
+            background: rgba(16, 37, 66, 0.78);
+            border: 1px solid var(--agentflow-border);
+            border-radius: 0.9rem;
+            padding: 0.45rem 0.7rem;
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+        }
+
+        div[data-testid="stChatInput"] {
+            border: 1px solid var(--agentflow-border);
+            border-radius: 0.85rem;
+        }
+
+        .stButton > button,
+        .stLinkButton > a {
+            background: var(--agentflow-gold);
+            border: 1px solid var(--agentflow-gold);
+            color: var(--agentflow-navy) !important;
+            font-weight: 700;
+            border-radius: 0.65rem;
+        }
+
+        .stButton > button:hover,
+        .stLinkButton > a:hover {
+            background: var(--agentflow-gold-hover);
+            border-color: var(--agentflow-gold-hover);
+        }
+
+        .stButton > button:focus-visible,
+        .stLinkButton > a:focus-visible,
+        input:focus-visible,
+        textarea:focus-visible {
+            outline: 3px solid var(--agentflow-gold-hover) !important;
+            outline-offset: 2px;
+        }
+
+        div[data-testid="stMetric"] {
+            background: rgba(7, 20, 38, 0.58);
+            border: 1px solid var(--agentflow-border);
+            border-radius: 0.75rem;
+            padding: 0.8rem;
+        }
+
+        div[data-testid="stExpander"] {
+            border-color: var(--agentflow-border);
+            border-radius: 0.75rem;
+        }
+
+        hr {
+            border-color: var(--agentflow-border) !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+
 def main() -> None:
     """Run the AgentFlow Streamlit manager application."""
     st.set_page_config(
@@ -655,6 +780,7 @@ def main() -> None:
         page_icon="🛡️",
         layout="wide",
     )
+    apply_agentflow_theme()
 
     st.title("AgentFlow AI")
     st.caption(
