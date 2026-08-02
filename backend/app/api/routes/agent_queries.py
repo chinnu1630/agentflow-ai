@@ -481,12 +481,16 @@ AgentExecutionPrincipalDependency = Annotated[
 
 
 async def get_agent_github_risk_collector(
+    payload: AgentQueryRequest,
     request: Request,
     plan: ExecutableAgentQueryPlanDependency,
 ) -> AsyncIterator[RiskCollector | None]:
-    """Create GitHub collector only when fresh collection is required."""
+    """Create GitHub collector only for fresh analytical queries."""
 
-    if plan.intent is not AgentIntent.RELEASE_RISK_SUMMARY:
+    if (
+        plan.intent not in ANALYTICAL_RELEASE_INTENTS
+        or should_resolve_persisted_context(payload, plan)
+    ):
         yield None
         return
 
@@ -519,11 +523,15 @@ async def get_agent_github_risk_collector(
 
 
 async def get_agent_jira_risk_collector(
+    payload: AgentQueryRequest,
     plan: ExecutableAgentQueryPlanDependency,
 ) -> AsyncIterator[JiraRiskCollector | None]:
-    """Create Jira collector only when fresh collection is required."""
+    """Create Jira collector only for fresh analytical queries."""
 
-    if plan.intent is not AgentIntent.RELEASE_RISK_SUMMARY:
+    if (
+        plan.intent not in ANALYTICAL_RELEASE_INTENTS
+        or should_resolve_persisted_context(payload, plan)
+    ):
         yield None
         return
 
