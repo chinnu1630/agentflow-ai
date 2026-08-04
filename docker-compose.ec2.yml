@@ -1,0 +1,26 @@
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  redis:
+    ports: !reset []
+    logging: *default-logging
+
+  postgres:
+    ports: !reset []
+    logging: *default-logging
+
+  migrate:
+    logging: *default-logging
+
+  backend:
+    ports: !reset []
+    logging: *default-logging
+
+  frontend:
+    ports: !override
+      - "127.0.0.1:${FRONTEND_PORT:-8501}:8501"
+    logging: *default-logging

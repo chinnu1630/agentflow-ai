@@ -7,6 +7,7 @@ on:
     paths:
       - "backend/**"
       - "docker-compose.yml"
+      - "docker-compose.ec2.yml"
       - ".env.example"
       - ".github/workflows/backend-ci.yml"
   pull_request:
@@ -15,6 +16,7 @@ on:
     paths:
       - "backend/**"
       - "docker-compose.yml"
+      - "docker-compose.ec2.yml"
       - ".env.example"
       - ".github/workflows/backend-ci.yml"
 
@@ -112,12 +114,78 @@ jobs:
 
           rm -f             /tmp/agentflow-ci-private-key.pem             /tmp/agentflow-ci-public-key.pem
 
+      - name: Validate EC2 Compose isolation
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.ec2.yml \
+            config --format json \
+            > /tmp/agentflow-ec2-compose.json
+
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+
+          config = json.loads(
+              Path("/tmp/agentflow-ec2-compose.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          services = config["services"]
+
+          for service_name in ("backend", "migrate", "postgres", "redis"):
+              published_ports = services[service_name].get("ports", [])
+              if published_ports:
+                  raise SystemExit(
+                      f"{service_name} unexpectedly publishes host ports: "
+                      f"{published_ports}"
+                  )
+
+          frontend_ports = services["frontend"].get("ports", [])
+          if len(frontend_ports) != 1:
+              raise SystemExit(
+                  "frontend must publish exactly one loopback-only port; "
+                  f"found {frontend_ports}"
+              )
+
+          frontend_port = frontend_ports[0]
+          expected_frontend_port = {
+              "host_ip": "127.0.0.1",
+              "target": 8501,
+              "published": "8501",
+              "protocol": "tcp",
+          }
+          for field_name, expected_value in expected_frontend_port.items():
+              actual_value = frontend_port.get(field_name)
+              if actual_value != expected_value:
+                  raise SystemExit(
+                      "frontend port isolation mismatch: "
+                      f"{field_name}={actual_value!r}, "
+                      f"expected {expected_value!r}"
+                  )
+
+          for service_name, service in services.items():
+              logging = service.get("logging", {})
+              options = logging.get("options", {})
+              if (
+                  logging.get("driver") != "json-file"
+                  or options.get("max-size") != "10m"
+                  or str(options.get("max-file")) != "5"
+              ):
+                  raise SystemExit(
+                      f"{service_name} does not have bounded Docker logs: "
+                      f"{logging}"
+                  )
+
+          print("EC2 Compose network isolation and logging validated.")
+          PYTHON
+
       - name: Start production stack
         run: docker compose up --build --detach
 
       - name: Verify backend health
         run: |
-          for attempt in {1..30}; do
+          for _ in {1..30}; do
             if curl --fail --silent \
               http://127.0.0.1:8000/api/v1/health; then
               exit 0
