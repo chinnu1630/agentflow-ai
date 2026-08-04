@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+import streamlit as st
 from pydantic import SecretStr, ValidationError
 from streamlit.testing.v1 import AppTest
 
@@ -75,7 +76,7 @@ def test_apply_agentflow_theme_injects_static_brand_css(
         captured["body"] = body
         captured["unsafe_allow_html"] = unsafe_allow_html
 
-    monkeypatch.setattr(app_module.st, "markdown", fake_markdown)
+    monkeypatch.setattr(st, "markdown", fake_markdown)
 
     app_module.apply_agentflow_theme()
 
@@ -85,6 +86,12 @@ def test_apply_agentflow_theme_injects_static_brand_css(
     assert "#F2C14E" in stylesheet
     assert "stChatMessage" in stylesheet
     assert "focus-visible" in stylesheet
+    assert "block-container" in stylesheet
+    assert "stWidgetLabel" in stylesheet
+    assert "-webkit-text-fill-color" in stylesheet
+    assert "stBottomBlockContainer" in stylesheet
+    assert 'data-baseweb="input"' in stylesheet
+    assert ".stButton > button p" in stylesheet
 
 
 
@@ -210,6 +217,16 @@ def test_streamlit_app_renders_chat_interface(
         item.value == "Chat with AgentFlow"
         for item in app.subheader
     )
+
+    sidebar_captions = [
+        item.value for item in app.sidebar.caption
+    ]
+    assert "Authenticated API connection configured." in sidebar_captions
+    assert not any(
+        "agentflow.example.test" in caption
+        for caption in sidebar_captions
+    )
+
     assert len(app.chat_input) == 1
     assert app.chat_input[0].placeholder == (
         app_module.DEFAULT_RELEASE_RISK_QUERY

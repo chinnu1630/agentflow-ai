@@ -678,6 +678,40 @@ def apply_agentflow_theme() -> None:
             color: var(--agentflow-cream);
         }
 
+        .block-container {
+            padding-top: 3.25rem;
+            padding-bottom: 6rem;
+        }
+
+        [data-testid="stHeader"] {
+            background: rgba(7, 20, 38, 0.97) !important;
+            border-bottom: 1px solid var(--agentflow-border);
+        }
+
+        [data-testid="stToolbar"] {
+            color: var(--agentflow-muted) !important;
+        }
+
+        [data-testid="stBottomBlockContainer"] {
+            background: var(--agentflow-navy) !important;
+            border-top: 1px solid var(--agentflow-border);
+        }
+
+        [data-testid="stBottomBlockContainer"] > div {
+            background: transparent !important;
+        }
+
+        .stApp p,
+        .stApp label,
+        .stApp li,
+        [data-testid="stMarkdownContainer"] p,
+        [data-testid="stChatMessage"] p,
+        [data-testid="stWidgetLabel"] p,
+        div[role="radiogroup"] label p,
+        summary {
+            color: var(--agentflow-cream) !important;
+        }
+
         h1, h2, h3 {
             color: var(--agentflow-gold) !important;
             letter-spacing: 0.015em;
@@ -701,8 +735,46 @@ def apply_agentflow_theme() -> None:
             line-height: 1.65;
         }
 
-        [data-testid="stCaptionContainer"] {
-            color: var(--agentflow-muted);
+        [data-testid="stCaptionContainer"],
+        [data-testid="stCaptionContainer"] p {
+            color: var(--agentflow-muted) !important;
+        }
+
+        [data-testid="stMetricLabel"] p,
+        [data-testid="stMetricValue"] {
+            color: var(--agentflow-cream) !important;
+        }
+
+        [data-baseweb="input"],
+        [data-baseweb="textarea"] {
+            background: rgba(7, 20, 38, 0.82) !important;
+            border-color: var(--agentflow-border) !important;
+        }
+
+        [data-baseweb="input"] > div,
+        [data-baseweb="textarea"] > div {
+            background: transparent !important;
+        }
+
+        [data-baseweb="input"] input,
+        [data-baseweb="textarea"] textarea,
+        input,
+        textarea {
+            background: transparent !important;
+            color: var(--agentflow-cream) !important;
+            -webkit-text-fill-color: var(--agentflow-cream) !important;
+        }
+
+        [data-baseweb="input"] svg,
+        [data-baseweb="textarea"] svg {
+            fill: var(--agentflow-muted) !important;
+        }
+
+        input::placeholder,
+        textarea::placeholder {
+            color: var(--agentflow-muted) !important;
+            -webkit-text-fill-color: var(--agentflow-muted) !important;
+            opacity: 1;
         }
 
         section[data-testid="stSidebar"] {
@@ -715,6 +787,15 @@ def apply_agentflow_theme() -> None:
             border-right: 1px solid var(--agentflow-border);
         }
 
+        section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+            padding-top: 1.4rem;
+        }
+
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] label {
+            overflow-wrap: anywhere;
+        }
+
         div[data-testid="stChatMessage"] {
             background: rgba(16, 37, 66, 0.78);
             border: 1px solid var(--agentflow-border);
@@ -724,8 +805,19 @@ def apply_agentflow_theme() -> None:
         }
 
         div[data-testid="stChatInput"] {
+            background: rgba(16, 37, 66, 0.96) !important;
             border: 1px solid var(--agentflow-border);
             border-radius: 0.85rem;
+        }
+
+        div[data-testid="stChatInput"] > div {
+            background: transparent !important;
+        }
+
+        div[data-testid="stChatInput"] textarea {
+            background: transparent !important;
+            color: var(--agentflow-cream) !important;
+            -webkit-text-fill-color: var(--agentflow-cream) !important;
         }
 
         .stButton > button,
@@ -735,6 +827,11 @@ def apply_agentflow_theme() -> None:
             color: var(--agentflow-navy) !important;
             font-weight: 700;
             border-radius: 0.65rem;
+        }
+
+        .stButton > button p,
+        .stLinkButton > a p {
+            color: var(--agentflow-navy) !important;
         }
 
         .stButton > button:hover,
@@ -799,7 +896,7 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Secure connection")
-        st.caption(f"Backend: {settings.backend_base_url}")
+        st.caption("Authenticated API connection configured.")
 
         if settings.auth_required:
             bearer_token = st.text_input(
