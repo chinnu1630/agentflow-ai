@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - "backend/**"
+      - "scripts/bootstrap_ec2.sh"
+      - "scripts/test_bootstrap_ec2.sh"
       - "docker-compose.yml"
       - "docker-compose.ec2.yml"
       - ".env.example"
@@ -15,6 +17,8 @@ on:
       - main
     paths:
       - "backend/**"
+      - "scripts/bootstrap_ec2.sh"
+      - "scripts/test_bootstrap_ec2.sh"
       - "docker-compose.yml"
       - "docker-compose.ec2.yml"
       - ".env.example"
@@ -76,9 +80,39 @@ jobs:
       - name: Run tests with coverage gate
         run: pytest -q
 
+  ec2-bootstrap-quality:
+    name: Validate EC2 bootstrap automation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Bash syntax
+        run: |
+          bash -n \
+            scripts/bootstrap_ec2.sh \
+            scripts/test_bootstrap_ec2.sh
+
+      - name: Run ShellCheck
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/repo" \
+            --workdir /repo \
+            koalaman/shellcheck:stable \
+            -x \
+            scripts/bootstrap_ec2.sh \
+            scripts/test_bootstrap_ec2.sh
+
+      - name: Run bootstrap unit tests
+        run: bash scripts/test_bootstrap_ec2.sh
+
   container-smoke-test:
     name: PostgreSQL pgvector and Redis integration test
-    needs: quality
+    needs:
+      - quality
+      - ec2-bootstrap-quality
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
