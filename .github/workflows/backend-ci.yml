@@ -8,6 +8,8 @@ on:
       - "backend/**"
       - "scripts/bootstrap_ec2.sh"
       - "scripts/test_bootstrap_ec2.sh"
+      - "scripts/deploy_ec2.sh"
+      - "scripts/test_deploy_ec2.sh"
       - "docker-compose.yml"
       - "docker-compose.ec2.yml"
       - ".env.example"
@@ -19,6 +21,8 @@ on:
       - "backend/**"
       - "scripts/bootstrap_ec2.sh"
       - "scripts/test_bootstrap_ec2.sh"
+      - "scripts/deploy_ec2.sh"
+      - "scripts/test_deploy_ec2.sh"
       - "docker-compose.yml"
       - "docker-compose.ec2.yml"
       - ".env.example"
@@ -81,7 +85,7 @@ jobs:
         run: pytest -q
 
   ec2-bootstrap-quality:
-    name: Validate EC2 bootstrap automation
+    name: Validate EC2 automation
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -93,7 +97,9 @@ jobs:
         run: |
           bash -n \
             scripts/bootstrap_ec2.sh \
-            scripts/test_bootstrap_ec2.sh
+            scripts/test_bootstrap_ec2.sh \
+            scripts/deploy_ec2.sh \
+            scripts/test_deploy_ec2.sh
 
       - name: Run ShellCheck
         run: |
@@ -103,10 +109,15 @@ jobs:
             koalaman/shellcheck:stable \
             -x \
             scripts/bootstrap_ec2.sh \
-            scripts/test_bootstrap_ec2.sh
+            scripts/test_bootstrap_ec2.sh \
+            scripts/deploy_ec2.sh \
+            scripts/test_deploy_ec2.sh
 
       - name: Run bootstrap unit tests
         run: bash scripts/test_bootstrap_ec2.sh
+
+      - name: Run deployment unit tests
+        run: bash scripts/test_deploy_ec2.sh
 
   container-smoke-test:
     name: PostgreSQL pgvector and Redis integration test
