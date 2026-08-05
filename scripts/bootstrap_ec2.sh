@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 readonly EXPECTED_OS_ID="ubuntu"
 readonly EXPECTED_OS_CODENAME="noble"
-readonly EXPECTED_ARCHITECTURE="arm64"
+readonly -a SUPPORTED_ARCHITECTURES=("amd64" "arm64")
 readonly DOCKER_KEY_URL="https://download.docker.com/linux/ubuntu/gpg"
 readonly DOCKER_KEY_PATH="/etc/apt/keyrings/docker.asc"
 readonly DOCKER_REPOSITORY_PATH="/etc/apt/sources.list.d/docker.list"
@@ -107,6 +107,19 @@ require_root() {
   fi
 }
 
+is_supported_architecture() {
+  local candidate_architecture="$1"
+  local supported_architecture
+
+  for supported_architecture in "${SUPPORTED_ARCHITECTURES[@]}"; do
+    if [[ "$candidate_architecture" == "$supported_architecture" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 validate_host() {
   # /etc/os-release exists on the target Ubuntu EC2 host.
   # shellcheck disable=SC1091
@@ -133,11 +146,11 @@ validate_host() {
     exit 1
   fi
 
-  if [[ "$architecture" != "$EXPECTED_ARCHITECTURE" ]]; then
+  if ! is_supported_architecture "$architecture"; then
     log_event \
       "error" \
       "unsupported_cpu_architecture" \
-      "expected=${EXPECTED_ARCHITECTURE}" \
+      "supported=$(IFS=,; printf '%s' "${SUPPORTED_ARCHITECTURES[*]}")" \
       "actual=${architecture}"
     exit 1
   fi

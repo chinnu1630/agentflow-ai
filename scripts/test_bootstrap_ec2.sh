@@ -158,11 +158,29 @@ test_download_stops_after_maximum_attempts() {
   rm -rf "$temporary_directory"
 }
 
+test_supported_architectures_are_accepted() {
+  if ! is_supported_architecture "amd64"; then
+    fail_test "amd64 architecture was unexpectedly rejected"
+  fi
+
+  if ! is_supported_architecture "arm64"; then
+    fail_test "arm64 architecture was unexpectedly rejected"
+  fi
+}
+
+test_unsupported_architecture_is_rejected() {
+  if is_supported_architecture "s390x"; then
+    fail_test "unsupported architecture was unexpectedly accepted"
+  fi
+}
+
 main() {
   test_download_succeeds_after_retries
   test_download_stops_after_maximum_attempts
+  test_supported_architectures_are_accepted
+  test_unsupported_architecture_is_rejected
 
-  printf 'EC2 bootstrap retry tests passed.\n'
+  printf 'EC2 bootstrap tests passed.\n'
 }
 
 main "$@"
