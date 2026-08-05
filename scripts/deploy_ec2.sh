@@ -40,14 +40,47 @@ log_event() {
   printf '\n'
 }
 
-compose_command() {
+compose_command() (
+  local -a compose_environment_variables=(
+    "AUTH_ENABLED"
+    "AUTH_JWT_AUDIENCE"
+    "AUTH_JWT_ISSUER"
+    "AUTH_JWT_PUBLIC_KEY"
+    "BACKEND_PORT"
+    "FRONTEND_PORT"
+    "OTEL_ENABLED"
+    "OTEL_EXPORTER_OTLP_ENDPOINT"
+    "OTEL_METRICS_ENABLED"
+    "OTEL_METRICS_EXPORTER_OTLP_ENDPOINT"
+    "OTEL_METRICS_EXPORT_INTERVAL_MILLISECONDS"
+    "OTEL_SAMPLE_RATIO"
+    "OTEL_SERVICE_NAME"
+    "POSTGRES_DB"
+    "POSTGRES_PASSWORD"
+    "POSTGRES_PORT"
+    "POSTGRES_USER"
+    "RATE_LIMIT_EXPENSIVE_CAPACITY"
+    "RATE_LIMIT_EXPENSIVE_REFILL_RATE_PER_SECOND"
+    "RATE_LIMIT_KEY_HMAC_SECRET"
+    "RATE_LIMIT_STANDARD_CAPACITY"
+    "RATE_LIMIT_STANDARD_REFILL_RATE_PER_SECOND"
+    "REDIS_CONNECT_TIMEOUT_SECONDS"
+    "REDIS_MAX_CONNECTIONS"
+    "REDIS_PASSWORD"
+    "REDIS_PORT"
+    "REDIS_SOCKET_TIMEOUT_SECONDS"
+    "TRUSTED_HOSTS"
+  )
+
+  unset "${compose_environment_variables[@]}"
+
   docker compose \
     --project-name "$COMPOSE_PROJECT_NAME" \
     --env-file "$ENV_FILE" \
     -f "$BASE_COMPOSE_FILE" \
     -f "$EC2_COMPOSE_FILE" \
     "$@"
-}
+)
 
 handle_error() {
   local line_number="$1"
@@ -247,6 +280,316 @@ validate_environment_file() {
     "mode=${file_mode}"
 }
 
+
+count_environment_value_occurrences() {
+  local variable_name="$1"
+
+  awk -v target="$variable_name" '
+    {
+      line = $0
+      sub(/\r$/, "", line)
+
+      if (line ~ /^[[:space:]]*#/ || line ~ /^[[:space:]]*$/) {
+        next
+      }
+
+      separator = index(line, "=")
+
+      if (separator == 0) {
+        next
+      }
+
+      name = substr(line, 1, separator - 1)
+      sub(/^[[:space:]]*export[[:space:]]+/, "", name)
+      gsub(/^[[:space:]]+/, "", name)
+      gsub(/[[:space:]]+$/, "", name)
+
+      if (name == target) {
+        occurrences += 1
+      }
+    }
+
+    END {
+      print occurrences + 0
+    }
+  ' "$ENV_FILE"
+}
+
+read_environment_value() {
+  local variable_name="$1"
+
+  awk -v target="$variable_name" '
+    {
+      line = $0
+      sub(/\r$/, "", line)
+
+      if (line ~ /^[[:space:]]*#/ || line ~ /^[[:space:]]*$/) {
+        next
+      }
+
+      separator = index(line, "=")
+
+      if (separator == 0) {
+        next
+      }
+
+      name = substr(line, 1, separator - 1)
+      sub(/^[[:space:]]*export[[:space:]]+/, "", name)
+      gsub(/^[[:space:]]+/, "", name)
+      gsub(/[[:space:]]+$/, "", name)
+
+      if (name == target) {
+        value = substr(line, separator + 1)
+        gsub(/^[[:space:]]+/, "", value)
+        gsub(/[[:space:]]+$/, "", value)
+        print value
+      }
+    }
+  ' "$ENV_FILE"
+}
+
+strip_matching_quotes() {
+  local value="$1"
+  local value_length="${#value}"
+
+  if ((value_length >= 2)); then
+    local first_character="${value:0:1}"
+    local last_character="${value:value_length-1:1}"
+
+    if [[ "$first_character" == "$last_character" ]] \
+      && [[ "$first_character" == '"' || "$first_character" == "'" ]]; then
+      value="${value:1:value_length-2}"
+    fi
+  fi
+
+  printf '%s' "$value"
+}
+
+load_required_environment_value() {
+  local variable_name="$1"
+  local occurrence_count
+  local raw_value
+
+  occurrence_count="$(
+    count_environment_value_occurrences "$variable_name"
+  )"
+
+  if [[ "$occurrence_count" == "0" ]]; then
+    log_event \
+      "error" \
+      "deployment_environment_required_value_missing" \
+      "variable=${variable_name}"
+    return 1
+  fi
+
+  if [[ "$occurrence_count" != "1" ]]; then
+    log_event \
+      "error" \
+      "deployment_environment_duplicate_value_rejected" \
+      "variable=${variable_name}"
+    return 1
+  fi
+
+  raw_value="$(read_environment_value "$variable_name")"
+  REQUIRED_ENVIRONMENT_VALUE="$(strip_matching_quotes "$raw_value")"
+
+  if [[ -z "$REQUIRED_ENVIRONMENT_VALUE" ]]; then
+    log_event \
+      "error" \
+      "deployment_environment_required_value_blank" \
+      "variable=${variable_name}"
+    return 1
+  fi
+}
+
+is_unsafe_secret_placeholder() {
+  local secret_value="$1"
+  local normalized_value
+
+  normalized_value="$(
+    printf '%s' "$secret_value" |
+      tr '[:upper:]' '[:lower:]'
+  )"
+
+  case "$normalized_value" in
+    changeme|change-me|change_me|password|secret|default|example|test|\
+test-secret|your-password|replace-me|replace_me|agentflow-ci-password)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validate_deployment_secret() {
+  local variable_name="$1"
+  local secret_value="$2"
+
+  if is_unsafe_secret_placeholder "$secret_value"; then
+    log_event \
+      "error" \
+      "deployment_environment_secret_rejected" \
+      "variable=${variable_name}" \
+      "reason=placeholder"
+    return 1
+  fi
+
+  if ((${#secret_value} < 16)); then
+    log_event \
+      "error" \
+      "deployment_environment_secret_rejected" \
+      "variable=${variable_name}" \
+      "reason=minimum_length"
+    return 1
+  fi
+}
+
+validate_trusted_hosts_value() {
+  local trusted_hosts="$1"
+  local normalized_hosts
+  local host
+  local external_host_found="false"
+  local -a host_entries=()
+
+  if [[ ! "$trusted_hosts" =~ ^\[[[:space:]]*\"[^\"]+\"([[:space:]]*,[[:space:]]*\"[^\"]+\")*[[:space:]]*\]$ ]]; then
+    log_event \
+      "error" \
+      "deployment_environment_trusted_hosts_rejected" \
+      "reason=json_array_required"
+    return 1
+  fi
+
+  normalized_hosts="$(
+    printf '%s' "$trusted_hosts" |
+      tr '[:upper:]' '[:lower:]' |
+      tr -d '[]"' |
+      tr -d '[:space:]'
+  )"
+
+  if [[ "$normalized_hosts" == *"*"* ]]; then
+    log_event \
+      "error" \
+      "deployment_environment_trusted_hosts_rejected" \
+      "reason=wildcard"
+    return 1
+  fi
+
+  IFS=',' read -r -a host_entries <<< "$normalized_hosts"
+
+  for host in "${host_entries[@]}"; do
+    case "$host" in
+      ""|localhost|127.0.0.1|::1|testserver|backend)
+        ;;
+      *)
+        external_host_found="true"
+        ;;
+    esac
+  done
+
+  if [[ "$external_host_found" != "true" ]]; then
+    log_event \
+      "error" \
+      "deployment_environment_trusted_hosts_rejected" \
+      "reason=local_only"
+    return 1
+  fi
+}
+
+validate_environment_values() {
+  local auth_enabled
+  local auth_jwt_audience
+  local auth_jwt_issuer
+  local auth_jwt_public_key
+  local postgres_password
+  local rate_limit_hmac_secret
+  local redis_password
+  local trusted_hosts
+
+  load_required_environment_value "AUTH_ENABLED" || return 1
+  auth_enabled="$REQUIRED_ENVIRONMENT_VALUE"
+
+  load_required_environment_value "AUTH_JWT_AUDIENCE" || return 1
+  auth_jwt_audience="$REQUIRED_ENVIRONMENT_VALUE"
+
+  load_required_environment_value "AUTH_JWT_ISSUER" || return 1
+  auth_jwt_issuer="$REQUIRED_ENVIRONMENT_VALUE"
+
+  load_required_environment_value "AUTH_JWT_PUBLIC_KEY" || return 1
+  auth_jwt_public_key="$REQUIRED_ENVIRONMENT_VALUE"
+
+  load_required_environment_value "POSTGRES_PASSWORD" || return 1
+  postgres_password="$REQUIRED_ENVIRONMENT_VALUE"
+
+  load_required_environment_value "RATE_LIMIT_KEY_HMAC_SECRET" || return 1
+  rate_limit_hmac_secret="$REQUIRED_ENVIRONMENT_VALUE"
+
+  load_required_environment_value "REDIS_PASSWORD" || return 1
+  redis_password="$REQUIRED_ENVIRONMENT_VALUE"
+
+  load_required_environment_value "TRUSTED_HOSTS" || return 1
+  trusted_hosts="$REQUIRED_ENVIRONMENT_VALUE"
+
+  if [[ "$(
+    printf '%s' "$auth_enabled" |
+      tr '[:upper:]' '[:lower:]'
+  )" != "true" ]]; then
+    log_event \
+      "error" \
+      "deployment_environment_authentication_rejected" \
+      "variable=AUTH_ENABLED" \
+      "reason=must_be_true"
+    return 1
+  fi
+
+  if [[ "$auth_jwt_issuer" != http://* \
+    && "$auth_jwt_issuer" != https://* ]]; then
+    log_event \
+      "error" \
+      "deployment_environment_value_rejected" \
+      "variable=AUTH_JWT_ISSUER" \
+      "reason=http_scheme_required"
+    return 1
+  fi
+
+  if [[ "$auth_jwt_public_key" != *"-----BEGIN PUBLIC KEY-----"* \
+    || "$auth_jwt_public_key" != *"-----END PUBLIC KEY-----"* ]]; then
+    log_event \
+      "error" \
+      "deployment_environment_value_rejected" \
+      "variable=AUTH_JWT_PUBLIC_KEY" \
+      "reason=pem_public_key_required"
+    return 1
+  fi
+
+  if [[ -z "$auth_jwt_audience" ]]; then
+    log_event \
+      "error" \
+      "deployment_environment_required_value_blank" \
+      "variable=AUTH_JWT_AUDIENCE"
+    return 1
+  fi
+
+  validate_deployment_secret \
+    "POSTGRES_PASSWORD" \
+    "$postgres_password" || return 1
+
+  validate_deployment_secret \
+    "RATE_LIMIT_KEY_HMAC_SECRET" \
+    "$rate_limit_hmac_secret" || return 1
+
+  validate_deployment_secret \
+    "REDIS_PASSWORD" \
+    "$redis_password" || return 1
+
+  validate_trusted_hosts_value "$trusted_hosts" || return 1
+
+  log_event \
+    "info" \
+    "deployment_environment_values_validated"
+}
+
+
 validate_host_capacity() {
   local memory_kib
   local available_disk_kib
@@ -359,6 +702,7 @@ main() {
   validate_required_commands
   validate_repository
   validate_environment_file
+  validate_environment_values
   validate_host_capacity
   validate_compose_configuration
   pull_runtime_images

@@ -144,12 +144,173 @@ test_environment_symlink_is_rejected() {
   fi
 }
 
+write_valid_deployment_environment() {
+  rm -f "$ENV_FILE"
+
+  cat > "$ENV_FILE" <<'EOF'
+AUTH_ENABLED=true
+AUTH_JWT_AUDIENCE=agentflow-api
+AUTH_JWT_ISSUER=https://identity.example.com/
+AUTH_JWT_PUBLIC_KEY=-----BEGIN PUBLIC KEY-----\ntest-key\n-----END PUBLIC KEY-----
+POSTGRES_PASSWORD=production-postgres-secret
+RATE_LIMIT_KEY_HMAC_SECRET=production-rate-limit-secret
+REDIS_PASSWORD=production-redis-secret
+TRUSTED_HOSTS=["backend","api.agentflow.example.com"]
+EOF
+
+  chmod 0600 "$ENV_FILE"
+}
+
+test_valid_deployment_environment_values_are_accepted() {
+  write_valid_deployment_environment
+  validate_environment_values >/dev/null
+}
+
+test_missing_required_environment_value_is_rejected() {
+  write_valid_deployment_environment
+  sed -i.bak '/^REDIS_PASSWORD=/d' "$ENV_FILE"
+  rm -f "${ENV_FILE}.bak"
+
+  if (validate_environment_values >/dev/null 2>&1); then
+    fail_test "missing required deployment value was accepted"
+  fi
+}
+
+test_placeholder_database_password_is_rejected() {
+  write_valid_deployment_environment
+  sed -i.bak \
+    's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=changeme/' \
+    "$ENV_FILE"
+  rm -f "${ENV_FILE}.bak"
+
+  if (validate_environment_values >/dev/null 2>&1); then
+    fail_test "placeholder PostgreSQL password was accepted"
+  fi
+}
+
+test_disabled_production_authentication_is_rejected() {
+  write_valid_deployment_environment
+  sed -i.bak \
+    's/^AUTH_ENABLED=.*/AUTH_ENABLED=false/' \
+    "$ENV_FILE"
+  rm -f "${ENV_FILE}.bak"
+
+  if (validate_environment_values >/dev/null 2>&1); then
+    fail_test "disabled production authentication was accepted"
+  fi
+}
+
+test_local_only_trusted_hosts_are_rejected() {
+  write_valid_deployment_environment
+  sed -i.bak \
+    's|^TRUSTED_HOSTS=.*|TRUSTED_HOSTS=["localhost","127.0.0.1"]|' \
+    "$ENV_FILE"
+  rm -f "${ENV_FILE}.bak"
+
+  if (validate_environment_values >/dev/null 2>&1); then
+    fail_test "local-only production trusted hosts were accepted"
+  fi
+}
+
+test_non_json_trusted_hosts_are_rejected() {
+  write_valid_deployment_environment
+  sed -i.bak \
+    's/^TRUSTED_HOSTS=.*/TRUSTED_HOSTS=api.agentflow.example.com/' \
+    "$ENV_FILE"
+  rm -f "${ENV_FILE}.bak"
+
+  if (validate_environment_values >/dev/null 2>&1); then
+    fail_test "non-JSON TRUSTED_HOSTS configuration was accepted"
+  fi
+}
+
+test_rejected_secret_is_not_logged() {
+  local rejected_secret="changeme"
+  local validation_output
+
+  write_valid_deployment_environment
+  sed -i.bak \
+    "s/^REDIS_PASSWORD=.*/REDIS_PASSWORD=${rejected_secret}/" \
+    "$ENV_FILE"
+  rm -f "${ENV_FILE}.bak"
+
+  validation_output="$(
+    validate_environment_values 2>&1 || true
+  )"
+
+  if [[ "$validation_output" == *"$rejected_secret"* ]]; then
+    fail_test "rejected secret value was exposed in validation output"
+  fi
+}
+
+test_compose_command_rejects_process_environment_overrides() (
+  local observed_values_file
+  local observed_postgres_password
+  local observed_frontend_port
+
+  observed_values_file="$(
+    mktemp "${TEST_TEMP_DIRECTORY}/compose-environment.XXXXXX"
+  )"
+
+  docker() {
+    printf 'POSTGRES_PASSWORD=%s\n' \
+      "${POSTGRES_PASSWORD-<unset>}" \
+      > "$observed_values_file"
+
+    printf 'FRONTEND_PORT=%s\n' \
+      "${FRONTEND_PORT-<unset>}" \
+      >> "$observed_values_file"
+  }
+
+  export POSTGRES_PASSWORD="unsafe-process-override"
+  export FRONTEND_PORT="9999"
+
+  compose_command config --quiet
+
+  unset POSTGRES_PASSWORD
+  unset FRONTEND_PORT
+
+  observed_postgres_password="$(
+    awk -F= '
+      $1 == "POSTGRES_PASSWORD" {
+        print substr($0, index($0, "=") + 1)
+      }
+    ' "$observed_values_file"
+  )"
+
+  observed_frontend_port="$(
+    awk -F= '
+      $1 == "FRONTEND_PORT" {
+        print substr($0, index($0, "=") + 1)
+      }
+    ' "$observed_values_file"
+  )"
+
+  assert_equal \
+    "<unset>" \
+    "$observed_postgres_password" \
+    "Compose PostgreSQL process-environment override"
+
+  assert_equal \
+    "<unset>" \
+    "$observed_frontend_port" \
+    "Compose frontend-port process-environment override"
+)
+
 main() {
   test_retry_succeeds_after_temporary_failures
   test_retry_stops_after_maximum_attempts
   test_secure_environment_file_is_accepted
   test_world_accessible_environment_file_is_rejected
   test_environment_symlink_is_rejected
+  test_compose_command_rejects_process_environment_overrides
+  test_valid_deployment_environment_values_are_accepted
+  test_missing_required_environment_value_is_rejected
+  test_placeholder_database_password_is_rejected
+  test_disabled_production_authentication_is_rejected
+  test_local_only_trusted_hosts_are_rejected
+  test_non_json_trusted_hosts_are_rejected
+  test_rejected_secret_is_not_logged
 
   printf 'EC2 deployment-script tests passed.\n'
 }
