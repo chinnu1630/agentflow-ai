@@ -10,6 +10,8 @@ on:
       - "scripts/test_bootstrap_ec2.sh"
       - "scripts/deploy_ec2.sh"
       - "scripts/test_deploy_ec2.sh"
+      - "scripts/rollback_ec2.sh"
+      - "scripts/test_rollback_ec2.sh"
       - "docker-compose.yml"
       - "docker-compose.ec2.yml"
       - ".env.example"
@@ -23,6 +25,8 @@ on:
       - "scripts/test_bootstrap_ec2.sh"
       - "scripts/deploy_ec2.sh"
       - "scripts/test_deploy_ec2.sh"
+      - "scripts/rollback_ec2.sh"
+      - "scripts/test_rollback_ec2.sh"
       - "docker-compose.yml"
       - "docker-compose.ec2.yml"
       - ".env.example"
@@ -99,7 +103,9 @@ jobs:
             scripts/bootstrap_ec2.sh \
             scripts/test_bootstrap_ec2.sh \
             scripts/deploy_ec2.sh \
-            scripts/test_deploy_ec2.sh
+            scripts/test_deploy_ec2.sh \
+            scripts/rollback_ec2.sh \
+            scripts/test_rollback_ec2.sh
 
       - name: Run ShellCheck
         run: |
@@ -111,13 +117,18 @@ jobs:
             scripts/bootstrap_ec2.sh \
             scripts/test_bootstrap_ec2.sh \
             scripts/deploy_ec2.sh \
-            scripts/test_deploy_ec2.sh
+            scripts/test_deploy_ec2.sh \
+            scripts/rollback_ec2.sh \
+            scripts/test_rollback_ec2.sh
 
       - name: Run bootstrap unit tests
         run: bash scripts/test_bootstrap_ec2.sh
 
       - name: Run deployment unit tests
         run: bash scripts/test_deploy_ec2.sh
+
+      - name: Run rollback unit tests
+        run: bash scripts/test_rollback_ec2.sh
 
   container-smoke-test:
     name: PostgreSQL pgvector and Redis integration test
