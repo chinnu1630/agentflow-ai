@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -32,6 +33,10 @@ from agentflow_frontend.api_models import (
     SlackReleaseAlertResult,
 )
 from agentflow_frontend.config import FrontendSettings, get_frontend_settings
+
+_STREAMLIT_APP_PATH = (
+    Path(__file__).resolve().parents[1] / "streamlit_app.py"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -204,7 +209,7 @@ def test_streamlit_app_renders_chat_interface(
     )
     get_frontend_settings.cache_clear()
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
 
     assert not app.exception
@@ -247,7 +252,7 @@ def test_streamlit_app_places_release_operations_in_sidebar(
     )
     get_frontend_settings.cache_clear()
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
 
     assert not app.exception
@@ -352,7 +357,7 @@ def test_streamlit_chat_contains_only_question_and_agent_answer(
         fake_execute_manager_query,
     )
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
     app.chat_input[0].set_value(
         "What are the biggest release risks this week?"
@@ -477,7 +482,7 @@ def test_streamlit_sidebar_renders_latest_release_assessment(
         fake_execute_manager_query,
     )
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
     app.chat_input[0].set_value(
         "What are the biggest release risks this week?"
@@ -513,7 +518,7 @@ def test_streamlit_app_requires_token_before_chat(
     )
     get_frontend_settings.cache_clear()
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
     app.chat_input[0].set_value(
         "What are the biggest release risks this week?"
@@ -582,7 +587,7 @@ def test_streamlit_app_allows_chat_without_token_in_local_mode(
         fake_execute_manager_query,
     )
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
     app.chat_input[0].set_value(
         "What are the biggest release risks this week?"
@@ -722,7 +727,7 @@ def test_streamlit_app_renders_release_risk_response(
         fake_execute_manager_query,
     )
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
     _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
     app.chat_input[0].set_value(
@@ -849,7 +854,7 @@ def test_streamlit_app_chat_defaults_each_query_to_fresh_assessment(
         fake_execute_manager_query,
     )
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
     _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
     app.chat_input[0].set_value(
@@ -958,7 +963,7 @@ def test_streamlit_app_chat_reuses_release_run_when_followup_selected(
         fake_execute_manager_query,
     )
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
     _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
     app.chat_input[0].set_value(
@@ -1007,7 +1012,7 @@ def test_streamlit_app_rejects_followup_without_release_run(
         fake_execute_manager_query,
     )
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
     _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
     app.radio[0].set_value("Follow up on latest run").run()
@@ -1141,7 +1146,7 @@ def test_streamlit_app_renders_pending_approval_queue(
         fake_load_pending_approvals,
     )
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
     _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
     _button_by_label(app, "Load pending approvals").click().run()
@@ -1370,7 +1375,7 @@ def test_streamlit_app_submits_manager_approval_decision(
         fake_decide_pending_approval,
     )
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
     _text_input_by_label(app, "Signed access token").input("signed-test-jwt")
     _button_by_label(app, "Load pending approvals").click().run()
@@ -1612,7 +1617,7 @@ def test_streamlit_app_sends_slack_after_approved_decision(
         fake_send_approved_release_slack_alert,
     )
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
     _text_input_by_label(app, "Signed access token").input("signed-notify-jwt")
     _button_by_label(app, "Load pending approvals").click().run()
@@ -1928,7 +1933,7 @@ def test_streamlit_app_renders_workflow_status_and_audit_timeline(
         fake_load_release_run_events,
     )
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
 
     token_input = _text_input_by_label(
@@ -2064,7 +2069,7 @@ def test_streamlit_app_prefills_workflow_lookup_from_latest_release_run(
         fake_execute_manager_query,
     )
 
-    app = AppTest.from_file("streamlit_app.py")
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
     app.run()
     app.chat_input[0].set_value(
         "What are the biggest release risks this week?"
