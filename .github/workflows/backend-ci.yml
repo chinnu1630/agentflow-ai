@@ -154,6 +154,16 @@ jobs:
       AUTH_JWT_ISSUER: "https://ci.identity.agentflow.invalid/"
       AUTH_JWT_AUDIENCE: "agentflow-api"
 
+      # Non-secret integration-test collector configuration
+      GITHUB_REPOSITORY_OWNER: "chinnu1630"
+      GITHUB_REPOSITORY_NAME: "agentflow-ai"
+      GITHUB_DEFAULT_BRANCH: "main"
+      GITHUB_TOKEN: ""
+      JIRA_BASE_URL: "https://agentflow-ci.atlassian.invalid"
+      JIRA_EMAIL: "ci@agentflow.invalid"
+      JIRA_API_TOKEN: "agentflow-ci-jira-token"
+      JIRA_PROJECT_KEY: "TEST"
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
