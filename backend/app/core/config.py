@@ -325,6 +325,36 @@ class Settings(BaseSettings):
         return normalized_values
 
     @field_validator(
+        "otel_exporter_otlp_endpoint",
+    )
+    @classmethod
+    def validate_otel_tracing_endpoint(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        """Accept only explicit HTTP(S) OTLP tracing endpoints."""
+        if value is None:
+            return None
+
+        normalized_value = value.strip()
+
+        if not normalized_value:
+            return None
+
+        parsed_url = urlsplit(normalized_value)
+
+        if (
+            parsed_url.scheme not in {"http", "https"}
+            or parsed_url.hostname is None
+        ):
+            raise ValueError(
+                "OTEL_EXPORTER_OTLP_ENDPOINT must use "
+                "http:// or https:// with a hostname."
+            )
+
+        return normalized_value
+
+    @field_validator(
         "otel_metrics_exporter_otlp_endpoint",
     )
     @classmethod

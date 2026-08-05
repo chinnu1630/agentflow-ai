@@ -545,6 +545,43 @@ def test_settings_reject_disabled_rate_limiting_in_deployed_environments(
         Settings(_env_file=None)  # type: ignore[call-arg]
 
 
+@pytest.mark.parametrize(
+    "invalid_endpoint",
+    [
+        "otel-collector:4318/v1/traces",
+        "ftp://otel-collector/v1/traces",
+    ],
+)
+def test_settings_reject_invalid_otel_tracing_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_endpoint: str,
+) -> None:
+    """Tracing endpoints must use HTTP or HTTPS with a hostname."""
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        invalid_endpoint,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="OTEL_EXPORTER_OTLP_ENDPOINT must use",
+    ):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_treat_blank_otel_tracing_endpoint_as_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disabled tracing should accept a Compose-style blank endpoint."""
+    monkeypatch.setenv("OTEL_ENABLED", "false")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.otel_enabled is False
+    assert settings.otel_exporter_otlp_endpoint is None
+
+
 def test_settings_use_safe_default_otel_metrics_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
