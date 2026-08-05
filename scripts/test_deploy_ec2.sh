@@ -152,6 +152,14 @@ AUTH_ENABLED=true
 AUTH_JWT_AUDIENCE=agentflow-api
 AUTH_JWT_ISSUER=https://identity.example.com/
 AUTH_JWT_PUBLIC_KEY=-----BEGIN PUBLIC KEY-----\ntest-key\n-----END PUBLIC KEY-----
+GITHUB_REPOSITORY_OWNER=example-owner
+GITHUB_REPOSITORY_NAME=example-repository
+GITHUB_DEFAULT_BRANCH=main
+GITHUB_TOKEN=example-github-token
+JIRA_BASE_URL=https://example.atlassian.net
+JIRA_EMAIL=release.manager@example.com
+JIRA_API_TOKEN=example-jira-api-token
+JIRA_PROJECT_KEY=AGENT
 POSTGRES_PASSWORD=production-postgres-secret
 RATE_LIMIT_KEY_HMAC_SECRET=production-rate-limit-secret
 REDIS_PASSWORD=production-redis-secret
@@ -297,6 +305,84 @@ test_compose_command_rejects_process_environment_overrides() (
     "Compose frontend-port process-environment override"
 )
 
+
+test_compose_command_rejects_collector_process_environment_overrides() (
+  local observed_values_file
+  local observed_github_owner
+  local observed_jira_project_key
+
+  observed_values_file="$(
+    mktemp "${TEST_TEMP_DIRECTORY}/collector-environment.XXXXXX"
+  )"
+
+  docker() {
+    printf 'GITHUB_REPOSITORY_OWNER=%s\n' \
+      "${GITHUB_REPOSITORY_OWNER-<unset>}" \
+      > "$observed_values_file"
+
+    printf 'JIRA_PROJECT_KEY=%s\n' \
+      "${JIRA_PROJECT_KEY-<unset>}" \
+      >> "$observed_values_file"
+  }
+
+  export GITHUB_REPOSITORY_OWNER="unsafe-process-owner"
+  export JIRA_PROJECT_KEY="UNSAFE"
+
+  compose_command config --quiet
+
+  unset GITHUB_REPOSITORY_OWNER
+  unset JIRA_PROJECT_KEY
+
+  observed_github_owner="$(
+    awk -F= '
+      $1 == "GITHUB_REPOSITORY_OWNER" {
+        print substr($0, index($0, "=") + 1)
+      }
+    ' "$observed_values_file"
+  )"
+
+  observed_jira_project_key="$(
+    awk -F= '
+      $1 == "JIRA_PROJECT_KEY" {
+        print substr($0, index($0, "=") + 1)
+      }
+    ' "$observed_values_file"
+  )"
+
+  assert_equal \
+    "<unset>" \
+    "$observed_github_owner" \
+    "Compose GitHub-owner process-environment override"
+
+  assert_equal \
+    "<unset>" \
+    "$observed_jira_project_key" \
+    "Compose Jira-project process-environment override"
+)
+
+test_backend_collector_environment_is_wired() {
+  local variable_name
+  local -a required_variables=(
+    GITHUB_REPOSITORY_OWNER
+    GITHUB_REPOSITORY_NAME
+    GITHUB_DEFAULT_BRANCH
+    GITHUB_TOKEN
+    JIRA_BASE_URL
+    JIRA_EMAIL
+    JIRA_API_TOKEN
+    JIRA_PROJECT_KEY
+  )
+
+  for variable_name in "${required_variables[@]}"; do
+    if ! grep -Eq \
+      "^[[:space:]]+${variable_name}:" \
+      "$BASE_COMPOSE_FILE"; then
+      fail_test \
+        "backend collector environment mapping missing: ${variable_name}"
+    fi
+  done
+}
+
 main() {
   test_retry_succeeds_after_temporary_failures
   test_retry_stops_after_maximum_attempts
@@ -304,6 +390,8 @@ main() {
   test_world_accessible_environment_file_is_rejected
   test_environment_symlink_is_rejected
   test_compose_command_rejects_process_environment_overrides
+  test_compose_command_rejects_collector_process_environment_overrides
+  test_backend_collector_environment_is_wired
   test_valid_deployment_environment_values_are_accepted
   test_missing_required_environment_value_is_rejected
   test_placeholder_database_password_is_rejected

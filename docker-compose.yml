@@ -80,6 +80,18 @@ services:
       AUTH_JWT_AUDIENCE: ${AUTH_JWT_AUDIENCE:?Set AUTH_JWT_AUDIENCE in .env}
       AUTH_JWT_PUBLIC_KEY: ${AUTH_JWT_PUBLIC_KEY:?Set AUTH_JWT_PUBLIC_KEY in .env}
 
+      # GitHub release-risk collection
+      GITHUB_REPOSITORY_OWNER: "${GITHUB_REPOSITORY_OWNER:?Set GITHUB_REPOSITORY_OWNER in .env}"
+      GITHUB_REPOSITORY_NAME: "${GITHUB_REPOSITORY_NAME:?Set GITHUB_REPOSITORY_NAME in .env}"
+      GITHUB_DEFAULT_BRANCH: "${GITHUB_DEFAULT_BRANCH:-main}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+
+      # Jira release-risk collection
+      JIRA_BASE_URL: "${JIRA_BASE_URL:?Set JIRA_BASE_URL in .env}"
+      JIRA_EMAIL: "${JIRA_EMAIL:?Set JIRA_EMAIL in .env}"
+      JIRA_API_TOKEN: "${JIRA_API_TOKEN:?Set JIRA_API_TOKEN in .env}"
+      JIRA_PROJECT_KEY: "${JIRA_PROJECT_KEY:?Set JIRA_PROJECT_KEY in .env}"
+
       # OpenTelemetry tracing
       OTEL_ENABLED: "${OTEL_ENABLED:-false}"
       OTEL_SERVICE_NAME: "${OTEL_SERVICE_NAME:-agentflow-ai-backend}"
