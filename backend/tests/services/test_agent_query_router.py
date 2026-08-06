@@ -110,6 +110,10 @@ async def test_routes_ranked_risk_explanation(
     ("query", "expected_source"),
     [
         ("Show only GitHub risks.", RiskSourceFilter.GITHUB),
+        (
+            "Show only GitHub release risks.",
+            RiskSourceFilter.GITHUB,
+        ),
         ("Show only Jira risks.", RiskSourceFilter.JIRA),
     ],
 )

@@ -233,8 +233,12 @@ class AgentQueryRouter:
             phrases=(
                 "jira blockers only",
                 "github risks only",
+                "github release risks only",
+                "jira release risks only",
                 "only github risks",
+                "only github release risks",
                 "only jira risks",
+                "only jira release risks",
                 "jira only",
                 "github only",
                 "github and jira",

@@ -667,6 +667,7 @@ async def test_execute_agent_query_runs_claude_risk_synthesis(
     ("query", "expected_source"),
     [
         ("Show only GitHub risks.", "github"),
+        ("Show only GitHub release risks.", "github"),
         ("Show only Jira risks.", "jira"),
     ],
 )
@@ -793,6 +794,7 @@ async def test_standalone_github_blocker_query_creates_fresh_assessment(
     ("query", "expected_source"),
     [
         ("Show only GitHub risks.", "github"),
+        ("Show only GitHub release risks.", "github"),
         ("Show only Jira risks.", "jira"),
     ],
 )
