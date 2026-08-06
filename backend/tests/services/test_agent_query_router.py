@@ -698,6 +698,7 @@ async def test_explicit_entity_overrides_previous_context(
     [
         "What recovery steps are documented for payment API timeouts?",
         "What monitoring checks should be completed after a rollback?",
+        "What should engineers monitor after rolling back the payment service?",
     ],
 )
 @pytest.mark.anyio

@@ -77,6 +77,16 @@ class AgentQueryRouter:
             r"\b(?:after|following)\s+(?:a\s+)?rollback\b.*"
             r"\b(?:monitoring|validation|verification)\s+checks?\b"
         ),
+        re.compile(
+            r"\bmonitor\b.*"
+            r"\b(?:after|following)\s+"
+            r"(?:rolling\s+back|(?:a\s+)?rollback)\b"
+        ),
+        re.compile(
+            r"\b(?:after|following)\s+"
+            r"(?:rolling\s+back|(?:a\s+)?rollback)\b.*"
+            r"\bmonitor\b"
+        ),
     )
 
     _RELEASE_CONTEXT_TERMS: Final[frozenset[str]] = frozenset(

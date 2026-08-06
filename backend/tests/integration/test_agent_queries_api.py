@@ -2005,10 +2005,10 @@ async def test_slack_action_blocks_duplicate_delivery(
 
 
 @pytest.mark.anyio
-async def test_knowledge_document_question_uses_ingested_documents(
+async def test_implicit_operational_question_uses_ingested_documents(
     agent_query_api_client: AsyncClient,
 ) -> None:
-    """Knowledge questions should retrieve documents without running collectors."""
+    """Natural operational questions should execute knowledge retrieval."""
     ingestion_response = await agent_query_api_client.post(
         "/api/v1/engineering-documents/ingest",
         json={
@@ -2032,7 +2032,10 @@ async def test_knowledge_document_question_uses_ingested_documents(
     response = await agent_query_api_client.post(
         "/api/v1/agent/query",
         json={
-            "query": "What does the payment service runbook say about rollback?",
+            "query": (
+                "What should engineers monitor after rolling back "
+                "the payment service?"
+            ),
         },
     )
 
