@@ -530,6 +530,87 @@ def test_streamlit_app_requires_token_before_chat(
     )
 
 
+def test_streamlit_app_uses_server_side_demo_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run read-only portfolio queries without exposing a token input."""
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_BACKEND_BASE_URL",
+        "https://agentflow.example.test",
+    )
+    demo_jwt_value = "signed-read-only-demo-jwt"
+
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_DEMO_ACCESS_TOKEN",
+        demo_jwt_value,
+    )
+    get_frontend_settings.cache_clear()
+
+    captured: dict[str, Any] = {}
+
+    response = AgentQueryResponse.model_validate(
+        {
+            "answer": "Portfolio release-risk query completed.",
+            "plan": {
+                "intent": "release_risk_summary",
+                "response_depth": "detailed",
+                "confidence": 0.95,
+                "requires_human_approval": False,
+                "routing_reason_code": "fresh_release_risk_request",
+            },
+            "citations": [],
+            "approval_required": False,
+        }
+    )
+
+    async def fake_execute_manager_query(
+        *,
+        settings: FrontendSettings,
+        bearer_token: SecretStr,
+        query: str,
+        conversation_session_id: Any = None,
+        release_run_id: str | None = None,
+        context_entity_references: AgentEntityReferences | None = None,
+    ) -> AgentQueryCallResult:
+        captured["demo_mode"] = settings.demo_mode
+        captured["token"] = bearer_token.get_secret_value()
+        captured["query"] = query
+
+        return AgentQueryCallResult(
+            response=response,
+            run_id="portfolio-demo-run-id",
+        )
+
+    monkeypatch.setattr(
+        app_module,
+        "execute_manager_query",
+        fake_execute_manager_query,
+    )
+
+    app = AppTest.from_file(_STREAMLIT_APP_PATH)
+    app.run()
+
+    assert not any(
+        item.label == "Signed access token"
+        for item in app.text_input
+    )
+    assert not any(
+        item.label == "Load pending approvals"
+        for item in app.button
+    )
+
+    app.chat_input[0].set_value(
+        "What are the biggest release risks this week?"
+    ).run()
+
+    assert not app.exception
+    assert captured["demo_mode"] is True
+    assert captured["token"] == demo_jwt_value
+    assert captured["query"] == (
+        "What are the biggest release risks this week?"
+    )
+
+
 def test_streamlit_app_allows_chat_without_token_in_local_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

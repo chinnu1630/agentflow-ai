@@ -73,3 +73,50 @@ def test_build_api_url_rejects_untrusted_paths(path: str) -> None:
 
     with pytest.raises(ValueError, match="without a hostname"):
         settings.build_api_url(path)
+
+def test_demo_mode_is_disabled_by_default() -> None:
+    """Keep public demo credentials disabled unless explicitly configured."""
+    settings = FrontendSettings(
+        backend_base_url="https://agentflow.example.test",
+        _env_file=None,
+    )
+
+    assert settings.demo_access_token is None
+    assert settings.demo_mode is False
+
+
+def test_demo_access_token_enables_read_only_demo_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Load the portfolio JWT as a protected server-side setting."""
+    monkeypatch.setenv(
+        "AGENTFLOW_FRONTEND_DEMO_ACCESS_TOKEN",
+        "signed-read-only-demo-jwt",
+    )
+
+    settings = FrontendSettings(
+        backend_base_url="https://agentflow.example.test",
+        _env_file=None,
+    )
+
+    assert settings.demo_mode is True
+    assert settings.demo_access_token is not None
+    assert (
+        settings.demo_access_token.get_secret_value()
+        == "signed-read-only-demo-jwt"
+    )
+
+
+def test_blank_demo_access_token_is_treated_as_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Allow Docker Compose to supply an empty optional token."""
+    monkeypatch.setenv("AGENTFLOW_FRONTEND_DEMO_ACCESS_TOKEN", "")
+
+    settings = FrontendSettings(
+        backend_base_url="https://agentflow.example.test",
+        _env_file=None,
+    )
+
+    assert settings.demo_access_token is None
+    assert settings.demo_mode is False

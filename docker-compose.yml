@@ -124,6 +124,7 @@ services:
       context: ./frontend
     environment:
       AGENTFLOW_FRONTEND_BACKEND_BASE_URL: http://backend:8000
+      AGENTFLOW_FRONTEND_DEMO_ACCESS_TOKEN: "${AGENTFLOW_FRONTEND_DEMO_ACCESS_TOKEN:-}"
     ports:
       - "${FRONTEND_PORT:-8501}:8501"
     depends_on:

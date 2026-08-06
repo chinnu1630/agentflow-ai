@@ -42,6 +42,7 @@ log_event() {
 
 compose_command() (
   local -a compose_environment_variables=(
+    "AGENTFLOW_FRONTEND_DEMO_ACCESS_TOKEN"
     "AUTH_ENABLED"
     "AUTH_JWT_AUDIENCE"
     "AUTH_JWT_ISSUER"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from urllib.parse import urlsplit
 
-from pydantic import AnyHttpUrl, Field
+from pydantic import AnyHttpUrl, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,8 +33,28 @@ class FrontendSettings(BaseSettings):
             "development authentication mode."
         ),
     )
+    demo_access_token: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Optional server-side read-only JWT for the public portfolio "
+            "demo. This secret must never be rendered in the browser."
+        ),
+    )
     connect_timeout_seconds: float = Field(default=5.0, gt=0.0, le=30.0)
     request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=120.0)
+
+    @field_validator("demo_access_token", mode="before")
+    @classmethod
+    def normalize_blank_demo_access_token(cls, value: object) -> object:
+        """Treat an empty environment value as an unconfigured demo token."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @property
+    def demo_mode(self) -> bool:
+        """Return whether server-side read-only portfolio access is enabled."""
+        return self.demo_access_token is not None
 
     def build_api_url(self, path: str) -> str:
         """Build a backend API URL from a trusted relative path.
