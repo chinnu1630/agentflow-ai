@@ -92,6 +92,14 @@ services:
       JIRA_API_TOKEN: "${JIRA_API_TOKEN:?Set JIRA_API_TOKEN in .env}"
       JIRA_PROJECT_KEY: "${JIRA_PROJECT_KEY:?Set JIRA_PROJECT_KEY in .env}"
 
+      # Claude structured release-risk synthesis
+      ANTHROPIC_ENABLED: "${ANTHROPIC_ENABLED:-false}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-claude-sonnet-5}"
+      ANTHROPIC_MAX_TOKENS: "${ANTHROPIC_MAX_TOKENS:-4096}"
+      ANTHROPIC_TIMEOUT_SECONDS: "${ANTHROPIC_TIMEOUT_SECONDS:-30}"
+      ANTHROPIC_MAX_RETRIES: "${ANTHROPIC_MAX_RETRIES:-2}"
+
       # OpenTelemetry tracing
       OTEL_ENABLED: "${OTEL_ENABLED:-false}"
       OTEL_SERVICE_NAME: "${OTEL_SERVICE_NAME:-agentflow-ai-backend}"
