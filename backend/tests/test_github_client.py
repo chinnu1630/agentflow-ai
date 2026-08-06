@@ -1,5 +1,6 @@
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from app.integrations.github_client import (
     GitHubClient,
@@ -83,6 +84,36 @@ async def test_list_open_pull_requests_returns_normalized_pull_requests() -> Non
     assert pull_request.total_code_changes == 150
     assert pull_request.ci_status == GitHubCIStatus.UNKNOWN
     assert pull_request.labels == ["payments", "release-risk"]
+
+
+@pytest.mark.anyio
+async def test_list_open_pull_requests_omits_auth_for_empty_token() -> None:
+    """GitHub client should support public repositories without a token."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "Authorization" not in request.headers
+
+        return httpx.Response(
+            status_code=200,
+            json=[],
+        )
+
+    config = _github_config().model_copy(
+        update={"token": SecretStr("")},
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        client = GitHubClient(
+            http_client=http_client,
+            config=config,
+            request_id="test-request-id",
+        )
+
+        pull_requests = await client.list_open_pull_requests()
+
+    assert pull_requests == []
 
 
 @pytest.mark.anyio

@@ -179,10 +179,14 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
-        if self._config.token is not None:
-            headers["Authorization"] = (
-                f"Bearer {self._config.token.get_secret_value()}"
-            )
+        token = (
+            self._config.token.get_secret_value().strip()
+            if self._config.token is not None
+            else ""
+        )
+
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
 
         return headers
 
