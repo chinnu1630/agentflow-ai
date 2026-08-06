@@ -212,13 +212,13 @@ jobs:
           frontend_ports = services["frontend"].get("ports", [])
           if len(frontend_ports) != 1:
               raise SystemExit(
-                  "frontend must publish exactly one loopback-only port; "
+                  "frontend must publish exactly one public application port; "
                   f"found {frontend_ports}"
               )
 
           frontend_port = frontend_ports[0]
           expected_frontend_port = {
-              "host_ip": "127.0.0.1",
+              "host_ip": "0.0.0.0",
               "target": 8501,
               "published": "8501",
               "protocol": "tcp",
