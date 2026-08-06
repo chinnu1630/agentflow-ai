@@ -248,10 +248,13 @@ class AgentQueryRouter:
                 "deployment blockers",
                 "release blockers",
                 "show critical",
+                "show only critical",
                 "critical risks",
                 "high severity risks",
                 "high-severity risks",
                 "show high severity",
+                "show only high severity",
+                "show only high-severity",
                 "medium severity risks",
                 "low severity risks",
             ),
@@ -351,6 +354,23 @@ class AgentQueryRouter:
         )
 
         if (
+            (
+                matched_rule is None
+                or matched_rule.intent is AgentIntent.JIRA_TICKET_QUESTION
+            )
+            and not entity_references.jira_issue_keys
+            and self._matches_open_jira_filter(normalized_query)
+        ):
+            matched_rule = IntentRule(
+                intent=AgentIntent.FILTER_RISKS,
+                response_depth=ResponseDepth.STANDARD,
+                phrases=("open_jira_collection_filter",),
+                routing_reason_code="matched_open_jira_filter",
+                priority=66,
+                requires_current_snapshot=True,
+            )
+
+        if (
             matched_rule is None
             and self._PR_PATTERN.search(request.query) is not None
         ):
@@ -414,6 +434,13 @@ class AgentQueryRouter:
                 requires_current_snapshot=True,
             )
 
+        filters = self._extract_filters(request.query)
+
+        if matched_rule.routing_reason_code == "matched_open_jira_filter":
+            filters = filters.model_copy(
+                update={"open_items_only": True},
+            )
+
         return AgentQueryPlan(
             intent=matched_rule.intent,
             response_depth=matched_rule.response_depth,
@@ -423,7 +450,7 @@ class AgentQueryRouter:
             ),
             release_run_id=request.release_run_id,
             conversation_session_id=request.conversation_session_id,
-            filters=self._extract_filters(request.query),
+            filters=filters,
             entity_references=entity_references,
             requires_current_snapshot=(matched_rule.requires_current_snapshot),
             requires_historical_lookup=(matched_rule.requires_historical_lookup),
@@ -449,6 +476,34 @@ class AgentQueryRouter:
                 return rule
 
         return None
+
+    def _matches_open_jira_filter(
+        self,
+        normalized_query: str,
+    ) -> bool:
+        """Return whether wording requests a collection of unfinished Jira work."""
+
+        has_open_status = (
+            re.search(
+                r"\b(?:open|pending|unresolved|unfinished)\b",
+                normalized_query,
+            )
+            is not None
+        )
+        has_jira_context = (
+            "jira" in normalized_query
+            or re.search(r"\btickets?\b", normalized_query) is not None
+        )
+        has_github_context = (
+            "github" in normalized_query
+            or "pull request" in normalized_query
+        )
+
+        return (
+            has_open_status
+            and has_jira_context
+            and not has_github_context
+        )
 
     def _matches_implicit_knowledge_question(
         self,

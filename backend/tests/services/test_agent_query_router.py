@@ -133,6 +133,69 @@ async def test_routes_source_only_risk_wording_as_filter(
     assert plan.requires_current_snapshot is True
 
 
+@pytest.mark.parametrize(
+    ("query", "expected_source"),
+    [
+        ("Show all open Jira risks.", RiskSourceFilter.JIRA),
+        ("What are the pending Jira tickets?", RiskSourceFilter.JIRA),
+        ("Show unresolved Jira issues.", RiskSourceFilter.JIRA),
+    ],
+)
+@pytest.mark.anyio
+async def test_routes_open_jira_collection_wording_as_filter(
+    router: AgentQueryRouter,
+    query: str,
+    expected_source: RiskSourceFilter,
+) -> None:
+    """Open Jira collection wording should produce a bounded risk filter."""
+
+    request = AgentQueryRequest(
+        query=query,
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.FILTER_RISKS
+    assert plan.filters.sources == [expected_source]
+    assert plan.filters.open_items_only is True
+    assert plan.routing_reason_code == "matched_open_jira_filter"
+
+
+@pytest.mark.anyio
+async def test_pending_approval_wording_keeps_approval_intent(
+    router: AgentQueryRouter,
+) -> None:
+    """Open Jira wording must not override a higher-priority approval query."""
+
+    request = AgentQueryRequest(
+        query="What is the pending approval status for this Jira release?",
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.APPROVAL_STATUS_QUESTION
+    assert plan.routing_reason_code == "matched_approval_status"
+
+
+@pytest.mark.anyio
+async def test_pending_specific_jira_issue_keeps_ticket_intent(
+    router: AgentQueryRouter,
+) -> None:
+    """An explicit Jira key should remain a specific-ticket question."""
+
+    request = AgentQueryRequest(
+        query="Is Jira ticket SCRUM-1 still pending?",
+        release_run_id=uuid4(),
+    )
+
+    plan = await router.create_plan(request)
+
+    assert plan.intent is AgentIntent.JIRA_TICKET_QUESTION
+    assert plan.entity_references.jira_issue_keys == ["SCRUM-1"]
+
+
 @pytest.mark.anyio
 async def test_routes_open_github_and_jira_question_as_filter(
     router: AgentQueryRouter,
@@ -295,6 +358,8 @@ async def test_routes_natural_slack_delivery_status_wording(
     [
         ("Show high severity risks.", "high"),
         ("Show critical risks.", "critical"),
+        ("Show only critical Jira risks.", "critical"),
+        ("Show only high-severity Jira risks.", "high"),
         ("Show medium severity risks.", "medium"),
         ("Show low severity risks.", "low"),
     ],
