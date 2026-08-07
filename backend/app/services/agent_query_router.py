@@ -87,6 +87,12 @@ class AgentQueryRouter:
             r"(?:rolling\s+back|(?:a\s+)?rollback)\b.*"
             r"\bmonitor\b"
         ),
+        re.compile(
+            r"\b(?:failed|partially\s+applied)\s+"
+            r"(?:database\s+)?migration\b.*"
+            r"\b(?:block|stop|halt)\s+"
+            r"(?:(?:a|the)\s+)?deployment\b"
+        ),
     )
 
     _RELEASE_CONTEXT_TERMS: Final[frozenset[str]] = frozenset(
